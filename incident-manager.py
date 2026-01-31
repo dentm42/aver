@@ -1417,8 +1417,7 @@ class IncidentCLI:
             action="store_true",
             help="Show all available databases and exit",
         )
-
-    # In _get_manager()
+    
     def _get_manager(self, args) -> IncidentManager:
         """Handle database selection."""
         interactive = getattr(args, 'choose', False)
@@ -1427,8 +1426,7 @@ class IncidentCLI:
             explicit_location=getattr(args, 'location', None),
             interactive=interactive,
         )
-
-
+    
     def setup_commands(self):
         """Set up all CLI commands."""
         # init
@@ -1437,22 +1435,22 @@ class IncidentCLI:
             help="Initialize incident database",
         )
         self._add_common_args(init_parser)
-
-
+    
         # config
         config_parser = self.subparsers.add_parser(
             "config",
             help="Manage configuration",
         )
+        self._add_common_args(config_parser)
         config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
-
+    
         set_user_parser = config_subparsers.add_parser(
             "set-user-global",
             help="Set global user identity",
         )
         set_user_parser.add_argument("--handle", required=True, help="User handle")
         set_user_parser.add_argument("--email", required=True, help="User email")
-
+    
         set_editor_parser = config_subparsers.add_parser(
             "set-editor",
             help="Set user's preferred editor",
@@ -1463,17 +1461,18 @@ class IncidentCLI:
             )
         )
         set_editor_parser.add_argument("editor", help="Editor command (e.g., vim, nano, code, emacs")
-
+    
         get_editor_parser = config_subparsers.add_parser(
             "get-editor",
             help="Show current editor",
         )
-
+    
         # create
         create_parser = self.subparsers.add_parser(
             "create",
             help="Create new incident",
         )
+        self._add_common_args(create_parser)
         create_parser.add_argument(
             "--override-repo-boundary",
             action="store_true",
@@ -1502,19 +1501,21 @@ class IncidentCLI:
             "--description",
             help="Detailed description",
         )
-
+    
         # get
         get_parser = self.subparsers.add_parser(
             "get",
             help="View incident details",
         )
+        self._add_common_args(get_parser)
         get_parser.add_argument("incident_id", help="Incident ID")
-
+    
         # list
         list_parser = self.subparsers.add_parser(
             "list",
             help="List incidents",
         )
+        self._add_common_args(list_parser)
         list_parser.add_argument(
             "--status",
             help="Filter by status",
@@ -1539,12 +1540,13 @@ class IncidentCLI:
             dest="tags",
             help="Filter by tag (can be used multiple times)",
         )
-
+    
         # update
         update_parser = self.subparsers.add_parser(
             "update",
             help="Update incident status",
         )
+        self._add_common_args(update_parser)
         update_parser.add_argument("incident_id", help="Incident ID")
         update_parser.add_argument(
             "--status",
@@ -1552,7 +1554,7 @@ class IncidentCLI:
             choices=["open", "investigating", "mitigating", "resolved", "closed"],
             help="New status",
         )
-
+    
         # add-update
         add_update_parser = self.subparsers.add_parser(
             "add-update",
@@ -1564,31 +1566,34 @@ class IncidentCLI:
                 "  3. Editor (if STDIN unavailable)"
             ),
         )
+        self._add_common_args(add_update_parser)
         add_update_parser.add_argument("incident_id", help="Incident ID")
         add_update_parser.add_argument(
             "--message",
             help="Update message",
         )
-
+    
         # get-updates
         get_updates_parser = self.subparsers.add_parser(
             "get-updates",
             help="View all updates for an incident",
         )
+        self._add_common_args(get_updates_parser)
         get_updates_parser.add_argument("incident_id", help="Incident ID")
-
+    
         # reindex
         reindex_parser = self.subparsers.add_parser(
             "reindex",
             help="Rebuild search index from files",
         )
+        self._add_common_args(reindex_parser)
         reindex_parser.add_argument(
             "--verbose",
             "-v",
             action="store_true",
             help="Verbose output",
         )
-
+    
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
