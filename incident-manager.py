@@ -232,119 +232,203 @@ class DatabaseDiscovery:
     # Database Discovery
     # =========================================================================
 
-@staticmethod
-def find_all_databases(explicit_location: Optional[Path] = None) -> Dict[str, Dict]:
-    """
-    Find all possible incident databases in scope.
-    
-    Returns:
-        Dict mapping source_name -> {path, source_description, precedence}
-        If explicit_location provided, returns only that.
-    """
-    candidates = {}
-    cwd = Path.cwd()
-    
-    # 1) Explicit location (if provided, this is the only option)
-    if explicit_location:
-        db_path = Path(explicit_location).resolve()
-        candidates['explicit'] = {
-            'path': db_path,
-            'source': f'Explicit: {explicit_location}',
-        }
-        return candidates
-    
-    # 2) Git repository
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        repo_root = Path(result.stdout.strip()).resolve()
-        candidate = repo_root / ".incident-manager"
-        if candidate.exists():
-            candidates['git_repo'] = {
-                'path': candidate,
-                'source': f'Git repo: {repo_root}',
-            }
-    except subprocess.CalledProcessError:
-        pass
-    
-    # 3) User config [locations]
-    user_db = DatabaseDiscovery.lookup_user_locations(cwd)
-    if user_db:
-        candidates['user_locations'] = {
-            'path': user_db.resolve(),
-            'source': f'User config [locations]: {user_db}',
-        }
-    
-    # 4) Parent directory traversal
-    current = cwd
-    while True:
-        candidate = current / ".incident-manager"
-        if candidate.exists():
-            candidates['parent_dir'] = {
-                'path': candidate.resolve(),
-                'source': f'Parent directory: {current}',
-            }
-            break
-        if current.parent == current:
-            break
-        current = current.parent
-    
-    return candidates
-
-
     @staticmethod
-    def select_database_interactive(candidates: Dict[str, Dict]) -> Path:
+    def find_all_databases(explicit_location: Optional[Path] = None) -> Dict[str, Dict]:
         """
-        Present user with database choices and return selected path.
+        Find all possible incident databases in scope.
     
-        If only one candidate, uses it automatically.
-        If multiple candidates, prompts user to choose.
-    
-        Args:
-            candidates: Dict from find_all_databases()
+        Returns databases in priority order:
+        1. Explicit location (if provided)
+        2. Git repository at/above CWD
+        3. User config [locations] matching CWD (contextually relevant)
+        4. Parent directories above CWD with .incident-manager
+        5. All other user config [locations] entries (secondary options)
     
         Returns:
-            Path to selected incident database
-    
-        Raises:
-            RuntimeError: If no candidates provided
+            Dict mapping source_name -> {path, source_description, category}
         """
-        if not candidates:
-            raise RuntimeError("No incident databases found")
+        candidates = {}
+        cwd = Path.cwd()
     
-        if len(candidates) == 1:
-            # Only one option; use it silently
+        # 1) Explicit location (if provided, this is the only option)
+        if explicit_location:
+            db_path = Path(explicit_location).resolve()
+            candidates['explicit'] = {
+                'path': db_path,
+                'source': f'Explicit: {explicit_location}',
+                'category': 'explicit',
+            }
+            return candidates
+        
+        # 2) Git repository (contextually relevant)
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            repo_root = Path(result.stdout.strip()).resolve()
+            candidate = repo_root / ".incident-manager"
+            if candidate.exists():
+                candidates['git_repo'] = {
+                    'path': candidate,
+                    'source': f'Git repo: {repo_root}',
+                    'category': 'contextual',
+                }
+        except subprocess.CalledProcessError:
+            pass
+    
+        # 3) User config [locations] matching CWD (contextually relevant)
+        matched_location = None
+        user_db = DatabaseDiscovery.lookup_user_locations(cwd)
+        if user_db:
+            matched_location = user_db.resolve()
+            candidates['user_locations_matched'] = {
+                'path': matched_location,
+                'source': f'User config [locations] (matched): {user_db}',
+                'category': 'contextual',
+            }
+    
+        # 4) Parent directory traversal (contextually relevant)
+        current = cwd
+        while True:
+            candidate = current / ".incident-manager"
+            if candidate.exists():
+                candidates['parent_dir'] = {
+                    'path': candidate.resolve(),
+                    'source': f'Parent directory: {current}',
+                    'category': 'contextual',
+                }
+                break
+            if current.parent == current:
+                break
+            current = current.parent
+    
+        # 5) All other user config [locations] entries (secondary options)
+        user_config = DatabaseDiscovery.get_user_config()
+        if 'locations' in user_config:
+            for path_prefix, db_path in user_config['locations'].items():
+                db_path_obj = Path(db_path).resolve()
+                
+                # Skip if already added (matched location or parent)
+                if db_path_obj == matched_location or any(
+                    c['path'] == db_path_obj for c in candidates.values()
+                ):
+                    continue
+                
+                # Only add if it exists
+                if db_path_obj.exists():
+                    key = f"user_locations_{path_prefix.replace('/', '_')}"
+                    candidates[key] = {
+                        'path': db_path_obj,
+                        'source': f'User config [locations]: {path_prefix} → {db_path}',
+                        'category': 'available',
+                    }
+    
+        return candidates
+
+        @staticmethod
+        def select_database_interactive(candidates: Dict[str, Dict]) -> Path:
+            """
+            Present user with database choices grouped by category.
+        
+            Groups:
+            - Contextual (closest match to current directory)
+            - Available (other configured locations)
+            """
+            if not candidates:
+                raise RuntimeError("No incident databases found")
+        
+            if len(candidates) == 1:
+                selected = list(candidates.values())[0]
+                print(f"Using: {selected['source']}")
+                return selected['path']
+        
+            # Organize by category
+            contextual = [(k, v) for k, v in candidates.items() if v.get('category') == 'contextual']
+            available = [(k, v) for k, v in candidates.items() if v.get('category') == 'available']
+            
+            print("\n" + "="*70)
+            print("Incident databases available:")
+            print("="*70)
+        
+            all_items = []
+    
+            # Show contextual options first
+            if contextual:
+                print("\n[Contextual - closest match to current directory]")
+                for idx, (key, info) in enumerate(contextual, 1):
+                    all_items.append((key, info))
+                    print(f"  [{idx}] {info['source']}")
+                    print(f"      {info['path']}")
+        
+            # Show other available options
+            if available:
+                start_idx = len(contextual) + 1
+                print(f"\n[Available - other configured locations]")
+                for idx, (key, info) in enumerate(available, start_idx):
+                    all_items.append((key, info))
+                    print(f"  [{idx}] {info['source']}")
+                    print(f"      {info['path']}")
+        
+            print("\n" + "="*70)
+            while True:
+                try:
+                    choice = input(f"Select database (1-{len(all_items)}): ").strip()
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(all_items):
+                        selected = all_items[idx][1]
+                        print(f"✓ Using: {selected['source']}\n")
+                        return selected['path']
+                except ValueError:
+                    pass
+                print("Invalid selection. Please try again.")
+    
+    @staticmethod
+    def select_database_contextual(candidates: Dict[str, Dict]) -> Path:
+        """
+        Select database using contextual heuristics (no prompting).
+        
+        Priority order:
+        1. Git repository (if in a git repo, that's usually what you want)
+        2. User config [locations] matching CWD (closest contextual match)
+        3. Parent directory .incident-manager
+        4. First available [locations] entry (fallback)
+        
+        Args:
+            candidates: Dict from find_all_databases()
+        
+        Returns:
+            Path to selected incident database
+        
+        Raises:
+            RuntimeError: If no suitable database found
+        """
+        # Priority order of candidate keys
+        priority = ['git_repo', 'user_locations_matched', 'parent_dir']
+        
+        # Try each priority level
+        for key in priority:
+            if key in candidates:
+                selected = candidates[key]
+                print(f"Using: {selected['source']}")
+                return selected['path']
+        
+        # Fallback: use first available [locations] entry
+        for key, info in candidates.items():
+            if info.get('category') == 'available':
+                print(f"Using: {info['source']}")
+                return info['path']
+        
+        # Last resort: use any remaining candidate
+        if candidates:
             selected = list(candidates.values())[0]
             print(f"Using: {selected['source']}")
             return selected['path']
-    
-        # Multiple options; let user choose
-        print("\n" + "="*60)
-        print("Multiple incident databases available:")
-        print("="*60)
-    
-        sorted_items = list(candidates.items())
-        for idx, (key, info) in enumerate(sorted_items, 1):
-            print(f"\n  [{idx}] {info['source']}")
-            print(f"      {info['path']}")
-    
-        print("\n" + "="*60)
-        while True:
-            try:
-                choice = input(f"Select database (1-{len(sorted_items)}): ").strip()
-                idx = int(choice) - 1
-                if 0 <= idx < len(sorted_items):
-                    selected = sorted_items[idx][1]
-                    print(f"✓ Using: {selected['source']}\n")
-                    return selected['path']
-            except ValueError:
-                pass
-            print("Invalid selection. Please try again.")
-    
+        
+        raise RuntimeError("No suitable incident database found")
+ 
 
     @staticmethod
     def lookup_user_locations(cwd: Path) -> Optional[Path]:
@@ -1098,41 +1182,47 @@ class IncidentManager:
     def __init__(
         self, 
         explicit_location: Optional[Path] = None,
-        interactive: bool = True,
+        interactive: bool = None,  # None = auto-detect from config
     ):
         """
-        Initialize manager with interactive or automatic database selection.
+        Initialize manager with smart database selection.
     
         Args:
-            explicit_location: If provided, use this path directly (for scripting)
-            interactive: If True and multiple databases found, prompt user to choose
-    
-        Raises:
-            RuntimeError: If no database found or user cancels
+            explicit_location: If provided, use this path directly
+            interactive: Override config setting (True=always prompt, False=never prompt, None=use config)
         """
         if explicit_location:
-            # Direct path for automated tools
             self.db_root = Path(explicit_location).resolve()
         else:
-            # Find all possibilities
             candidates = DatabaseDiscovery.find_all_databases()
-        
-            # Only use interactive mode if stdin is a TTY (not piped/scripted)
-            should_prompt = interactive and sys.stdin.isatty()
             
-            if should_prompt:
+            if not candidates:
+                raise RuntimeError("No incident databases found")
+            
+            # Determine interaction mode
+            user_config = DatabaseDiscovery.get_user_config()
+            behavior = user_config.get('behavior', {})
+            selection_mode = behavior.get('database_selection', 'contextual')
+            
+            # Override if explicit interactive flag provided
+            if interactive is not None:
+                selection_mode = 'interactive' if interactive else 'contextual'
+            # Don't prompt in non-TTY environments
+            elif not sys.stdin.isatty():
+                selection_mode = 'contextual'
+            
+            # Select database based on mode
+            if selection_mode == 'interactive':
                 self.db_root = DatabaseDiscovery.select_database_interactive(candidates)
             else:
-                # Non-interactive: use first available (git repo preferred, then user config, then parent)
-                if not candidates:
-                    raise RuntimeError("No incident databases found")
-                # Return first from dict (which will be git_repo if it exists, then user_locations, then parent_dir)
-                self.db_root = list(candidates.values())[0]['path']
-    
+                # 'contextual' mode: use sensible defaults
+                self.db_root = DatabaseDiscovery.select_database_contextual(candidates)
+        
         if not self.db_root.exists():
             raise RuntimeError(f"Incident database not found: {self.db_root}")
-    
+        
         self.config = IncidentConfig(self.db_root)
+    
 
     def create_incident(
         self,
@@ -1176,7 +1266,7 @@ class IncidentManager:
         status: Optional[str] = None,
         severity: Optional[str] = None,
         tags: Optional[List[str]] = None,
-        search: Optional[str] = None
+        search: Optional[str] = None,
         limit: int = 50,
     ) -> List[Incident]:
         """List incidents using index, then load from files."""
@@ -1311,6 +1401,34 @@ class IncidentCLI:
         )
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
 
+    def _add_common_args(self, parser):
+        """Add common incident manager arguments."""
+        parser.add_argument(
+            "--location",
+            help="Explicit incident database path (overrides all detection)",
+        )
+        parser.add_argument(
+            "--choose",
+            action="store_true",
+            help="Prompt to choose database if multiple available",
+        )
+        parser.add_argument(
+            "--list-databases",
+            action="store_true",
+            help="Show all available databases and exit",
+        )
+
+    # In _get_manager()
+    def _get_manager(self, args) -> IncidentManager:
+        """Handle database selection."""
+        interactive = getattr(args, 'choose', False)
+        
+        return IncidentManager(
+            explicit_location=getattr(args, 'location', None),
+            interactive=interactive,
+        )
+
+
     def setup_commands(self):
         """Set up all CLI commands."""
         # init
@@ -1318,16 +1436,8 @@ class IncidentCLI:
             "init",
             help="Initialize incident database",
         )
-        init_parser.add_argument(
-            "--location",
-            help="Database location (default: .incident-manager in current repo)",
-        )
+        self._add_common_args(init_parser)
 
-        create_parser.add_argument(
-            "--override-repo-boundary",
-            action="store_true",
-            help="Bypass git repository boundary checks",
-        )
 
         # config
         config_parser = self.subparsers.add_parser(
@@ -1363,6 +1473,11 @@ class IncidentCLI:
         create_parser = self.subparsers.add_parser(
             "create",
             help="Create new incident",
+        )
+        create_parser.add_argument(
+            "--override-repo-boundary",
+            action="store_true",
+            help="Bypass git repository boundary checks",
         )
         create_parser.add_argument("--title", required=True, help="Incident title")
         create_parser.add_argument(
@@ -1587,6 +1702,8 @@ class IncidentCLI:
         Returns:
             Initialized IncidentManager instance
         """
+        interactive = getattr(args, 'choose', False)
+
         return IncidentManager(
             explicit_location=getattr(args, 'location', None),
             interactive=interactive,
@@ -1721,6 +1838,38 @@ class IncidentCLI:
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+    def cmd_list_databases(self, args):
+        """Show all available incident databases."""
+        candidates = DatabaseDiscovery.find_all_databases()
+    
+        if not candidates:
+            print("No incident databases found.")
+            return
+    
+        print("\n" + "="*70)
+        print("Available incident databases:")
+        print("="*70)
+    
+        contextual = {k: v for k, v in candidates.items() if v.get('category') == 'contextual'}
+        available = {k: v for k, v in candidates.items() if v.get('category') == 'available'}
+        
+        if contextual:
+            print("\n[Contextual]")
+            for key, info in contextual.items():
+                marker = "→" if self._is_default_selection(candidates) == key else " "
+                print(f"  {marker} {info['source']}")
+                print(f"      {info['path']}")
+    
+        if available:
+            print("\n[Available]")
+            for key, info in available.items():
+                print(f"    {info['source']}")
+                print(f"      {info['path']}")
+    
+        print("\n" + "="*70)
+        print("Tip: Use --choose to select interactively, --location to specify explicitly")
+        print("="*70)
 
 
 # ============================================================================
