@@ -232,6 +232,120 @@ class DatabaseDiscovery:
     # Database Discovery
     # =========================================================================
 
+@staticmethod
+def find_all_databases(explicit_location: Optional[Path] = None) -> Dict[str, Dict]:
+    """
+    Find all possible incident databases in scope.
+    
+    Returns:
+        Dict mapping source_name -> {path, source_description, precedence}
+        If explicit_location provided, returns only that.
+    """
+    candidates = {}
+    cwd = Path.cwd()
+    
+    # 1) Explicit location (if provided, this is the only option)
+    if explicit_location:
+        db_path = Path(explicit_location).resolve()
+        candidates['explicit'] = {
+            'path': db_path,
+            'source': f'Explicit: {explicit_location}',
+        }
+        return candidates
+    
+    # 2) Git repository
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        repo_root = Path(result.stdout.strip()).resolve()
+        candidate = repo_root / ".incident-manager"
+        if candidate.exists():
+            candidates['git_repo'] = {
+                'path': candidate,
+                'source': f'Git repo: {repo_root}',
+            }
+    except subprocess.CalledProcessError:
+        pass
+    
+    # 3) User config [locations]
+    user_db = DatabaseDiscovery.lookup_user_locations(cwd)
+    if user_db:
+        candidates['user_locations'] = {
+            'path': user_db.resolve(),
+            'source': f'User config [locations]: {user_db}',
+        }
+    
+    # 4) Parent directory traversal
+    current = cwd
+    while True:
+        candidate = current / ".incident-manager"
+        if candidate.exists():
+            candidates['parent_dir'] = {
+                'path': candidate.resolve(),
+                'source': f'Parent directory: {current}',
+            }
+            break
+        if current.parent == current:
+            break
+        current = current.parent
+    
+    return candidates
+
+
+    @staticmethod
+    def select_database_interactive(candidates: Dict[str, Dict]) -> Path:
+        """
+        Present user with database choices and return selected path.
+    
+        If only one candidate, uses it automatically.
+        If multiple candidates, prompts user to choose.
+    
+        Args:
+            candidates: Dict from find_all_databases()
+    
+        Returns:
+            Path to selected incident database
+    
+        Raises:
+            RuntimeError: If no candidates provided
+        """
+        if not candidates:
+            raise RuntimeError("No incident databases found")
+    
+        if len(candidates) == 1:
+            # Only one option; use it silently
+            selected = list(candidates.values())[0]
+            print(f"Using: {selected['source']}")
+            return selected['path']
+    
+        # Multiple options; let user choose
+        print("\n" + "="*60)
+        print("Multiple incident databases available:")
+        print("="*60)
+    
+        sorted_items = list(candidates.items())
+        for idx, (key, info) in enumerate(sorted_items, 1):
+            print(f"\n  [{idx}] {info['source']}")
+            print(f"      {info['path']}")
+    
+        print("\n" + "="*60)
+        while True:
+            try:
+                choice = input(f"Select database (1-{len(sorted_items)}): ").strip()
+                idx = int(choice) - 1
+                if 0 <= idx < len(sorted_items):
+                    selected = sorted_items[idx][1]
+                    print(f"✓ Using: {selected['source']}\n")
+                    return selected['path']
+            except ValueError:
+                pass
+            print("Invalid selection. Please try again.")
+    
+
     @staticmethod
     def lookup_user_locations(cwd: Path) -> Optional[Path]:
         """
@@ -981,41 +1095,44 @@ class IncidentReindexer:
 class IncidentManager:
     """High-level incident management API."""
 
-    def __init__(self, explicit_location: Optional[Path] = None):
+    def __init__(
+        self, 
+        explicit_location: Optional[Path] = None,
+        interactive: bool = True,
+    ):
         """
-        Initialize manager with discovered database.
-
+        Initialize manager with interactive or automatic database selection.
+    
         Args:
-            explicit_location: Optional explicit database path
-            override_repo_boundary: If True, bypass git repo boundary checks
+            explicit_location: If provided, use this path directly (for scripting)
+            interactive: If True and multiple databases found, prompt user to choose
     
         Raises:
-            RuntimeError: If database is outside git repo and override is False
+            RuntimeError: If no database found or user cancels
         """
-
-        self.db_root = DatabaseDiscovery.find_database_or_fail(explicit_location=explicit_location)
-
-        # Enforce repo boundary
-        if not DatabaseDiscovery.enforce_repo_boundary(self.db_root, override=override_repo_boundary):
-            raise RuntimeError(
-                f"Incident database at {self.db_root} is outside the current git repository.\n"
-                "Use --override-repo-boundary to bypass this check."
-            )
-
-        self.index_db_path = self.db_root / "incidents.db"
+        if explicit_location:
+            # Direct path for automated tools
+            self.db_root = Path(explicit_location).resolve()
+        else:
+            # Find all possibilities
+            candidates = DatabaseDiscovery.find_all_databases()
         
-        # Initialize storage and index
-        self.storage = IncidentFileStorage(self.db_root)
-        self.index_db = IncidentIndexDatabase(self.index_db_path)
-
-        # Load user identity
-        user_config = DatabaseDiscovery.get_user_config()
-        if "user" not in user_config:
-            raise RuntimeError(
-                "User identity not configured.\n"
-                "Set with: incident config set-user-global --handle <handle> --email <email>"
-            )
-        self.user_identity = UserIdentity.from_dict(user_config["user"])
+            # Only use interactive mode if stdin is a TTY (not piped/scripted)
+            should_prompt = interactive and sys.stdin.isatty()
+            
+            if should_prompt:
+                self.db_root = DatabaseDiscovery.select_database_interactive(candidates)
+            else:
+                # Non-interactive: use first available (git repo preferred, then user config, then parent)
+                if not candidates:
+                    raise RuntimeError("No incident databases found")
+                # Return first from dict (which will be git_repo if it exists, then user_locations, then parent_dir)
+                self.db_root = list(candidates.values())[0]['path']
+    
+        if not self.db_root.exists():
+            raise RuntimeError(f"Incident database not found: {self.db_root}")
+    
+        self.config = IncidentConfig(self.db_root)
 
     def create_incident(
         self,
@@ -1472,7 +1589,7 @@ class IncidentCLI:
         """
         return IncidentManager(
             explicit_location=getattr(args, 'location', None),
-            override_repo_boundary=getattr(args, 'override_repo_boundary', False),
+            interactive=interactive,
         )
 
     def _cmd_create(self, args):
