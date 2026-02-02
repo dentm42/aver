@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Incident Manager - Distributed incident tracking for open-source projects
+aver: a verified knowledge tracking tool
 
 Zero external dependencies. Sin
 import os
@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from types import SimpleNamespace
 import select
 import secrets
 import time
@@ -31,6 +32,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from types import SimpleNamespace
 import select
 import secrets
 import time
@@ -250,6 +252,35 @@ class IDGenerator:
         rand = secrets.token_hex(2)  # small entropy bump
         return f"UPD-{IDGenerator.to_base36(epoch_ns)}-{rand}.md"
 
+
+# ============================================================================
+# DICTIONARY HELPER
+# ============================================================================
+
+class ConfigDict(dict):
+    """Dict that also supports dot notation for attribute access"""
+    
+    def __getattr__(self, key):
+        try:
+            value = self[key]
+            # Recursively wrap nested dicts
+            if isinstance(value, dict) and not isinstance(value, ConfigDict):
+                value = ConfigDict(value)
+                self[key] = value
+            return value
+        except KeyError:
+            raise AttributeError(f"No attribute '{key}'")
+    
+    def __setattr__(self, key, value):
+        self[key] = value
+    
+    def __delattr__(self, key):
+        try:
+            del self[key]
+        except KeyError:
+            raise AttributeError(f"No attribute '{key}'")
+
+
 # ============================================================================
 # Database Discovery & Configuration
 # ============================================================================
@@ -276,17 +307,132 @@ class DatabaseDiscovery:
 
     @staticmethod
     def get_user_config() -> dict:
-        """Load the global user configuration from ~/.config/aver/user.toml."""
+        """
+        Wrapper function to load and validate user configuration.
+        
+        Handles errors gracefully and provides actionable error messages.
+        
+        Returns:
+            Configuration dictionary with validated required fields, or empty dict if file missing
+        """
+        try:
+            return DatabaseDiscovery._do_get_user_config()
+        except ValueError as e:
+            print(f"Configuration error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except PermissionError as e:
+            print(f"Permission error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def dict_to_namespace(d):
+        """
+        Recursively convert a dictionary to SimpleNamespace for dot notation access.
+    
+        Handles nested dicts, lists of dicts, and preserves other types.
+        """
+        if isinstance(d, dict):
+            return SimpleNamespace(**{k: DatabaseDiscovery.dict_to_namespace(v) for k, v in d.items()})
+        elif isinstance(d, list):
+            return [dict_to_namespace(item) for item in d]
+        else:
+            return d
+
+    @staticmethod
+    def _do_get_user_config() -> dict:
+        """
+        Load the global user configuration from ~/.config/aver/user.toml.
+        
+        Required fields (if file exists):
+        - handle: User identifier/name
+        - email_address: User email
+        
+        Returns:
+            Configuration dictionary with validated required fields, or empty dict if file missing
+            
+        Raises:
+            ValueError: If required fields are missing or invalid
+            PermissionError: If config file cannot be read due to permissions
+        """
         config_path = DatabaseDiscovery.get_user_config_path()
+        
+        # No config file is acceptable; return empty dict
         if not config_path.exists():
             return {}
+        
         try:
             with open(config_path, "rb") as f:
-                return tomllib.load(f)
+                config = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(
+                f"Invalid TOML syntax in {config_path}: {e}\n"
+                f"To reset your configuration, run:\n\n"
+                f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+            )
+        except PermissionError as e:
+            raise PermissionError(
+                f"Permission denied reading {config_path}: {e}"
+            )
         except Exception as e:
-            print(f"Warning: Failed to read user config: {e}", file=sys.stderr)
-            return {}
-
+            raise ValueError(
+                f"Failed to read user config from {config_path}: {e}"
+            )
+        
+        
+        # Validate required fields exist
+        required_user_fields = ["handle", "email"]
+        missing_user_fields = [field for field in required_user_fields if field not in config["user"]]
+        
+        if missing_user_fields:
+            raise ValueError(
+                f"User configuration at {config_path} is missing required fields: "
+                f"{', '.join(missing_fields)}\n\n"
+                f"Please configure your user identity:\n\n"
+                f"  aver config set-user-global --handle <your-handle> --email <your-email>\n\n"
+            )
+        
+        # Validate required fields are not empty
+        for field in required_user_fields:
+            value = config["user"][field]
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Field '{field}' in {config_path} must be a string, "
+                    f"got {type(value).__name__}\n\n"
+                    f"To fix this, run:\n\n"
+                    f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+                )
+            if not value.strip():
+                raise ValueError(
+                    f"Field '{field}' in {config_path} cannot be empty\n\n"
+                    f"To fix this, run:\n\n"
+                    f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+                )
+        
+        # Validate email_address format (basic check)
+        email = config["user"]["email"].strip()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            raise ValueError(
+                f"Field 'email_address' in {config_path} appears invalid: '{email}'\n"
+                f"Expected format: user@example.com\n\n"
+                f"To fix this, run:\n\n"
+                f"  aver config set-user-global --handle <your-handle> --email <your-email>\n\n"
+                f"Example:\n"
+                f"  aver config set-user-global --handle mattd --email dentm42@gmail.com"
+            )
+        
+        # Store trimmed versions to remove accidental whitespace
+        config["user"]["handle"] = config["user"]["handle"].strip()
+        config["user"]["email"] = email
+        
+        def dict_to_configdict(d):
+            if isinstance(d, dict):
+                return ConfigDict({k: dict_to_configdict(v) for k, v in d.items()})
+            elif isinstance(d, list):
+                return [dict_to_configdict(item) for item in d]
+            else:
+                return d
+        
+        # return DatabaseDiscovery.dict_to_namespace(config)
+        return dict_to_configdict(config)
     @staticmethod
     def set_user_config(config: dict):
         """Save the global user configuration."""
@@ -541,12 +687,12 @@ class DatabaseDiscovery:
         "/root/path/longer" = "/other/path/to/data"
         """
         config = DatabaseDiscovery.get_user_config()
-        locations = config.get("locations", {})
+        locations = config.locations if hasattr(config,"locations") else []
         cwd_resolved = cwd.resolve()
 
         matches = [
             (Path(key).resolve(), Path(value).resolve())
-            for key, value in locations.items()
+            for key, value in locations
             if cwd_resolved.is_relative_to(Path(key).resolve())  # Python 3.9+
         ]
 
@@ -863,12 +1009,39 @@ class KVParser:
         Raises:
             ValueError: If format is invalid
         """
+        # Pre-validation: check input is a string
+        if not isinstance(kv_str, str):
+            raise ValueError(f"Input must be a string, got {type(kv_str).__name__}")
+        
         kv_str = kv_str.strip()
+        
+        # Pre-validation: check string is not empty after stripping
+        if not kv_str:
+            raise ValueError("Key-value string cannot be empty")
+        
+        # Pre-validation: check for invalid characters at start
+        if kv_str[0] in (KVParser.TYPE_STRING, KVParser.TYPE_INTEGER, KVParser.TYPE_FLOAT):
+            raise ValueError(f"Key-value string cannot start with operator '{kv_str[0]}'")
+        
+        # Pre-validation: check for multiple operators (except trailing dash)
+        kv_check = kv_str.rstrip('-')
+        operator_count = sum(kv_check.count(op) for op in KVParser.VALID_OPERATORS)
+        if operator_count > 1:
+            raise ValueError(f"Key-value string contains multiple operators: '{kv_str}'")
+        
+        # Pre-validation: check for operator immediately followed by dash (invalid pattern)
+        for kvtype in KVParser.VALID_OPERATORS:
+            if kvtype + '-' in kv_str:
+                raise ValueError(f"Invalid pattern '{kvtype}-': operator cannot be immediately followed by dash")
         
         # Check for removal format: key- or key${value}-
         if kv_str.endswith('-'):
             kv_str = kv_str[:-1]  # Remove trailing dash
             is_removal = True
+            
+            # Validate: after removing dash, string should not be empty
+            if not kv_str:
+                raise ValueError("Key cannot be empty in removal format")
         else:
             is_removal = False
         
@@ -879,28 +1052,63 @@ class KVParser:
                 key = kv_str[:idx]
                 value_str = kv_str[idx+1:]
                 
+                # Validate key format
                 if not key:
                     raise ValueError("Key cannot be empty")
+                if not KVParser._is_valid_key(key):
+                    raise ValueError(
+                        f"Invalid key '{key}': keys must contain only alphanumeric characters, "
+                        f"underscores, and hyphens"
+                    )
+                
+                # Validate value presence
                 if not value_str and not is_removal:
                     raise ValueError(f"Value cannot be empty for key '{key}'")
                 
+                # Validate that there are no extra operators in value
+                for other_op in KVParser.VALID_OPERATORS:
+                    if other_op in value_str:
+                        raise ValueError(
+                            f"Value for key '{key}' contains invalid operator '{other_op}': "
+                            f"'{value_str}'"
+                        )
+                
                 # Convert value to appropriate type
                 if kvtype == KVParser.TYPE_STRING:
+                    # String values can be empty in removal mode
                     value = value_str if value_str else None
                 elif kvtype == KVParser.TYPE_INTEGER:
                     if value_str:
+                        # Check for leading zeros (optional validation)
+                        if value_str.startswith('0') and len(value_str) > 1:
+                            raise ValueError(
+                                f"Invalid integer value '{value_str}' for key '{key}': "
+                                f"leading zeros are not allowed"
+                            )
                         try:
                             value = int(value_str)
                         except ValueError:
-                            raise ValueError(f"Invalid integer value '{value_str}' for key '{key}'")
+                            raise ValueError(
+                                f"Invalid integer value '{value_str}' for key '{key}': "
+                                f"not a valid integer"
+                            )
                     else:
                         value = None
                 elif kvtype == KVParser.TYPE_FLOAT:
                     if value_str:
                         try:
                             value = float(value_str)
+                            # Check for special float values if needed
+                            if value_str.lower() in ('inf', '-inf', 'nan'):
+                                raise ValueError(
+                                    f"Invalid float value '{value_str}' for key '{key}': "
+                                    f"special values (inf, nan) are not allowed"
+                                )
                         except ValueError:
-                            raise ValueError(f"Invalid float value '{value_str}' for key '{key}'")
+                            raise ValueError(
+                                f"Invalid float value '{value_str}' for key '{key}': "
+                                f"not a valid float"
+                            )
                     else:
                         value = None
                 
@@ -909,14 +1117,37 @@ class KVParser:
         # Check for kv mode removal (key-)
         if is_removal:
             if not kv_str:
-                raise ValueError("Key cannot be empty")
+                raise ValueError("Key cannot be empty in removal format")
+            if not self._is_valid_key(kv_str):
+                raise ValueError(
+                    f"Invalid key '{kv_str}': keys must contain only alphanumeric characters, "
+                    f"underscores, and hyphens"
+                )
             return (kv_str, None, '-', None)
         
+        # No operator found
         raise ValueError(
             f"Invalid key-value format: '{kv_str}'\n"
             f"Expected: '{{key}}${{string}}', '{{key}}#{{int}}', or '{{key}}%{{float}}'\n"
-            f"For removal: '{{key}}-' (kv mode) or '{{key}}${{val}}-' (kmv mode)"
+            f"For removal: '{{key}}-' (kv mode) or '{{key}}${{val}}-' (kmv mode)\n"
+            f"Keys must contain only alphanumeric characters, underscores, and hyphens"
         )
+    
+    @staticmethod
+    def _is_valid_key(key: str) -> bool:
+        """
+        Validate that a key conforms to allowed format.
+        
+        Args:
+            key: Key string to validate
+            
+        Returns:
+            True if key is valid, False otherwise
+        """
+        if not key:
+            return False
+        # Allow alphanumeric, underscores, and hyphens
+        return all(c.isalnum() or c in ('_', '-') for c in key)
     
     @staticmethod
     def parse_kv_list(kv_list: List[str]) -> List[tuple]:
@@ -1051,7 +1282,7 @@ class IncidentFileStorage:
         updates_dir = self.updates_dir / incident_id
         updates_dir.mkdir(parents=True, exist_ok=True)
         return updates_dir
-
+            
     def save_incident(self, incident: Incident):
         """Save incident to Markdown file."""
         path = self._get_incident_path(incident.id)
@@ -1886,9 +2117,9 @@ class IncidentManager:
         if not self.db_root.exists():
             raise RuntimeError(f"Incident database not found: {self.db_root}")
         
-        # 'self.config = IncidentConfig(self.db_root)
+        self.storage = IncidentFileStorage(self.db_root)
+        self.index_db = IncidentIndexDatabase(self.db_root / "aver.db")
     
-
     def create_incident(
         self,
         title: str,
@@ -1901,6 +2132,7 @@ class IncidentManager:
         kv_multi: Optional[List[str]] = None,
     ) -> str:
         """Create new incident with optional KV data."""
+        user_config = DatabaseDiscovery.get_user_config()
         incident_id = IDGenerator.generate_incident_id()
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
@@ -1945,7 +2177,7 @@ class IncidentManager:
             id=incident_id,
             title=title,
             created_at=now,
-            created_by=self.user_identity.handle,
+            created_by=user_config["user"]["handle"],
             severity=severity,
             status="open",
             tags=tags or [],
@@ -2156,6 +2388,8 @@ class IncidentManager:
         if not self.storage.load_incident(incident_id):
             raise RuntimeError(f"Incident {incident_id} not found")
     
+        user_config = DatabaseDiscovery.get_user_config()
+        
         # Determine message source
         final_message = None
     
@@ -2224,7 +2458,7 @@ class IncidentManager:
             id="auto",
             incident_id=incident_id,
             timestamp=timestamp,
-            author=self.user_identity.handle,
+            author=user_config.handle,
             message=final_message,
             kv_strings=update_kv_strings if update_kv_strings else None,
             kv_integers=update_kv_integers if update_kv_integers else None,
@@ -2255,7 +2489,7 @@ class IncidentCLI:
 
     def __init__(self):
         self.parser = argparse.ArgumentParser(
-            description="Incident Manager - Distributed incident tracking",
+            description="aver: a verified knowledge tracking tool",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
@@ -2291,7 +2525,7 @@ class IncidentCLI:
         # init
         init_parser = self.subparsers.add_parser(
             "init",
-            help="Initialize incident database",
+            help="Initialize database",
         )
         self._add_common_args(init_parser)
     
@@ -2314,7 +2548,7 @@ class IncidentCLI:
             "set-editor",
             help="Set user's preferred editor",
             description=(
-                "Set the editor that Incident Manager uses when opening an editor.\n"
+                "Set the editor that aver uses when opening an editor.\n"
                 "This is a user-global setting stored in ~/.config/aver/user.toml\n"
                 "Takes precedence over the EDITOR environment variable."
             )
@@ -2337,27 +2571,28 @@ class IncidentCLI:
             action="store_true",
             help="Bypass git repository boundary checks",
         )
-        create_parser.add_argument("--title", required=True, help="Incident title")
+        create_parser.add_argument("--title", required=True, help="Report title")
         create_parser.add_argument(
             "--severity",
             choices=["low", "medium", "high", "critical"],
             default="medium",
-            help="Incident severity",
+            help="Report severity",
         )
         create_parser.add_argument(
             "--set-tags",
             nargs="*",
             default=[],
+            dest="tags",
             help="Tags (space-separated)",
         )
         create_parser.add_argument(
-            "-kv",
+            "--kv",
             action="append",
             dest="kv_single",
             help="Single-value key-value data (replaces existing): 'key$value', 'key#123', 'key%1.5'",
         )
         create_parser.add_argument(
-            "-kmv",
+            "--kmv",
             action="append",
             dest="kv_multi",
             help="Multi-value key-value data (adds to existing): 'key$value', 'key#123', 'key%1.5'",
@@ -2366,10 +2601,12 @@ class IncidentCLI:
             "--assignees",
             nargs="*",
             default=[],
+            dest="assignees",
             help="Assignees (space-separated)",
         )
         create_parser.add_argument(
             "--description",
+            dest="description",
             help="Detailed description",
         )
     
@@ -2486,7 +2723,7 @@ class IncidentCLI:
             help="View all notes in a record",
         )
         self._add_common_args(get_updates_parser)
-        get_updates_parser.add_argument("record_id", help="Incident ID")
+        get_updates_parser.add_argument("record_id", help="Report ID")
     
         # reindex
         reindex_parser = self.subparsers.add_parser(
@@ -2563,7 +2800,7 @@ class IncidentCLI:
         # Enforce repo boundary
         if not DatabaseDiscovery.enforce_repo_boundary(db_root, override=getattr(args, 'override_repo_boundary', False)):
             print(
-                f"Error: Incident database at {db_root} is outside the current git repository.\n"
+                f"Error: aver database at {db_root} is outside the current git repository.\n"
                 "Use --override-repo-boundary to bypass this check.",
                 file=sys.stderr,
             )
@@ -2575,9 +2812,9 @@ class IncidentCLI:
         storage = IncidentFileStorage(db_root)
         index_db = IncidentIndexDatabase(db_root / "aver.db")
 
-        print(f"✓ Incident database initialized at {db_root}")
-        print(f"  Incidents: {storage.incidents_dir}")
-        print(f"  Updates: {storage.updates_dir}")
+        print(f"✓ Aver database initialized at {db_root}")
+        print(f"  Reports: {storage.incidents_dir}")
+        print(f"  Notes: {storage.updates_dir}")
         print(f"  Index: {db_root / 'aver.db'}")
         print(f"  Config: {db_root / 'config.toml'}")
 
