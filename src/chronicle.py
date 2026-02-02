@@ -2298,7 +2298,7 @@ class IncidentCLI:
         # config
         config_parser = self.subparsers.add_parser(
             "config",
-            help="Manage configuration",
+            help="Manage user configuration",
         )
         self._add_common_args(config_parser)
         config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
@@ -2328,8 +2328,8 @@ class IncidentCLI:
     
         # create
         create_parser = self.subparsers.add_parser(
-            "create",
-            help="Create new incident",
+            "new",
+            help="Create new record",
         )
         self._add_common_args(create_parser)
         create_parser.add_argument(
@@ -2345,7 +2345,7 @@ class IncidentCLI:
             help="Incident severity",
         )
         create_parser.add_argument(
-            "--tags",
+            "--set-tags",
             nargs="*",
             default=[],
             help="Tags (space-separated)",
@@ -2375,16 +2375,16 @@ class IncidentCLI:
     
         # get
         get_parser = self.subparsers.add_parser(
-            "get",
-            help="View incident details",
+            "view",
+            help="View record details",
         )
         self._add_common_args(get_parser)
-        get_parser.add_argument("incident_id", help="Incident ID")
+        get_parser.add_argument("record_id", help="Record ID")
     
         # list
         list_parser = self.subparsers.add_parser(
             "list",
-            help="List incidents",
+            help="List records",
         )
         self._add_common_args(list_parser)
         list_parser.add_argument(
@@ -2414,7 +2414,7 @@ class IncidentCLI:
             "--limit",
             type=int,
             default=50,
-            help="Maximum incidents to show",
+            help="Maximum records to show",
         )
         list_parser.add_argument(
             "--tag",
@@ -2426,10 +2426,10 @@ class IncidentCLI:
         # update
         update_parser = self.subparsers.add_parser(
             "update",
-            help="Update incident status",
+            help="Update record",
         )
         self._add_common_args(update_parser)
-        update_parser.add_argument("incident_id", help="Incident ID")
+        update_parser.add_argument("record_id", help="Record ID")
         update_parser.add_argument(
             "--status",
             required=True,
@@ -2451,42 +2451,42 @@ class IncidentCLI:
     
         # add-update
         add_update_parser = self.subparsers.add_parser(
-            "add-update",
-            help="Add update to incident (message > STDIN > editor)",
+            "note",
+            help="Add a note to a record (message > STDIN > editor)",
             description=(
-                "Add update to incident. Priority:\n"
+                "Add note to record. Priority:\n"
                 "  1. --message flag (explicit message)\n"
                 "  2. STDIN (if piped)\n"
                 "  3. Editor (if STDIN unavailable)"
             ),
         )
         self._add_common_args(add_update_parser)
-        add_update_parser.add_argument("incident_id", help="Incident ID")
+        add_update_parser.add_argument("record_id", help="Record ID")
         add_update_parser.add_argument(
             "--message",
-            help="Update message",
+            help="text of note",
         )
         add_update_parser.add_argument(
             "-kv",
             action="append",
             dest="kv_single",
-            help="Single-value KV data to apply to incident",
+            help="Single-value KV data to apply to note (also updates record)",
         )
         add_update_parser.add_argument(
             "-kmv",
             action="append",
             dest="kv_multi",
-            help="Multi-value KV data to apply to incident",
+            help="Multi-value KV data to apply to note (also updates record): 'key$value' or 'key$value-' to remove specific value",
         )
 
     
         # get-updates
         get_updates_parser = self.subparsers.add_parser(
-            "get-updates",
-            help="View all updates for an incident",
+            "get-notes",
+            help="View all notes in a record",
         )
         self._add_common_args(get_updates_parser)
-        get_updates_parser.add_argument("incident_id", help="Incident ID")
+        get_updates_parser.add_argument("record_id", help="Incident ID")
     
         # reindex
         reindex_parser = self.subparsers.add_parser(
@@ -2503,8 +2503,8 @@ class IncidentCLI:
 
         # list-databases
         list_databases_parser = self.subparsers.add_parser(
-            "list-databases",
-            help="Show all available incident databases",
+            "list-chronicles",
+            help="Show all available chronicles",
         )
         list_databases_parser.set_defaults(func=self._cmd_list_databases)
     
@@ -2518,21 +2518,21 @@ class IncidentCLI:
                 self._cmd_init(parsed)
             elif parsed.command == "config":
                 self._cmd_config(parsed)
-            elif parsed.command == "create":
+            elif parsed.command == "new":
                 self._cmd_create(parsed)
-            elif parsed.command == "get":
+            elif parsed.command == "view":
                 self._cmd_get(parsed)
             elif parsed.command == "list":
                 self._cmd_list(parsed)
             elif parsed.command == "update":
                 self._cmd_update(parsed)
-            elif parsed.command == "add-update":
+            elif parsed.command == "add-note":
                 self._cmd_add_update(parsed)
-            elif parsed.command == "get-updates":
+            elif parsed.command == "get-notes":
                 self._cmd_get_updates(parsed)
             elif parsed.command == "reindex":
                 self._cmd_reindex(parsed)
-            elif parsed.command == "list-databases":
+            elif parsed.command == "list-chronicles":
                 self._cmd_list_databases(parsed)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
