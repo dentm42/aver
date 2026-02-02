@@ -214,6 +214,79 @@ class IncidentUpdate:
         if self.kv_floats:
             d["kv_floats"] = self.kv_floats
         return d
+        
+    def to_markdown(self) -> str:
+        """Convert update to Markdown with TOML header."""
+        
+        def dict_to_toml_inline(d):
+            """Convert dict to inline TOML table format."""
+            if not d:
+                return "{}"
+            items = []
+            for key, value in d.items():
+                if isinstance(value, str):
+                    items.append(f'{key} = "{value}"')
+                elif isinstance(value, (int, float)):
+                    items.append(f'{key} = {value}')
+                elif isinstance(value, list):
+                    # Handle list values
+                    formatted_values = [f'"{v}"' if isinstance(v, str) else str(v) for v in value]
+                    items.append(f'{key} = [{", ".join(formatted_values)}]')
+            return "{ " + ", ".join(items) + " }"
+        
+        toml_header = f"""+++
+id = "{self.id}"
+incident_id = "{self.incident_id}"
+timestamp = "{self.timestamp}"
+author = "{self.author}"
+kv_strings = {dict_to_toml_inline(self.kv_strings or {})}
+kv_integers = {dict_to_toml_inline(self.kv_integers or {})}
+kv_floats = {dict_to_toml_inline(self.kv_floats or {})}
++++
+
+"""
+        return toml_header + self.message
+
+    @classmethod
+    def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
+        """Parse update from Markdown with TOML header."""
+        # Split on +++ delimiter
+        parts = content.split("+++")
+        if len(parts) < 3:
+            raise ValueError("Invalid update file format")
+
+        toml_str = parts[1].strip()
+        message = parts[2].strip() if len(parts) > 2 else ""
+
+        try:
+            data = tomllib.loads(toml_str)
+        except Exception as e:
+            raise ValueError(f"Failed to parse TOML header: {e}")
+
+        # Parse KV data with type conversions
+        kv_strings = data.get("kv_strings", {})
+        kv_integers = {}
+        kv_floats = {}
+        
+        # Convert integer strings to integers
+        for key, values in data.get("kv_integers", {}).items():
+            kv_integers[key] = [int(v) if isinstance(v, str) else v for v in values]
+        
+        # Convert float strings to floats
+        for key, values in data.get("kv_floats", {}).items():
+            kv_floats[key] = [float(v) if isinstance(v, str) else v for v in values]
+
+        return cls(
+            id=data.get("id", update_id),
+            incident_id=data.get("incident_id", incident_id),
+            timestamp=data.get("timestamp", ""),
+            author=data.get("author", ""),
+            message=message if message else "",
+            kv_strings=kv_strings if kv_strings else None,
+            kv_integers=kv_integers if kv_integers else None,
+            kv_floats=kv_floats if kv_floats else None,
+        )
+
 
 # ============================================================================
 # ID Generation
@@ -1320,61 +1393,33 @@ class IncidentFileStorage:
         return sorted(incident_ids)
 
     def save_update(self, incident_id: str, update: IncidentUpdate):
+        """Save update to Markdown file with TOML header."""
         updates_dir = self._get_updates_dir(incident_id)
         filename = IDGenerator.generate_update_filename()
         update_file = updates_dir / filename
 
-        content = f"""# Update
-
-**Author:** {update.author}  
-**Timestamp:** {update.timestamp}
-
----
-
-{update.message}
-"""
+        content = update.to_markdown()
         update_file.write_text(content)
+    
 
     def load_updates(self, incident_id: str) -> List[IncidentUpdate]:
         """Load all updates for incident."""
         updates_dir = self._get_updates_dir(incident_id)
         updates = []
-        
+    
         for update_file in sorted(updates_dir.glob("*.md")):
             try:
                 update_id = update_file.stem
                 with open(update_file, "r") as f:
                     content = f.read()
-                
-                # Parse update file
-                lines = content.split("\n")
-                author = None
-                timestamp = None
-                message_start = None
-                
-                for i, line in enumerate(lines):
-                    if line.startswith("**Author:**"):
-                        author = line.replace("**Author:**", "").strip()
-                    elif line.startswith("**Timestamp:**"):
-                        timestamp = line.replace("**Timestamp:**", "").strip()
-                    elif line.strip() == "---":
-                        message_start = i + 1
-                        break
-                
-                if author and timestamp and message_start is not None:
-                    message = "\n".join(lines[message_start:]).strip()
-                    updates.append(IncidentUpdate(
-                        id=update_id,
-                        incident_id=incident_id,
-                        timestamp=timestamp,
-                        author=author,
-                        message=message,
-                    ))
+            
+                update = IncidentUpdate.from_markdown(content, update_id, incident_id)
+                updates.append(update)
             except Exception as e:
                 print(f"Warning: Failed to load update {update_file}: {e}", file=sys.stderr)
-        
+    
         return updates
-
+ 
 
 # ============================================================================
 # Index Database
@@ -2195,8 +2240,60 @@ class IncidentManager:
         # Update index
         self.index_db.index_incident(incident)
         self.index_db.index_kv_data(incident)
+        
+        # ========== NEW: Create initial update ==========
+        initial_message = self._format_initial_update(
+            title=title,
+            severity=severity,
+            assignees=assignees,
+            tags=tags,
+            description=description,
+        )
+        
+        initial_update = IncidentUpdate(
+            id="auto",
+            incident_id=incident_id,
+            timestamp=now,
+            author=user_config["user"]["handle"],
+            message=initial_message,
+            kv_strings=kv_strings if kv_strings else None,
+            kv_integers=kv_integers if kv_integers else None,
+            kv_floats=kv_floats if kv_floats else None,
+        )
+        
+        self.storage.save_update(incident_id, initial_update)
+        self.index_db.index_update(initial_update)
+        # ===============================================
     
         return incident_id
+    
+    def _format_initial_update(
+        self,
+        title: str,
+        severity: str,
+        assignees: Optional[List[str]],
+        tags: Optional[List[str]],
+        description: Optional[str],
+    ) -> str:
+        """Format the initial update message with incident details."""
+        lines = ["## Incident Created"]
+        lines.append("")
+        lines.append(f"**Severity:** {severity}")
+        
+        if assignees:
+            lines.append(f"**Assignees:** {', '.join(assignees)}")
+        
+        if tags:
+            lines.append(f"**Tags:** {', '.join(tags)}")
+        
+        if description:
+            lines.append("")
+            lines.append("### Description")
+            lines.append("")
+            lines.append(description)
+        
+        return "\n".join(lines)
+
 
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
