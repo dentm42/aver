@@ -1,11 +1,11 @@
-# chronicle_tests.py
+# aver_tests.py
 """
 Comprehensive test suite for Incident Manager using pytest and pytest-mock.
 
 Usage:
-    pytest chronicle_tests.py -v
-    pytest chronicle_tests.py --cov=chronicle
-    pytest chronicle_tests.py -k "test_create" -v
+    pytest aver_tests.py -v
+    pytest aver_tests.py --cov=aver
+    pytest aver_tests.py -k "test_create" -v
 """
 
 import pytest
@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch, MagicMock, call
 import sys
 
 # Import the modules to test (adjust import paths as needed)
-from chronicle import (
+from aver import (
     Incident, IncidentUpdate, IncidentFileStorage, IncidentIndexDatabase,
     IncidentManager, IncidentCLI, IDGenerator, KVParser,
     DatabaseDiscovery
@@ -33,7 +33,7 @@ from chronicle import (
 @pytest.fixture
 def temp_db_root(tmp_path):
     """Temporary database root directory."""
-    db_root = tmp_path / ".incident-manager"
+    db_root = tmp_path / ".aver"
     db_root.mkdir()
     return db_root
 
@@ -47,7 +47,7 @@ def storage(temp_db_root):
 @pytest.fixture
 def index_db(temp_db_root):
     """IncidentIndexDatabase instance with temporary root."""
-    db_path = temp_db_root / "incidents.db"
+    db_path = temp_db_root / "aver.db"
     return IncidentIndexDatabase(db_path)
 
 
@@ -106,7 +106,7 @@ def manager_with_mocks(temp_db_root, mock_user_identity, mocker):
     manager = IncidentManager(explicit_location=temp_db_root)
     manager.user_identity = mock_user_identity
     manager.storage = IncidentFileStorage(temp_db_root)
-    manager.index_db = IncidentIndexDatabase(temp_db_root / "incidents.db")
+    manager.index_db = IncidentIndexDatabase(temp_db_root / "aver.db")
     
     return manager
 
@@ -131,7 +131,7 @@ class TestIncidentFileStorage:
         path = storage._get_incident_path("INC-123")
         
         assert path.name == "INC-123.md"
-        assert "incidents" in str(path)
+        assert "records" in str(path)
 
     def test_save_incident(self, storage, sample_incident, mocker):
         """Should save incident as Markdown file."""
@@ -150,7 +150,7 @@ class TestIncidentFileStorage:
         # Mock save and load methods
         mocker.patch.object(sample_incident, 'to_markdown',
                            return_value="# INC-001")
-        mocker.patch('chronicle.Incident.from_markdown',
+        mocker.patch('aver.Incident.from_markdown',
                      return_value=sample_incident)
         
         storage.save_incident(sample_incident)
@@ -194,7 +194,7 @@ class TestIncidentFileStorage:
 
     def test_save_update(self, storage, sample_update, mocker):
         """Should save update as Markdown file."""
-        mocker.patch('chronicle.IDGenerator.generate_update_filename',
+        mocker.patch('aver.IDGenerator.generate_update_filename',
                      return_value="update_001.md")
         
         storage.save_update("INC-001", sample_update)
@@ -206,7 +206,7 @@ class TestIncidentFileStorage:
 
     def test_load_updates(self, storage, sample_update, mocker):
         """Should load all updates for incident."""
-        mocker.patch('chronicle.IDGenerator.generate_update_filename',
+        mocker.patch('aver.IDGenerator.generate_update_filename',
                      return_value="update_001.md")
         
         storage.save_update("INC-001", sample_update)
@@ -232,7 +232,7 @@ class TestIncidentIndexDatabase:
 
     def test_initialization_creates_schema(self, temp_db_root):
         """Should create database schema on initialization."""
-        db_path = temp_db_root / "incidents.db"
+        db_path = temp_db_root / "aver.db"
         index_db = IncidentIndexDatabase(db_path)
         
         assert db_path.exists()
@@ -562,7 +562,7 @@ class TestIncidentManager:
 
     def test_create_incident_with_kv_single(self, manager_with_mocks, mocker):
         """Should create incident with single-value KV data."""
-        mocker.patch('chronicle.KVParser.parse_kv_list',
+        mocker.patch('aver.KVParser.parse_kv_list',
                     return_value=[("env", KVParser.TYPE_STRING, "+", "prod")])
         
         incident_id = manager_with_mocks.create_incident(
@@ -575,7 +575,7 @@ class TestIncidentManager:
 
     def test_create_incident_with_kv_multi(self, manager_with_mocks, mocker):
         """Should create incident with multi-value KV data."""
-        mocker.patch('chronicle.KVParser.parse_kv_list',
+        mocker.patch('aver.KVParser.parse_kv_list',
                     return_value=[
                         ("service", KVParser.TYPE_STRING, "+", "api"),
                         ("service", KVParser.TYPE_STRING, "+", "db"),
@@ -659,7 +659,7 @@ class TestIncidentManager:
             title="Test Incident",
         )
         
-        mocker.patch('chronicle.KVParser.parse_kv_list',
+        mocker.patch('aver.KVParser.parse_kv_list',
                     return_value=[("component", KVParser.TYPE_STRING, "+", "api")])
         
         manager_with_mocks.update_incident_kv(
@@ -688,9 +688,9 @@ class TestIncidentManager:
 
     def test_add_update_with_stdin(self, manager_with_mocks, mocker):
         """Should add update from STDIN."""
-        mocker.patch('chronicle.StdinHandler.has_stdin_data',
+        mocker.patch('aver.StdinHandler.has_stdin_data',
                     return_value=True)
-        mocker.patch('chronicle.StdinHandler.read_stdin_with_timeout',
+        mocker.patch('aver.StdinHandler.read_stdin_with_timeout',
                     return_value="Update from STDIN")
         
         incident_id = manager_with_mocks.create_incident(
@@ -706,7 +706,7 @@ class TestIncidentManager:
 
     def test_add_update_with_editor(self, manager_with_mocks, mocker):
         """Should add update from editor."""
-        mocker.patch('chronicle.EditorConfig.launch_editor',
+        mocker.patch('aver.EditorConfig.launch_editor',
                     return_value="# Update from editor\nFixed the issue")
         
         incident_id = manager_with_mocks.create_incident(
@@ -778,8 +778,8 @@ class TestIncidentCLI:
 
     def test_cmd_init(self, cli, temp_db_root, mocker):
         """Should initialize database directory."""
-        mocker.patch('chronicle.subprocess.run')
-        mocker.patch('chronicle.DatabaseDiscovery.enforce_repo_boundary',
+        mocker.patch('aver.subprocess.run')
+        mocker.patch('aver.DatabaseDiscovery.enforce_repo_boundary',
                     return_value=True)
         mocker.patch('builtins.print')
         
@@ -790,14 +790,14 @@ class TestIncidentCLI:
         cli._cmd_init(args)
         
         # Verify directories were created
-        assert (temp_db_root / "incidents").exists()
+        assert (temp_db_root / "records").exists()
         assert (temp_db_root / "updates").exists()
 
     def test_cmd_config_set_user(self, cli, mocker):
         """Should set user configuration."""
-        mocker.patch('chronicle.DatabaseDiscovery.get_user_config',
+        mocker.patch('aver.DatabaseDiscovery.get_user_config',
                     return_value={})
-        mocker.patch('chronicle.DatabaseDiscovery.set_user_config')
+        mocker.patch('aver.DatabaseDiscovery.set_user_config')
         mocker.patch('builtins.print')
         
         args = Mock()
@@ -812,11 +812,11 @@ class TestIncidentCLI:
 
     def test_cmd_config_set_editor(self, cli, mocker):
         """Should set editor configuration."""
-        mocker.patch('chronicle.EditorConfig._editor_exists',
+        mocker.patch('aver.EditorConfig._editor_exists',
                     return_value=True)
-        mocker.patch('chronicle.DatabaseDiscovery.get_user_config',
+        mocker.patch('aver.DatabaseDiscovery.get_user_config',
                     return_value={})
-        mocker.patch('chronicle.DatabaseDiscovery.set_user_config')
+        mocker.patch('aver.DatabaseDiscovery.set_user_config')
         mocker.patch('builtins.print')
         
         args = Mock()
@@ -906,7 +906,7 @@ class TestIncidentCLI:
         )
         
         mocker.patch.object(cli, '_get_manager', return_value=manager_with_mocks)
-        mocker.patch('chronicle.StdinHandler.has_stdin_data',
+        mocker.patch('aver.StdinHandler.has_stdin_data',
                     return_value=False)
         mocker.patch('builtins.print')
         
@@ -947,7 +947,7 @@ class TestIncidentCLI:
 
     def test_cmd_list_databases(self, cli, mocker):
         """Should list available databases."""
-        mocker.patch('chronicle.DatabaseDiscovery.find_all_databases',
+        mocker.patch('aver.DatabaseDiscovery.find_all_databases',
                     return_value={"db1": {"path": "/path/to/db", "source": "contextual"}})
         mocker.patch('builtins.print')
         

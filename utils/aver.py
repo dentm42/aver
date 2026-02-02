@@ -16,7 +16,7 @@ import secrets
 import time
 
 try:gle-file deployment.
-Stores incidents as Markdown files with TOML headers.
+Stores records and updates as Markdown files with TOML headers.
 Uses SQLite for indexing and searching only.
 """
 
@@ -264,19 +264,19 @@ class DatabaseDiscovery:
 
     @staticmethod
     def get_user_config_path() -> Path:
-        """Return the path to the global user configuration file (~/.config/incident-manager/user.toml)."""
-        config_dir = Path.home() / ".config" / "incident-manager"
+        """Return the path to the global user configuration file (~/.config/aver/user.toml)."""
+        config_dir = Path.home() / ".config" / "aver"
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "user.toml"
 
     @staticmethod
     def get_project_config_path(db_root: Path) -> Path:
-        """Return the path to the project config file (.incident-manager/config.toml)."""
+        """Return the path to the project config file (.aver/config.toml)."""
         return db_root / "config.toml"
 
     @staticmethod
     def get_user_config() -> dict:
-        """Load the global user configuration from ~/.config/incident-manager/user.toml."""
+        """Load the global user configuration from ~/.config/aver/user.toml."""
         config_path = DatabaseDiscovery.get_user_config_path()
         if not config_path.exists():
             return {}
@@ -302,7 +302,7 @@ class DatabaseDiscovery:
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
-        """Load the project configuration from .incident-manager/config.toml."""
+        """Load the project configuration from .aver/config.toml."""
         config_path = DatabaseDiscovery.get_project_config_path(db_root)
         if not config_path.exists():
             return {}
@@ -338,7 +338,7 @@ class DatabaseDiscovery:
         1. Explicit location (if provided)
         2. Git repository at/above CWD
         3. User config [locations] matching CWD (contextually relevant)
-        4. Parent directories above CWD with .incident-manager
+        4. Parent directories above CWD with .aver
         5. All other user config [locations] entries (secondary options)
     
         Returns:
@@ -366,7 +366,7 @@ class DatabaseDiscovery:
                 check=True,
             )
             repo_root = Path(result.stdout.strip()).resolve()
-            candidate = repo_root / ".incident-manager"
+            candidate = repo_root / ".aver"
             if candidate.exists():
                 candidates['git_repo'] = {
                     'path': candidate,
@@ -390,7 +390,7 @@ class DatabaseDiscovery:
         # 4) Parent directory traversal (contextually relevant)
         current = cwd
         while True:
-            candidate = current / ".incident-manager"
+            candidate = current / ".aver"
             if candidate.exists():
                 candidates['parent_dir'] = {
                     'path': candidate.resolve(),
@@ -490,7 +490,7 @@ class DatabaseDiscovery:
         Priority order:
         1. Git repository (if in a git repo, that's usually what you want)
         2. User config [locations] matching CWD (closest contextual match)
-        3. Parent directory .incident-manager
+        3. Parent directory .aver
         4. First available [locations] entry (fallback)
         
         Args:
@@ -564,9 +564,9 @@ class DatabaseDiscovery:
 
         Priority:
         1) Explicit --location
-        2) Git repository root (.incident-manager)
+        2) Git repository root (.aver)
         3) User config [locations] (longest matching parent)
-        4) Parent directories search for .incident-manager (closest wins)
+        4) Parent directories search for .aver (closest wins)
         5) None if not found
 
         Args:
@@ -594,7 +594,7 @@ class DatabaseDiscovery:
                 check=True,
             )
             repo_root = Path(result.stdout.strip()).resolve()
-            candidate = repo_root / ".incident-manager"
+            candidate = repo_root / ".aver"
             if candidate.exists():
                 if verbose:
                     print(f"[DatabaseDiscovery] Using git repo location: {candidate}")
@@ -612,7 +612,7 @@ class DatabaseDiscovery:
         # 4) Parent directory search
         current = cwd
         while True:
-            candidate = current / ".incident-manager"
+            candidate = current / ".aver"
             if candidate.exists():
                 if verbose:
                     print(f"[DatabaseDiscovery] Using parent directory location: {candidate}")
@@ -1032,10 +1032,10 @@ class IncidentFileStorage:
         """Initialize file storage.
         
         Args:
-            storage_root: Root directory for incident files (.incident-manager)
+            storage_root: Root directory for incident files (.aver)
         """
         self.storage_root = storage_root
-        self.incidents_dir = storage_root / "incidents"
+        self.incidents_dir = storage_root / "records"
         self.updates_dir = storage_root / "updates"
         
         # Create directories
@@ -1813,7 +1813,7 @@ class IncidentReindexer:
         incident_ids = self.storage.list_incident_files()
         
         if verbose:
-            print(f"Reindexing {len(incident_ids)} incidents...")
+            print(f"Reindexing {len(incident_ids)} records...")
         
         indexed_count = 0
         for incident_id in incident_ids:
@@ -1832,7 +1832,7 @@ class IncidentReindexer:
             self.index_db.index_update(update)
 
         if verbose:
-            print(f"✓ Reindexed {indexed_count} incidents")
+            print(f"✓ Reindexed {indexed_count} records")
         
         return indexed_count
 
@@ -2315,7 +2315,7 @@ class IncidentCLI:
             help="Set user's preferred editor",
             description=(
                 "Set the editor that Incident Manager uses when opening an editor.\n"
-                "This is a user-global setting stored in ~/.config/incident-manager/user.toml\n"
+                "This is a user-global setting stored in ~/.config/aver/user.toml\n"
                 "Takes precedence over the EDITOR environment variable."
             )
         )
@@ -2503,8 +2503,8 @@ class IncidentCLI:
 
         # list-databases
         list_databases_parser = self.subparsers.add_parser(
-            "list-chronicles",
-            help="Show all available chronicles",
+            "list-databases",
+            help="Show all available databases",
         )
         list_databases_parser.set_defaults(func=self._cmd_list_databases)
     
@@ -2532,7 +2532,7 @@ class IncidentCLI:
                 self._cmd_get_updates(parsed)
             elif parsed.command == "reindex":
                 self._cmd_reindex(parsed)
-            elif parsed.command == "list-chronicles":
+            elif parsed.command == "list-databases":
                 self._cmd_list_databases(parsed)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -2556,9 +2556,9 @@ class IncidentCLI:
                 )
 
                 repo_root = Path(result.stdout.strip())
-                db_root = repo_root / ".incident-manager"
+                db_root = repo_root / ".aver"
             except subprocess.CalledProcessError:
-                db_root = Path.cwd() / ".incident-manager"
+                db_root = Path.cwd() / ".aver"
 
         # Enforce repo boundary
         if not DatabaseDiscovery.enforce_repo_boundary(db_root, override=getattr(args, 'override_repo_boundary', False)):
@@ -2573,12 +2573,12 @@ class IncidentCLI:
         
         # Initialize storage and index
         storage = IncidentFileStorage(db_root)
-        index_db = IncidentIndexDatabase(db_root / "incidents.db")
+        index_db = IncidentIndexDatabase(db_root / "aver.db")
 
         print(f"✓ Incident database initialized at {db_root}")
         print(f"  Incidents: {storage.incidents_dir}")
         print(f"  Updates: {storage.updates_dir}")
-        print(f"  Index: {db_root / 'incidents.db'}")
+        print(f"  Index: {db_root / 'aver.db'}")
         print(f"  Config: {db_root / 'config.toml'}")
 
     def _cmd_config(self, args):
@@ -2692,7 +2692,7 @@ class IncidentCLI:
             sys.exit(1)
 
         if not incidents:
-            print("No incidents found")
+            print("No records found")
             return
 
         # Print table header
@@ -2782,7 +2782,7 @@ class IncidentCLI:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db)
             count = reindexer.reindex_all(verbose=args.verbose)
-            print(f"✓ Successfully reindexed {count} incidents")
+            print(f"✓ Successfully reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

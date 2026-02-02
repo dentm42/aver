@@ -1,65 +1,55 @@
-Oh we are absolutely doing this. This is *prime README energy*.
-Let’s make it fun, but still clearly communicate what the tool actually does.
+# aver: A Verified Knowledge Tracking Tool
+## A Quest for the Perfect Record
 
----
+In an age of crumbling servers, forgotten spreadsheets, and SaaS subscriptions that devoured kingdoms… a fellowship arose in search of a better way.
 
-# **The Chronicle of the Everlasting Record**
-
-### *A Quest for the Perfect Tracking Tool*
-
-> *In an age of crumbling servers, forgotten spreadsheets, and SaaS subscriptions that devoured kingdoms… a fellowship arose in search of a better way.*
-
----
-
-## Prologue: The Problem in the Realm
+## **Prologue: The Problem in the Realm**
 
 Across the lands, many orders struggled:
 
-* Records lost to dead platforms
-* Knowledge buried in email tombs
-* Notes scattered like ashes in the wind
-* Tools that required mighty infrastructure beasts just to stay alive
+- Records lost to dead platforms
+- Knowledge buried in email tombs
+- Notes scattered like ashes in the wind
+- Tools that required mighty infrastructure beasts just to stay alive
 
 The sages all agreed:
 
-> “There must be a way to keep structured records…
+> "There must be a way to keep structured records…
 > With history… with search…
-> Without summoning a server daemon.”
+> Without summoning a server daemon."
 
 Thus began the quest.
 
----
+## **The Fellowship of Seekers**
 
-## The Fellowship of Trackers
+Each hero came from a different discipline, seeking the same tool:
 
-Each hero came from a different discipline, seeking the same artifact:
-
-> **A system to track evolving knowledge over time — safely, portably, and without dark magic.**
+A system to verify and track evolving knowledge over time — safely, portably, and without dark magic.
 
 ---
 
-### Lyra Quillshade — *Bard of the Publishing Guild*
+### **Lyra Quillshade — Bard of the Publishing Guild**
 
-Lyra’s struggles were many:
+Lyra's struggles were many:
 
-* Manuscripts full of continuity errors
-* Fact-checking notes lost in margins
-* Editorial decisions trapped in comment threads
-* Versions of drafts scattered across realms
+- Manuscripts full of continuity errors
+- Fact-checking notes lost in margins
+- Editorial decisions trapped in comment threads
+- Versions of drafts scattered across realms
 
 She sought:
 
-> “A living ledger of story issues,
+> "A living ledger of story issues,
 > Where every note is remembered,
 > Every revision traced,
-> And nothing is locked in cursed proprietary scrolls.”
+> And nothing is locked in cursed proprietary scrolls."
 
-She found a system where each **Record** could be:
+She found a tool where each Record could be:
 
-* A continuity issue
-* A fact-check request
-* A layout problem
-* A rights and permissions question
+- A continuity issue
+- A fact-check request
+- A layout problem
+- A rights and permissions question
 
 Each tied to chapters, characters, and drafts — searchable forever.
 
@@ -67,80 +57,80 @@ Lyra wept (poetically).
 
 ---
 
-### Null Pointer — *Rogue Software Bounty Hunter*
+### **Null Pointer — Rogue Software Bounty Hunter**
 
 Null had hunted bugs in many kingdoms:
 
-* Ticket systems that required tribute (monthly billing cycles)
-* Platforms that vanished, taking issues with them
-* Tools that could not travel offline
-* Histories hidden behind glass dashboards
+- Ticket systems that required tribute (monthly billing cycles)
+- Platforms that vanished, taking issues with them
+- Tools that could not travel offline
+- Histories hidden behind glass dashboards
 
 Null wanted:
 
-> “Plain text. Full history. No gatekeepers.”
+> "Plain text. Full history. No gatekeepers."
 
 He found a tool where:
 
-* Every issue lived as a **file**
-* Every change was recorded in **Git history**
-* Search was fast, local, and rebuildable
-* No server dragon needed feeding
+- Every issue lived as a file
+- Every change was recorded in Git history
+- Search was fast, local, and rebuildable
+- No server dragon needed feeding
 
 Null nodded once. High praise.
 
 ---
 
-### Dr. Aria Voss — *Scientific Sorcerer of the Seventh Lab*
+### **Dr. Aria Voss — Scientific Sorcerer of the Seventh Lab**
 
 Aria tracked:
 
-* Experimental anomalies
-* Equipment misbehavior
-* Environmental drift
-* Observations that did not fit the model
+- Experimental anomalies
+- Equipment misbehavior
+- Environmental drift
+- Observations that did not fit the model
 
 Her previous tools were:
 
-* Spreadsheets of despair
-* Paper notebooks of entropy
-* Institutional systems that no one maintained
+- Spreadsheets of despair
+- Paper notebooks of entropy
+- Institutional systems that no one maintained
 
 She needed:
 
-> “A versioned, searchable lab logbook
-> That speaks both human and machine.”
+> "A versioned, searchable lab logbook
+> That speaks both human and machine."
 
 With structured metadata, she could now ask:
 
-* “Show all runs where temperature > 37°C”
-* “All anomalies involving centrifuge-3”
+- "Show all runs where temperature > 37°C"
+- "All anomalies involving centrifuge-3"
 
-Her lab notes became **queryable history**.
+Her lab notes became queryable history.
 
 The data spirits were appeased.
 
 ---
 
-### Toren Steelhand — *Field Engineer of the Outer Works*
+### **Toren Steelhand — Field Engineer of the Outer Works**
 
 Toren maintained:
 
-* Machines older than some empires
-* Equipment in places where the signal bars went to die
-* Logs written on clipboards and later forgotten
+- Machines older than some empires
+- Equipment in places where the signal bars went to die
+- Logs written on clipboards and later forgotten
 
 He required:
 
-> “A rugged log that works offline,
+> "A rugged log that works offline,
 > Syncs when it can,
-> And doesn’t demand a glowing web altar.”
+> And doesn't demand a glowing web altar."
 
 He found:
 
-* Records stored locally
-* Sync through Git when back in civilization
-* Structured fields for pressure, temperature, batch, and shift
+- Records stored locally
+- Sync through Git when back in civilization
+- Structured fields for pressure, temperature, batch, and shift
 
 For the first time, field notes and central history matched.
 
@@ -148,103 +138,102 @@ Toren approved with a single grunt.
 
 ---
 
-### Elarion the Infinite — *World-Building Deity & Dungeon Master*
+### **Elarion the Infinite — World-Building Deity & Dungeon Master**
 
 Elarion ruled:
 
-* A sprawling world
-* Hundreds of NPCs
-* Dozens of unresolved plot threads
-* Players who delighted in derailing destiny
+- A sprawling world
+- Hundreds of NPCs
+- Dozens of unresolved plot threads
+- Players who delighted in derailing destiny
 
 He lamented:
 
-> “I cannot remember what happened 14 sessions ago in the ruined city of Valemire.”
+> "I cannot remember what happened 14 sessions ago in the ruined city of Valemire."
 
-With the system, each **Record** became:
+With the tool, each Record became:
 
-* A quest
-* An NPC arc
-* A world event
-* A faction scheme
+- A quest
+- An NPC arc
+- A world event
+- A faction scheme
 
-Each session added **Notes**.
+Each session added Notes.
 
 He could now ask:
 
-* “All active quests in the Ashlands”
-* “NPCs currently hostile to the party”
-* “Plot threads untouched for 5 sessions”
+- "All active quests in the Ashlands"
+- "NPCs currently hostile to the party"
+- "Plot threads untouched for 5 sessions"
 
 Canon was preserved. Retcons were minimized. Chaos remained… but documented.
 
 ---
 
-## The Artifact They Discovered
+### **The Artifact They Discovered**
 
-At journey’s end, the fellowship uncovered not a cloud platform, nor a SaaS throne…
+At journey's end, the fellowship uncovered not a cloud platform, nor a SaaS throne…
 
 But something older. Simpler. Stronger.
 
-### ✨ The System of Everlasting Records
+✨ **aver: A Verified Knowledge Tracking Tool**
 
 A tool that provides:
 
-* **Plain-text records** (human-readable, future-proof)
-* **Structured metadata** (queryable, sortable)
-* **Full version history** (via Git)
-* **Fast local search** (via SQLite index)
-* **No required server**
-* **Rebuildable index from source files**
+- Plain-text records (human-readable, future-proof)
+- Structured metadata (queryable, sortable)
+- Full version history (via Git)
+- Fast local search (via SQLite index)
+- No required server
+- Rebuildable index from source files
 
 It does not replace your craft.
 
-It simply remembers everything for you.
+It simply verifies and remembers everything for you.
 
 ---
 
-## What This Tool Is
+## **What This Tool Is**
 
-> **A file-native system for tracking structured records with history and search.**
+A file-native system for tracking structured records with history and search.
 
 Used for:
 
-* Software issues
-* Research logs
-* Engineering deviations
-* Editorial tracking
-* Campaign lore
-* And any evolving body of knowledge that deserves to be remembered
+- Software issues
+- Research logs
+- Engineering deviations
+- Editorial tracking
+- Campaign lore
+- And any evolving body of knowledge that deserves to be verified and remembered
 
 ---
 
-## What It Is Not
+## **What It Is Not**
 
-* Not a real-time alerting system
-* Not a corporate workflow labyrinth
-* Not a dashboard empire
+- Not a real-time alerting system
+- Not a corporate workflow labyrinth
+- Not a dashboard empire
 
-It is a **chronicle**, not a command center.
+It is a verified record, not a command center.
 
 ---
 
-## Epilogue
+## **Epilogue**
 
 And so the heroes returned to their domains:
 
-The Bard with her manuscripts
-The Rogue with his bugs
-The Sorcerer with her experiments
-The Engineer with his machines
-The Deity with their world
+- The Bard with her manuscripts
+- The Rogue with his bugs
+- The Sorcerer with her experiments
+- The Engineer with his machines
+- The Deity with their world
 
 All carrying the same artifact.
 
 A simple truth, etched into plain text:
 
-> **What matters should be recorded.
+> What matters should be recorded.
 > What is recorded should be searchable.
-> What is searchable should endure.**
+> What is searchable should endure.
 
-**The Chronicle awaits your first entry.**
-
+**aver awaits your first entry.**

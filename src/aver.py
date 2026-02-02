@@ -2,8 +2,21 @@
 """
 Incident Manager - Distributed incident tracking for open-source projects
 
-Zero external dependencies. Single-file deployment.
-Stores incidents as Markdown files with TOML headers.
+Zero external dependencies. Sin
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+import select
+import secrets
+import time
+
+try:gle-file deployment.
+Stores records and updates as Markdown files with TOML headers.
 Uses SQLite for indexing and searching only.
 """
 
@@ -83,10 +96,30 @@ class Incident:
 
     def to_markdown(self) -> str:
         """Convert incident to Markdown with TOML header."""
-        kv_strings_json = json.dumps(self.kv_strings or {})
-        kv_integers_json = json.dumps(self.kv_integers or {})
-        kv_floats_json = json.dumps(self.kv_floats or {})
-        
+    
+        def dict_to_toml_inline(d):
+            """Convert dict to inline TOML table format."""
+            if not d:
+                return "{}"
+            items = []
+            for key, value in d.items():
+                if isinstance(value, str):
+                    items.append(f'{key} = "{value}"')
+                elif isinstance(value, (int, float)):
+                    items.append(f'{key} = {value}')
+                elif isinstance(value, list):
+                    # Handle list values
+                    formatted_values = [f'"{v}"' if isinstance(v, str) else str(v) for v in value]
+                    items.append(f'{key} = [{", ".join(formatted_values)}]')
+            return "{ " + ", ".join(items) + " }"
+    
+        def list_to_toml(lst):
+            """Convert list to TOML array format."""
+            if not lst:
+                return "[]"
+            formatted = [f'"{item}"' if isinstance(item, str) else str(item) for item in lst]
+            return "[" + ", ".join(formatted) + "]"
+    
         toml_header = f"""+++
 id = "{self.id}"
 title = "{self.title}"
@@ -94,12 +127,12 @@ created_at = "{self.created_at}"
 created_by = "{self.created_by}"
 severity = "{self.severity}"
 status = "{self.status}"
-tags = {json.dumps(self.tags)}
-assignees = {json.dumps(self.assignees)}
+tags = {list_to_toml(self.tags)}
+assignees = {list_to_toml(self.assignees)}
 updated_at = "{self.updated_at or self.created_at}"
-kv_strings = {kv_strings_json}
-kv_integers = {kv_integers_json}
-kv_floats = {kv_floats_json}
+kv_strings = {dict_to_toml_inline(self.kv_strings or {})}
+kv_integers = {dict_to_toml_inline(self.kv_integers or {})}
+kv_floats = {dict_to_toml_inline(self.kv_floats or {})}
 +++
 
 """
@@ -185,17 +218,37 @@ class IncidentUpdate:
 # ============================================================================
 
 class IDGenerator:
+
+    @staticmethod
+    def to_base36(num: int) -> str:
+        """Convert a positive integer to Base36 (0-9, A-Z)."""
+        if num < 0:
+            raise ValueError("Base36 conversion requires non-negative integer")
+ 
+        chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if num == 0:
+            return "0"
+
+        result = []
+        while num:
+            num, rem = divmod(num, 36)
+            result.append(chars[rem])
+        return "".join(reversed(result))
+    
     @staticmethod
     def generate_incident_id() -> str:
-        import hashlib
-        data = f"{time.time()}{os.urandom(8)}".encode()
-        return f"INC-{hashlib.sha256(data).hexdigest()[:8].upper()}"
+        """
+        Generate a distributed-safe incident ID based on epoch time.
+        Format: INC-<base36 epoch nanoseconds>
+        """
+        epoch_ns = time.time_ns()
+        return f"INC-{IDGenerator.to_base36(epoch_ns)}"
 
     @staticmethod
     def generate_update_filename() -> str:
         epoch_ns = time.time_ns()
-        rand = secrets.token_hex(3)
-        return f"{epoch_ns}-{rand}.md"
+        rand = secrets.token_hex(2)  # small entropy bump
+        return f"UPD-{IDGenerator.to_base36(epoch_ns)}-{rand}.md"
 
 # ============================================================================
 # Database Discovery & Configuration
@@ -211,19 +264,19 @@ class DatabaseDiscovery:
 
     @staticmethod
     def get_user_config_path() -> Path:
-        """Return the path to the global user configuration file (~/.config/incident-manager/user.toml)."""
-        config_dir = Path.home() / ".config" / "incident-manager"
+        """Return the path to the global user configuration file (~/.config/aver/user.toml)."""
+        config_dir = Path.home() / ".config" / "aver"
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "user.toml"
 
     @staticmethod
     def get_project_config_path(db_root: Path) -> Path:
-        """Return the path to the project config file (.incident-manager/config.toml)."""
+        """Return the path to the project config file (.aver/config.toml)."""
         return db_root / "config.toml"
 
     @staticmethod
     def get_user_config() -> dict:
-        """Load the global user configuration from ~/.config/incident-manager/user.toml."""
+        """Load the global user configuration from ~/.config/aver/user.toml."""
         config_path = DatabaseDiscovery.get_user_config_path()
         if not config_path.exists():
             return {}
@@ -249,7 +302,7 @@ class DatabaseDiscovery:
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
-        """Load the project configuration from .incident-manager/config.toml."""
+        """Load the project configuration from .aver/config.toml."""
         config_path = DatabaseDiscovery.get_project_config_path(db_root)
         if not config_path.exists():
             return {}
@@ -285,7 +338,7 @@ class DatabaseDiscovery:
         1. Explicit location (if provided)
         2. Git repository at/above CWD
         3. User config [locations] matching CWD (contextually relevant)
-        4. Parent directories above CWD with .incident-manager
+        4. Parent directories above CWD with .aver
         5. All other user config [locations] entries (secondary options)
     
         Returns:
@@ -313,7 +366,7 @@ class DatabaseDiscovery:
                 check=True,
             )
             repo_root = Path(result.stdout.strip()).resolve()
-            candidate = repo_root / ".incident-manager"
+            candidate = repo_root / ".aver"
             if candidate.exists():
                 candidates['git_repo'] = {
                     'path': candidate,
@@ -337,7 +390,7 @@ class DatabaseDiscovery:
         # 4) Parent directory traversal (contextually relevant)
         current = cwd
         while True:
-            candidate = current / ".incident-manager"
+            candidate = current / ".aver"
             if candidate.exists():
                 candidates['parent_dir'] = {
                     'path': candidate.resolve(),
@@ -437,7 +490,7 @@ class DatabaseDiscovery:
         Priority order:
         1. Git repository (if in a git repo, that's usually what you want)
         2. User config [locations] matching CWD (closest contextual match)
-        3. Parent directory .incident-manager
+        3. Parent directory .aver
         4. First available [locations] entry (fallback)
         
         Args:
@@ -511,9 +564,9 @@ class DatabaseDiscovery:
 
         Priority:
         1) Explicit --location
-        2) Git repository root (.incident-manager)
+        2) Git repository root (.aver)
         3) User config [locations] (longest matching parent)
-        4) Parent directories search for .incident-manager (closest wins)
+        4) Parent directories search for .aver (closest wins)
         5) None if not found
 
         Args:
@@ -541,7 +594,7 @@ class DatabaseDiscovery:
                 check=True,
             )
             repo_root = Path(result.stdout.strip()).resolve()
-            candidate = repo_root / ".incident-manager"
+            candidate = repo_root / ".aver"
             if candidate.exists():
                 if verbose:
                     print(f"[DatabaseDiscovery] Using git repo location: {candidate}")
@@ -559,7 +612,7 @@ class DatabaseDiscovery:
         # 4) Parent directory search
         current = cwd
         while True:
-            candidate = current / ".incident-manager"
+            candidate = current / ".aver"
             if candidate.exists():
                 if verbose:
                     print(f"[DatabaseDiscovery] Using parent directory location: {candidate}")
@@ -774,37 +827,6 @@ class StdinHandler:
         except Exception as e:
             raise RuntimeError(f"Failed to read from STDIN: {e}")
 
-
-# ============================================================================
-# ID Generation
-# ============================================================================
-
-
-class IDGenerator:
-    """Generate incident IDs."""
-
-    @staticmethod
-    def generate_incident_id() -> str:
-        """Generate a unique incident ID like INC-a1b2c3d4"""
-        import hashlib
-        import time
-
-        # Use timestamp + random data
-        data = f"{time.time()}{os.urandom(8)}".encode()
-        hash_digest = hashlib.sha256(data).hexdigest()[:8]
-        return f"INC-{hash_digest.upper()}"
-
-    @staticmethod
-    def generate_update_id(incident_id: str) -> str:
-        """Generate update ID."""
-        import hashlib
-        import time
-
-        data = f"{incident_id}{time.time()}{os.urandom(4)}".encode()
-        hash_digest = hashlib.sha256(data).hexdigest()[:8]
-        return f"UPD-{hash_digest.upper()}"
-
-
 # ============================================================================
 # Key-Value Store Support
 # ============================================================================
@@ -823,20 +845,20 @@ class KVParser:
         """
         Parse a key-value format string.
         
-        Format: {key}{operator}{value}
+        Format: {key}{type}{value}
         - $ = string
         - # = integer  
         - % = float
         
         Removal formats:
         - {key}- (for -kv mode)
-        - {key}{operator}{value}- (for -kmv mode)
+        - {key}{type}{value}- (for -kmv mode)
         
         Args:
             kv_str: Key-value string to parse
             
         Returns:
-            (key, operator, value) tuple or (key, '-', value) for removal
+            (key, type, '+', value) tuple or (key, type, '-', value) for removal
             
         Raises:
             ValueError: If format is invalid
@@ -851,8 +873,8 @@ class KVParser:
             is_removal = False
         
         # Find operator
-        for op in KVParser.VALID_OPERATORS:
-            idx = kv_str.find(op)
+        for kvtype in KVParser.VALID_OPERATORS:
+            idx = kv_str.find(kvtype)
             if idx > 0:  # Must have a key before operator
                 key = kv_str[:idx]
                 value_str = kv_str[idx+1:]
@@ -863,9 +885,9 @@ class KVParser:
                     raise ValueError(f"Value cannot be empty for key '{key}'")
                 
                 # Convert value to appropriate type
-                if op == KVParser.TYPE_STRING:
+                if kvtype == KVParser.TYPE_STRING:
                     value = value_str if value_str else None
-                elif op == KVParser.TYPE_INTEGER:
+                elif kvtype == KVParser.TYPE_INTEGER:
                     if value_str:
                         try:
                             value = int(value_str)
@@ -873,7 +895,7 @@ class KVParser:
                             raise ValueError(f"Invalid integer value '{value_str}' for key '{key}'")
                     else:
                         value = None
-                elif op == KVParser.TYPE_FLOAT:
+                elif kvtype == KVParser.TYPE_FLOAT:
                     if value_str:
                         try:
                             value = float(value_str)
@@ -882,13 +904,13 @@ class KVParser:
                     else:
                         value = None
                 
-                return (key, op if not is_removal else '-', value)
+                return (key, kvtype, '+' if not is_removal else '-', value)
         
         # Check for kv mode removal (key-)
         if is_removal:
             if not kv_str:
                 raise ValueError("Key cannot be empty")
-            return (kv_str, '-', None)
+            return (kv_str, None, '-', None)
         
         raise ValueError(
             f"Invalid key-value format: '{kv_str}'\n"
@@ -1010,10 +1032,10 @@ class IncidentFileStorage:
         """Initialize file storage.
         
         Args:
-            storage_root: Root directory for incident files (.incident-manager)
+            storage_root: Root directory for incident files (.aver)
         """
         self.storage_root = storage_root
-        self.incidents_dir = storage_root / "incidents"
+        self.incidents_dir = storage_root / "records"
         self.updates_dir = storage_root / "updates"
         
         # Create directories
@@ -1249,7 +1271,7 @@ class IncidentIndexDatabase:
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
 
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
         cursor.execute(
             """
@@ -1274,7 +1296,7 @@ class IncidentIndexDatabase:
         cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident.id,))
 
         cursor.execute(
-            "INSERT INTO incidents_fts (incident_id, title, description) VALUES (?, ?, ?)",
+            "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
             (
                 incident.id,
                 "incident",
@@ -1299,7 +1321,7 @@ class IncidentIndexDatabase:
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM incidents_index WHERE id = ?", (incident_id,))
-        cursor.execute("DELETE FROM incidents_fts WHERE id = ?", (incident_id,))
+        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident_id,))
         cursor.execute("DELETE FROM incident_tags WHERE incident_id = ?", (incident_id,))
         conn.commit()
         conn.close()
@@ -1417,6 +1439,11 @@ class IncidentIndexDatabase:
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM incidents_index")
+        cursor.execute("DELETE FROM incidents_fts")
+        cursor.execute("DELETE FROM incident_tags")
+        cursor.execute("DELETE FROM kv_strings")
+        cursor.execute("DELETE FROM kv_integers")
+        cursor.execute("DELETE FROM kv_floats")
         conn.commit()
         conn.close()
 
@@ -1424,7 +1451,7 @@ class IncidentIndexDatabase:
         """Index key-value data for incident."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
         # Clear existing KV data for this incident
         cursor.execute("DELETE FROM kv_strings WHERE incident_id = ?", (incident.id,))
@@ -1471,7 +1498,7 @@ class IncidentIndexDatabase:
         """Set single-value KV (replaces existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
         if op == KVParser.TYPE_STRING:
             table = "kv_strings"
@@ -1498,7 +1525,7 @@ class IncidentIndexDatabase:
         """Add multi-value KV (keeps existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
         if op == KVParser.TYPE_STRING:
             table = "kv_strings"
@@ -1748,8 +1775,11 @@ class IncidentIndexDatabase:
                 if value is None:
                     keys.append((1, ""))  # None sorts last
                 else:
-                    keys.append((0, -value if not ascending and isinstance(value, (int, float)) else value))
-            
+                    if isinstance(value, (int, float)):
+                        sort_val = value if ascending else -value
+                    else:
+                        sort_val = value if ascending else ''.join(chr(255 - ord(c)) for c in value)
+                    keys.append((0, sort_val))
             return tuple(keys)
         
         sorted_ids = sorted(incident_ids, key=sort_key)
@@ -1783,7 +1813,7 @@ class IncidentReindexer:
         incident_ids = self.storage.list_incident_files()
         
         if verbose:
-            print(f"Reindexing {len(incident_ids)} incidents...")
+            print(f"Reindexing {len(incident_ids)} records...")
         
         indexed_count = 0
         for incident_id in incident_ids:
@@ -1796,15 +1826,15 @@ class IncidentReindexer:
             else:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
-        updates = self.storage.load_updates(incident_id)
+            updates = self.storage.load_updates(incident_id)
+
         for update in updates:
             self.index_db.index_update(update)
 
         if verbose:
-            print(f"✓ Reindexed {indexed_count} incidents")
+            print(f"✓ Reindexed {indexed_count} records")
         
         return indexed_count
-
 
 # ============================================================================
 # High-Level Manager
@@ -1856,13 +1886,14 @@ class IncidentManager:
         if not self.db_root.exists():
             raise RuntimeError(f"Incident database not found: {self.db_root}")
         
-        self.config = IncidentConfig(self.db_root)
+        # 'self.config = IncidentConfig(self.db_root)
     
 
     def create_incident(
         self,
         title: str,
         severity: str = "medium",
+        status: Optional[str] = "open",
         tags: Optional[List[str]] = None,
         assignees: Optional[List[str]] = None,
         description: Optional[str] = None,
@@ -1871,7 +1902,7 @@ class IncidentManager:
     ) -> str:
         """Create new incident with optional KV data."""
         incident_id = IDGenerator.generate_incident_id()
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
         # Parse and apply KV data
         kv_strings = {}
@@ -1880,32 +1911,32 @@ class IncidentManager:
         
         # Process single-value KV (kv mode)
         if kv_single:
-            for key, op, value in KVParser.parse_kv_list(kv_single):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_single):
                 if op == '-':
                     # Removal at creation time (no-op, nothing exists yet)
                     pass
-                elif op == KVParser.TYPE_STRING:
+                elif kvtype == KVParser.TYPE_STRING:
                     kv_strings[key] = [value]
-                elif op == KVParser.TYPE_INTEGER:
+                elif kvtype == KVParser.TYPE_INTEGER:
                     kv_integers[key] = [value]
-                elif op == KVParser.TYPE_FLOAT:
+                elif kvtype == KVParser.TYPE_FLOAT:
                     kv_floats[key] = [value]
         
         # Process multi-value KV (kmv mode)
         if kv_multi:
-            for key, op, value in KVParser.parse_kv_list(kv_multi):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_multi):
                 if op == '-':
                     # Removal at creation time (no-op)
                     pass
-                elif op == KVParser.TYPE_STRING:
+                elif kvtype == KVParser.TYPE_STRING:
                     if key not in kv_strings:
                         kv_strings[key] = []
                     kv_strings[key].append(value)
-                elif op == KVParser.TYPE_INTEGER:
+                elif kvtype == KVParser.TYPE_INTEGER:
                     if key not in kv_integers:
                         kv_integers[key] = []
                     kv_integers[key].append(value)
-                elif op == KVParser.TYPE_FLOAT:
+                elif kvtype == KVParser.TYPE_FLOAT:
                     if key not in kv_floats:
                         kv_floats[key] = []
                     kv_floats[key].append(value)
@@ -2007,7 +2038,7 @@ class IncidentManager:
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
         
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         incident.status = status
         incident.updated_at = now
         
@@ -2045,53 +2076,52 @@ class IncidentManager:
         
         # Process single-value KV (kv mode) - replaces existing
         if kv_single:
-            for key, op, value in KVParser.parse_kv_list(kv_single):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_single):
                 if op == '-':
                     # Remove all values for this key
                     incident.kv_strings.pop(key, None)
                     incident.kv_integers.pop(key, None)
                     incident.kv_floats.pop(key, None)
                     self.index_db.remove_kv_key(incident_id, key)
-                elif op == KVParser.TYPE_STRING:
+                elif kvtype == KVParser.TYPE_STRING:
                     incident.kv_strings[key] = [value]
                     self.index_db.set_kv_single(incident_id, key, op, value)
-                elif op == KVParser.TYPE_INTEGER:
+                elif kvtype == KVParser.TYPE_INTEGER:
                     incident.kv_integers[key] = [value]
                     self.index_db.set_kv_single(incident_id, key, op, value)
-                elif op == KVParser.TYPE_FLOAT:
+                elif kvtype == KVParser.TYPE_FLOAT:
                     incident.kv_floats[key] = [value]
                     self.index_db.set_kv_single(incident_id, key, op, value)
         
         # Process multi-value KV (kmv mode) - adds values
         if kv_multi:
-            for key, op, value in KVParser.parse_kv_list(kv_multi):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_multi):
                 if op == '-':
                     # Remove specific key/value pair
-                    if op == KVParser.TYPE_STRING:
-                        incident.kv_strings[key] = [v for v in incident.kv_strings.get(key, []) if v != value]
-                    elif op == KVParser.TYPE_INTEGER:
-                        incident.kv_integers[key] = [v for v in incident.kv_integers.get(key, []) if v != value]
-                    elif op == KVParser.TYPE_FLOAT:
-                        incident.kv_floats[key] = [v for v in incident.kv_floats.get(key, []) if v != value]
-                    self.index_db.remove_kv_value(incident_id, key, op, value)
-                elif op == KVParser.TYPE_STRING:
+                    incident.kv_strings[key] = [v for v in incident.kv_strings.get(key, []) if v != value]
+                    incident.kv_integers[key] = [v for v in incident.kv_integers.get(key, []) if v != value]
+                    incident.kv_floats[key] = [v for v in incident.kv_floats.get(key, []) if v != value]
+                    self.index_db.remove_kv_value(incident_id, key, KVParser.TYPE_STRING, value)
+                    self.index_db.remove_kv_value(incident_id, key, KVParser.TYPE_INTEGER, value)
+                    self.index_db.remove_kv_value(incident_id, key, KVParser.TYPE_FLOAT, value)
+                elif kvtype == KVParser.TYPE_STRING:
                     if key not in incident.kv_strings:
                         incident.kv_strings[key] = []
                     if value not in incident.kv_strings[key]:
                         incident.kv_strings[key].append(value)
-                    self.index_db.add_kv_multi(incident_id, key, op, value)
-                elif op == KVParser.TYPE_INTEGER:
+                    self.index_db.add_kv_multi(incident_id, key, kvtype, value)
+                elif kvtype == KVParser.TYPE_INTEGER:
                     if key not in incident.kv_integers:
                         incident.kv_integers[key] = []
                     if value not in incident.kv_integers[key]:
                         incident.kv_integers[key].append(value)
-                    self.index_db.add_kv_multi(incident_id, key, op, value)
-                elif op == KVParser.TYPE_FLOAT:
+                    self.index_db.add_kv_multi(incident_id, key, kvtype, value)
+                elif kvtype == KVParser.TYPE_FLOAT:
                     if key not in incident.kv_floats:
                         incident.kv_floats[key] = []
                     if value not in incident.kv_floats[key]:
                         incident.kv_floats[key].append(value)
-                    self.index_db.add_kv_multi(incident_id, key, op, value)
+                    self.index_db.add_kv_multi(incident_id, key, kvtype, value)
         
         # Save to file and update index
         self.storage.save_incident(incident)
@@ -2157,7 +2187,7 @@ class IncidentManager:
                 "  incident add-update <id>  # opens editor"
             )
     
-        timestamp = datetime.datetime.utcnow().isoformat() + "Z"
+        timestamp = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
         # Parse KV data for the update
         update_kv_strings = {}
@@ -2165,27 +2195,27 @@ class IncidentManager:
         update_kv_floats = {}
         
         if kv_single:
-            for key, op, value in KVParser.parse_kv_list(kv_single):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_single):
                 if op != '-':
-                    if op == KVParser.TYPE_STRING:
+                    if kvtype == KVParser.TYPE_STRING:
                         update_kv_strings[key] = [value]
-                    elif op == KVParser.TYPE_INTEGER:
+                    elif kvtype == KVParser.TYPE_INTEGER:
                         update_kv_integers[key] = [value]
-                    elif op == KVParser.TYPE_FLOAT:
+                    elif kvtype == KVParser.TYPE_FLOAT:
                         update_kv_floats[key] = [value]
         
         if kv_multi:
-            for key, op, value in KVParser.parse_kv_list(kv_multi):
+            for key, kvtype, op, value in KVParser.parse_kv_list(kv_multi):
                 if op != '-':
-                    if op == KVParser.TYPE_STRING:
+                    if kvtype == KVParser.TYPE_STRING:
                         if key not in update_kv_strings:
                             update_kv_strings[key] = []
                         update_kv_strings[key].append(value)
-                    elif op == KVParser.TYPE_INTEGER:
+                    elif kvtype == KVParser.TYPE_INTEGER:
                         if key not in update_kv_integers:
                             update_kv_integers[key] = []
                         update_kv_integers[key].append(value)
-                    elif op == KVParser.TYPE_FLOAT:
+                    elif kvtype == KVParser.TYPE_FLOAT:
                         if key not in update_kv_floats:
                             update_kv_floats[key] = []
                         update_kv_floats[key].append(value)
@@ -2268,7 +2298,7 @@ class IncidentCLI:
         # config
         config_parser = self.subparsers.add_parser(
             "config",
-            help="Manage configuration",
+            help="Manage user configuration",
         )
         self._add_common_args(config_parser)
         config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
@@ -2285,7 +2315,7 @@ class IncidentCLI:
             help="Set user's preferred editor",
             description=(
                 "Set the editor that Incident Manager uses when opening an editor.\n"
-                "This is a user-global setting stored in ~/.config/incident-manager/user.toml\n"
+                "This is a user-global setting stored in ~/.config/aver/user.toml\n"
                 "Takes precedence over the EDITOR environment variable."
             )
         )
@@ -2298,8 +2328,8 @@ class IncidentCLI:
     
         # create
         create_parser = self.subparsers.add_parser(
-            "create",
-            help="Create new incident",
+            "new",
+            help="Create new record",
         )
         self._add_common_args(create_parser)
         create_parser.add_argument(
@@ -2315,7 +2345,7 @@ class IncidentCLI:
             help="Incident severity",
         )
         create_parser.add_argument(
-            "--tags",
+            "--set-tags",
             nargs="*",
             default=[],
             help="Tags (space-separated)",
@@ -2345,16 +2375,16 @@ class IncidentCLI:
     
         # get
         get_parser = self.subparsers.add_parser(
-            "get",
-            help="View incident details",
+            "view",
+            help="View record details",
         )
         self._add_common_args(get_parser)
-        get_parser.add_argument("incident_id", help="Incident ID")
+        get_parser.add_argument("record_id", help="Record ID")
     
         # list
         list_parser = self.subparsers.add_parser(
             "list",
-            help="List incidents",
+            help="List records",
         )
         self._add_common_args(list_parser)
         list_parser.add_argument(
@@ -2384,7 +2414,7 @@ class IncidentCLI:
             "--limit",
             type=int,
             default=50,
-            help="Maximum incidents to show",
+            help="Maximum records to show",
         )
         list_parser.add_argument(
             "--tag",
@@ -2396,10 +2426,10 @@ class IncidentCLI:
         # update
         update_parser = self.subparsers.add_parser(
             "update",
-            help="Update incident status",
+            help="Update record",
         )
         self._add_common_args(update_parser)
-        update_parser.add_argument("incident_id", help="Incident ID")
+        update_parser.add_argument("record_id", help="Record ID")
         update_parser.add_argument(
             "--status",
             required=True,
@@ -2421,42 +2451,42 @@ class IncidentCLI:
     
         # add-update
         add_update_parser = self.subparsers.add_parser(
-            "add-update",
-            help="Add update to incident (message > STDIN > editor)",
+            "note",
+            help="Add a note to a record (message > STDIN > editor)",
             description=(
-                "Add update to incident. Priority:\n"
+                "Add note to record. Priority:\n"
                 "  1. --message flag (explicit message)\n"
                 "  2. STDIN (if piped)\n"
                 "  3. Editor (if STDIN unavailable)"
             ),
         )
         self._add_common_args(add_update_parser)
-        add_update_parser.add_argument("incident_id", help="Incident ID")
+        add_update_parser.add_argument("record_id", help="Record ID")
         add_update_parser.add_argument(
             "--message",
-            help="Update message",
+            help="text of note",
         )
         add_update_parser.add_argument(
             "-kv",
             action="append",
             dest="kv_single",
-            help="Single-value KV data to apply to incident",
+            help="Single-value KV data to apply to note (also updates record)",
         )
         add_update_parser.add_argument(
             "-kmv",
             action="append",
             dest="kv_multi",
-            help="Multi-value KV data to apply to incident",
+            help="Multi-value KV data to apply to note (also updates record): 'key$value' or 'key$value-' to remove specific value",
         )
 
     
         # get-updates
         get_updates_parser = self.subparsers.add_parser(
-            "get-updates",
-            help="View all updates for an incident",
+            "get-notes",
+            help="View all notes in a record",
         )
         self._add_common_args(get_updates_parser)
-        get_updates_parser.add_argument("incident_id", help="Incident ID")
+        get_updates_parser.add_argument("record_id", help="Incident ID")
     
         # reindex
         reindex_parser = self.subparsers.add_parser(
@@ -2474,7 +2504,7 @@ class IncidentCLI:
         # list-databases
         list_databases_parser = self.subparsers.add_parser(
             "list-databases",
-            help="Show all available incident databases",
+            help="Show all available databases",
         )
         list_databases_parser.set_defaults(func=self._cmd_list_databases)
     
@@ -2488,17 +2518,17 @@ class IncidentCLI:
                 self._cmd_init(parsed)
             elif parsed.command == "config":
                 self._cmd_config(parsed)
-            elif parsed.command == "create":
+            elif parsed.command == "new":
                 self._cmd_create(parsed)
-            elif parsed.command == "get":
+            elif parsed.command == "view":
                 self._cmd_get(parsed)
             elif parsed.command == "list":
                 self._cmd_list(parsed)
             elif parsed.command == "update":
                 self._cmd_update(parsed)
-            elif parsed.command == "add-update":
+            elif parsed.command == "add-note":
                 self._cmd_add_update(parsed)
-            elif parsed.command == "get-updates":
+            elif parsed.command == "get-notes":
                 self._cmd_get_updates(parsed)
             elif parsed.command == "reindex":
                 self._cmd_reindex(parsed)
@@ -2526,9 +2556,9 @@ class IncidentCLI:
                 )
 
                 repo_root = Path(result.stdout.strip())
-                db_root = repo_root / ".incident-manager"
+                db_root = repo_root / ".aver"
             except subprocess.CalledProcessError:
-                db_root = Path.cwd() / ".incident-manager"
+                db_root = Path.cwd() / ".aver"
 
         # Enforce repo boundary
         if not DatabaseDiscovery.enforce_repo_boundary(db_root, override=getattr(args, 'override_repo_boundary', False)):
@@ -2543,12 +2573,12 @@ class IncidentCLI:
         
         # Initialize storage and index
         storage = IncidentFileStorage(db_root)
-        index_db = IncidentIndexDatabase(db_root / "incidents.db")
+        index_db = IncidentIndexDatabase(db_root / "aver.db")
 
         print(f"✓ Incident database initialized at {db_root}")
         print(f"  Incidents: {storage.incidents_dir}")
         print(f"  Updates: {storage.updates_dir}")
-        print(f"  Index: {db_root / 'incidents.db'}")
+        print(f"  Index: {db_root / 'aver.db'}")
         print(f"  Config: {db_root / 'config.toml'}")
 
     def _cmd_config(self, args):
@@ -2662,7 +2692,7 @@ class IncidentCLI:
             sys.exit(1)
 
         if not incidents:
-            print("No incidents found")
+            print("No records found")
             return
 
         # Print table header
@@ -2752,7 +2782,7 @@ class IncidentCLI:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db)
             count = reindexer.reindex_all(verbose=args.verbose)
-            print(f"✓ Successfully reindexed {count} incidents")
+            print(f"✓ Successfully reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
