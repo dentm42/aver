@@ -7,6 +7,8 @@ Stores records and updates as Markdown files with TOML headers.
 Uses SQLite for indexing and searching only.
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import json
@@ -18,7 +20,7 @@ import tempfile
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from types import SimpleNamespace
 import select
 import secrets
@@ -35,6 +37,380 @@ try:
 except ImportError:
     toml_writer = None
     toml_w = None
+
+
+# ============================================================================
+# TOML/Markdown Serialization Utilities
+# ============================================================================
+
+class TOMLSerializer:
+    """
+    Centralized TOML serialization with proper escaping.
+    
+    Handles all TOML string escaping, key formatting, and serialization
+    for both Incident and IncidentUpdate classes.
+    """
+    
+    # Type hint suffixes for custom fields
+    TYPE_HINT_STRING = "$"
+    TYPE_HINT_INTEGER = "#"
+    TYPE_HINT_FLOAT = "%"
+    
+    TYPE_HINTS = {
+        TYPE_HINT_STRING: "string",
+        TYPE_HINT_INTEGER: "integer",
+        TYPE_HINT_FLOAT: "float",
+    }
+    
+    @staticmethod
+    def escape_string(s: str) -> str:
+        """
+        Escape a string for use in TOML basic strings (double-quoted).
+        
+        Handles backslashes, quotes, newlines, and other control characters
+        per the TOML specification.
+        """
+        if not isinstance(s, str):
+            s = str(s)
+        
+        # Order matters: escape backslashes first
+        s = s.replace('\\', '\\\\')
+        s = s.replace('"', '\\"')
+        s = s.replace('\b', '\\b')
+        s = s.replace('\f', '\\f')
+        s = s.replace('\n', '\\n')
+        s = s.replace('\r', '\\r')
+        s = s.replace('\t', '\\t')
+        
+        # Handle other control characters (U+0000 to U+001F except those above)
+        result = []
+        for char in s:
+            code = ord(char)
+            if code < 0x20 and char not in '\b\f\n\r\t':
+                result.append(f'\\u{code:04X}')
+            else:
+                result.append(char)
+        return ''.join(result)
+
+    @staticmethod
+    def escape_key(key: str) -> str:
+        """
+        Escape a key for use in TOML.
+        
+        Bare keys can only contain A-Za-z0-9_-.
+        If the key contains other characters, it must be quoted.
+        """
+        if not key:
+            return '""'
+        
+        # Check if it's a valid bare key
+        if all(c.isalnum() or c in '_-' for c in key):
+            return key
+        
+        # Otherwise, quote it and escape
+        return f'"{TOMLSerializer.escape_string(key)}"'
+
+    @staticmethod
+    def format_value(value: Any) -> str:
+        """Format a single value for TOML output."""
+        if isinstance(value, str):
+            return f'"{TOMLSerializer.escape_string(value)}"'
+        elif isinstance(value, bool):
+            return "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            return str(value)
+        else:
+            return f'"{TOMLSerializer.escape_string(str(value))}"'
+
+    @staticmethod
+    def format_list(values: list) -> str:
+        """Format a list for TOML output."""
+        formatted = [TOMLSerializer.format_value(v) for v in values]
+        return f"[{', '.join(formatted)}]"
+
+    @staticmethod
+    def dict_to_inline_table(d: dict) -> str:
+        """
+        Convert dict to inline TOML table format with proper escaping.
+        
+        Example: { "key1" = "value1", "key2" = 42 }
+        """
+        if not d:
+            return "{}"
+        items = []
+        for key, value in d.items():
+            escaped_key = TOMLSerializer.escape_string(key)
+            if isinstance(value, list):
+                items.append(f'"{escaped_key}" = {TOMLSerializer.format_list(value)}')
+            else:
+                items.append(f'"{escaped_key}" = {TOMLSerializer.format_value(value)}')
+        return "{ " + ", ".join(items) + " }"
+
+    @staticmethod
+    def dict_to_toml(d: dict, indent: int = 0) -> str:
+        """
+        Convert a dict to TOML string with proper escaping.
+        
+        This is a fallback when toml_w is not available.
+        Handles nested dicts, lists, strings, ints, floats, and bools.
+        """
+        lines = []
+        prefix = "  " * indent
+        
+        for key, value in d.items():
+            escaped_key = TOMLSerializer.escape_key(key)
+            
+            if isinstance(value, dict):
+                # Nested table
+                lines.append(f"{prefix}[{escaped_key}]")
+                lines.append(TOMLSerializer.dict_to_toml(value, indent + 1))
+            elif isinstance(value, list):
+                if value and all(isinstance(v, dict) for v in value):
+                    # Array of tables
+                    for item in value:
+                        lines.append(f"{prefix}[[{escaped_key}]]")
+                        lines.append(TOMLSerializer.dict_to_toml(item, indent + 1))
+                else:
+                    # Simple array
+                    lines.append(f"{prefix}{escaped_key} = {TOMLSerializer.format_list(value)}")
+            else:
+                lines.append(f"{prefix}{escaped_key} = {TOMLSerializer.format_value(value)}")
+        
+        return '\n'.join(lines)
+
+    @staticmethod
+    def dumps(d: dict) -> str:
+        """
+        Serialize a dict to TOML string.
+        
+        Uses toml_w if available, otherwise falls back to manual serialization.
+        """
+        if toml_w:
+            return toml_w.dumps(d)
+        else:
+            result = TOMLSerializer.dict_to_toml(d)
+            return result + '\n' if result else '\n'
+
+    @staticmethod
+    def loads(s: str) -> dict:
+        """Parse a TOML string into a dict."""
+        return tomllib.loads(s)
+
+    @classmethod
+    def add_type_hint(cls, key: str, value_type: str) -> str:
+        """Add type hint suffix to key."""
+        if value_type == "string":
+            return f"{key}{cls.TYPE_HINT_STRING}"
+        elif value_type == "integer":
+            return f"{key}{cls.TYPE_HINT_INTEGER}"
+        elif value_type == "float":
+            return f"{key}{cls.TYPE_HINT_FLOAT}"
+        return key
+
+    @classmethod
+    def strip_type_hint(cls, key: str) -> tuple[str, Optional[str]]:
+        """
+        Strip type hint suffix from key.
+        
+        Returns:
+            (clean_key, type_hint) where type_hint is "string", "integer", "float", or None
+        """
+        if key.endswith(cls.TYPE_HINT_STRING):
+            return key[:-1], "string"
+        elif key.endswith(cls.TYPE_HINT_INTEGER):
+            return key[:-1], "integer"
+        elif key.endswith(cls.TYPE_HINT_FLOAT):
+            return key[:-1], "float"
+        return key, None
+
+
+class MarkdownDocument:
+    """
+    Handles Markdown documents with TOML frontmatter.
+    
+    Provides unified parsing and serialization for both Incident and IncidentUpdate.
+    
+    Document format:
+        +++
+        key = "value"
+        ...
+        +++
+        
+        Body content here...
+    """
+    
+    FRONTMATTER_DELIMITER = "+++"
+    
+    @classmethod
+    def parse(cls, content: str) -> tuple[dict, str]:
+        """
+        Parse a Markdown document with TOML frontmatter.
+        
+        Args:
+            content: Full document content
+            
+        Returns:
+            (frontmatter_dict, body_content)
+            
+        Raises:
+            ValueError: If format is invalid
+        """
+        # Try +++ delimited format first
+        parts = content.split(cls.FRONTMATTER_DELIMITER)
+        if len(parts) >= 3:
+            toml_str = parts[1].strip()
+            body = cls.FRONTMATTER_DELIMITER.join(parts[2:]).strip()
+            
+            try:
+                frontmatter = TOMLSerializer.loads(toml_str)
+                return frontmatter, body
+            except Exception as e:
+                raise ValueError(f"Failed to parse TOML frontmatter: {e}")
+        
+        # Try regex match for more flexible parsing
+        match = re.match(
+            r'^\+\+\+\n(.*?)\n\+\+\+\s*(.*)$',
+            content,
+            re.DOTALL
+        )
+        if match:
+            try:
+                frontmatter = TOMLSerializer.loads(match.group(1))
+                body = match.group(2).strip()
+                return frontmatter, body
+            except Exception as e:
+                raise ValueError(f"Failed to parse TOML frontmatter: {e}")
+        
+        raise ValueError("Invalid Markdown format: missing TOML frontmatter delimiters (+++)")
+
+    @classmethod
+    def serialize(cls, frontmatter: dict, body: str = "") -> str:
+        """
+        Serialize frontmatter and body to Markdown with TOML frontmatter.
+        
+        Args:
+            frontmatter: Dict of frontmatter key-values
+            body: Optional body content
+            
+        Returns:
+            Complete Markdown document string
+        """
+        toml_str = TOMLSerializer.dumps(frontmatter)
+        
+        result = f"{cls.FRONTMATTER_DELIMITER}\n{toml_str}{cls.FRONTMATTER_DELIMITER}\n\n"
+        if body:
+            result += body
+        
+        return result
+
+    @classmethod
+    def serialize_with_sections(
+        cls,
+        frontmatter: dict,
+        sections: Optional[Dict[str, dict]] = None,
+        body: str = ""
+    ) -> str:
+        """
+        Serialize with additional named sections.
+        
+        Args:
+            frontmatter: Main frontmatter dict
+            sections: Optional dict of section_name -> section_dict
+            body: Optional body content
+            
+        Returns:
+            Complete Markdown document string
+        """
+        result = cls.serialize(frontmatter, "")
+        
+        if sections:
+            for section_name, section_data in sections.items():
+                if section_data:
+                    result += f"\n## {section_name}\n\n{TOMLSerializer.dumps(section_data)}"
+        
+        if body:
+            result += f"\n{body}"
+        
+        return result
+
+
+class KVStore:
+    """
+    Mixin/helper for classes that store typed key-value data.
+    
+    Provides common KV operations for both Incident and IncidentUpdate.
+    """
+    
+    @staticmethod
+    def parse_kv_from_dict(
+        data: dict,
+        string_key: str = "kv_strings",
+        integer_key: str = "kv_integers", 
+        float_key: str = "kv_floats"
+    ) -> tuple[Dict[str, List[str]], Dict[str, List[int]], Dict[str, List[float]]]:
+        """
+        Parse KV data from a dict (e.g., parsed TOML).
+        
+        Handles type conversions for integers and floats.
+        
+        Returns:
+            (kv_strings, kv_integers, kv_floats)
+        """
+        kv_strings = data.get(string_key, {})
+        if kv_strings is None:
+            kv_strings = {}
+            
+        kv_integers = {}
+        for key, values in data.get(integer_key, {}).items():
+            if values is None:
+                continue
+            if isinstance(values, list):
+                kv_integers[key] = [int(v) if isinstance(v, str) else v for v in values]
+            else:
+                kv_integers[key] = [int(values) if isinstance(values, str) else values]
+        
+        kv_floats = {}
+        for key, values in data.get(float_key, {}).items():
+            if values is None:
+                continue
+            if isinstance(values, list):
+                kv_floats[key] = [float(v) if isinstance(v, str) else v for v in values]
+            else:
+                kv_floats[key] = [float(values) if isinstance(values, str) else values]
+        
+        return kv_strings, kv_integers, kv_floats
+
+    @staticmethod
+    def format_kv_for_frontmatter(
+        kv_strings: Optional[Dict[str, List[str]]],
+        kv_integers: Optional[Dict[str, List[int]]],
+        kv_floats: Optional[Dict[str, List[float]]]
+    ) -> str:
+        """
+        Format KV data as TOML lines for frontmatter.
+        
+        Returns:
+            String with kv_strings, kv_integers, kv_floats lines
+        """
+        lines = []
+        lines.append(f"kv_strings = {TOMLSerializer.dict_to_inline_table(kv_strings or {})}")
+        lines.append(f"kv_integers = {TOMLSerializer.dict_to_inline_table(kv_integers or {})}")
+        lines.append(f"kv_floats = {TOMLSerializer.dict_to_inline_table(kv_floats or {})}")
+        return '\n'.join(lines)
+
+
+# Convenience aliases for backward compatibility
+def escape_toml_string(s: str) -> str:
+    """Escape a string for TOML. Alias for TOMLSerializer.escape_string()."""
+    return TOMLSerializer.escape_string(s)
+
+def escape_toml_key(key: str) -> str:
+    """Escape a key for TOML. Alias for TOMLSerializer.escape_key()."""
+    return TOMLSerializer.escape_key(key)
+
+def toml_dumps(d: dict) -> str:
+    """Serialize dict to TOML. Alias for TOMLSerializer.dumps()."""
+    return TOMLSerializer.dumps(d)
 
 # ============================================================================
 # Data Models
@@ -60,17 +436,6 @@ class UserIdentity:
 class Incident:
     """Incident with all metadata stored in KV."""
     
-    # Type hint suffixes
-    TYPE_HINT_STRING = "$"
-    TYPE_HINT_INTEGER = "#"
-    TYPE_HINT_FLOAT = "%"
-    
-    TYPE_HINTS = {
-        TYPE_HINT_STRING: "string",
-        TYPE_HINT_INTEGER: "integer",
-        TYPE_HINT_FLOAT: "float",
-    }
-    
     def __init__(
         self,
         id: str,
@@ -82,33 +447,6 @@ class Incident:
         self.kv_strings = kv_strings or {}
         self.kv_integers = kv_integers or {}
         self.kv_floats = kv_floats or {}
-    
-    @staticmethod
-    def _add_type_hint(key: str, value_type: str) -> str:
-        """Add type hint suffix to key."""
-        if value_type == "string":
-            return f"{key}{Incident.TYPE_HINT_STRING}"
-        elif value_type == "integer":
-            return f"{key}{Incident.TYPE_HINT_INTEGER}"
-        elif value_type == "float":
-            return f"{key}{Incident.TYPE_HINT_FLOAT}"
-        return key
-    
-    @staticmethod
-    def _strip_type_hint(key: str) -> tuple[str, Optional[str]]:
-        """
-        Strip type hint suffix from key.
-        
-        Returns:
-            (clean_key, type_hint) where type_hint is "string", "integer", "float", or None
-        """
-        if key.endswith(Incident.TYPE_HINT_STRING):
-            return key[:-1], "string"
-        elif key.endswith(Incident.TYPE_HINT_INTEGER):
-            return key[:-1], "integer"
-        elif key.endswith(Incident.TYPE_HINT_FLOAT):
-            return key[:-1], "float"
-        return key, None
     
     def get_value(
         self,
@@ -155,9 +493,8 @@ class Incident:
     
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with TOML frontmatter."""
-        toml_dict = {}
-        
-        # Extract special fields for TOML section (in order they're defined)
+        # Build frontmatter from special fields
+        frontmatter = {}
         for field_name in project_config.get_special_fields().keys():
             field = project_config.get_special_field(field_name)
             
@@ -176,31 +513,27 @@ class Incident:
                 elif field.value_type == "float":
                     value = self.kv_floats.get(field_name, [])
             
-            toml_dict[field_name] = value
+            frontmatter[field_name] = value
         
-        toml_str = toml_w.dumps(toml_dict)
-        
-        # Any OTHER KV data (custom fields not in special_fields)
+        # Build custom fields section (non-special fields with type hints)
         other_kv = self._get_other_kv(project_config)
-        other_section = ""
+        custom_fields = None
         if other_kv:
-            # Add type hints to custom field keys
-            hinted_kv = {}
+            custom_fields = {}
             for key, val in other_kv.items():
-                # Determine type from which dict it came from
                 if key in self.kv_strings:
-                    hinted_key = self._add_type_hint(key, "string")
+                    hinted_key = TOMLSerializer.add_type_hint(key, "string")
                 elif key in self.kv_integers:
-                    hinted_key = self._add_type_hint(key, "integer")
+                    hinted_key = TOMLSerializer.add_type_hint(key, "integer")
                 elif key in self.kv_floats:
-                    hinted_key = self._add_type_hint(key, "float")
+                    hinted_key = TOMLSerializer.add_type_hint(key, "float")
                 else:
                     hinted_key = key
-                hinted_kv[hinted_key] = val
-            
-            other_section = f"\n## Custom Fields\n\n{toml_w.dumps(hinted_kv)}"
+                custom_fields[hinted_key] = val
         
-        return f"+++\n{toml_str}+++\n\n{other_section}"
+        # Use MarkdownDocument for serialization
+        sections = {"Custom Fields": custom_fields} if custom_fields else None
+        return MarkdownDocument.serialize_with_sections(frontmatter, sections)
     
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
@@ -227,12 +560,16 @@ class Incident:
         project_config: ProjectConfig,
     ) -> "Incident":
         """Deserialize from Markdown."""
-        # Parse TOML frontmatter
-        match = re.match(r'^\+\+\+\n(.*?)\n\+\+\+', content, re.DOTALL)
-        if not match:
-            raise ValueError("Invalid Markdown format: missing TOML frontmatter")
-        
-        toml_dict = tomllib.loads(match.group(1))
+        # Use MarkdownDocument for parsing
+        try:
+            frontmatter, body = MarkdownDocument.parse(content)
+        except ValueError:
+            # Fallback to original regex parsing for compatibility
+            match = re.match(r'^\+\+\+\n(.*?)\n\+\+\+', content, re.DOTALL)
+            if not match:
+                raise ValueError("Invalid Markdown format: missing TOML frontmatter")
+            frontmatter = TOMLSerializer.loads(match.group(1))
+            body = content[match.end():].strip()
         
         # Rebuild KV from special fields
         kv_strings = {}
@@ -243,9 +580,8 @@ class Incident:
         special_field_names = set(special_fields.keys())
         
         # Process items in frontmatter TOML
-        for field_name, value in toml_dict.items():
+        for field_name, value in frontmatter.items():
             if field_name in special_field_names:
-                # Handle as special field
                 field = special_fields[field_name]
                 
                 if field.field_type == "single":
@@ -264,44 +600,25 @@ class Incident:
                         kv_integers[field_name] = [int(v) for v in value]
                     elif field.value_type == "float":
                         kv_floats[field_name] = [float(v) for v in value]
-            else:
-                # Handle as custom field - should be in "Custom Fields" section
-                # Skip frontmatter items not in special_fields
-                pass
         
         # Parse "Custom Fields" section if present
-        rest = content[match.end():].strip()
-        if rest.startswith("## Custom Fields"):
-            custom_match = re.search(r'## Custom Fields\n\n(.*)', rest, re.DOTALL)
+        if body.startswith("## Custom Fields"):
+            custom_match = re.search(r'## Custom Fields\n\n(.*)', body, re.DOTALL)
             if custom_match:
                 try:
-                    custom_toml = tomllib.loads(custom_match.group(1))
+                    custom_toml = TOMLSerializer.loads(custom_match.group(1))
                     for key_with_hint, val in custom_toml.items():
-                        # Strip type hint from key
-                        clean_key, value_type = cls._strip_type_hint(key_with_hint)
+                        clean_key, value_type = TOMLSerializer.strip_type_hint(key_with_hint)
                         
-                        # Store in appropriate KV dictionary
                         if value_type == "string":
-                            if isinstance(val, list):
-                                kv_strings[clean_key] = val
-                            else:
-                                kv_strings[clean_key] = [str(val)]
+                            kv_strings[clean_key] = val if isinstance(val, list) else [str(val)]
                         elif value_type == "integer":
-                            if isinstance(val, list):
-                                kv_integers[clean_key] = [int(v) for v in val]
-                            else:
-                                kv_integers[clean_key] = [int(val)]
+                            kv_integers[clean_key] = [int(v) for v in val] if isinstance(val, list) else [int(val)]
                         elif value_type == "float":
-                            if isinstance(val, list):
-                                kv_floats[clean_key] = [float(v) for v in val]
-                            else:
-                                kv_floats[clean_key] = [float(val)]
+                            kv_floats[clean_key] = [float(v) for v in val] if isinstance(val, list) else [float(val)]
                         else:
-                            # No type hint - shouldn't happen, but fallback to string
-                            if isinstance(val, list):
-                                kv_strings[clean_key] = [str(v) for v in val]
-                            else:
-                                kv_strings[clean_key] = [str(val)]
+                            # No type hint - fallback to string
+                            kv_strings[clean_key] = [str(v) for v in val] if isinstance(val, list) else [str(val)]
                 except Exception as e:
                     print(f"Warning: Failed to parse custom fields: {e}", file=sys.stderr)
         
@@ -344,71 +661,48 @@ class IncidentUpdate:
         
     def to_markdown(self) -> str:
         """Convert update to Markdown with TOML header."""
+        # Build frontmatter with escaped values
+        frontmatter = {
+            "id": self.id,
+            "incident_id": self.incident_id,
+            "timestamp": self.timestamp,
+            "author": self.author,
+        }
         
-        def dict_to_toml_inline(d):
-            """Convert dict to inline TOML table format."""
-            if not d:
-                return "{}"
-            items = []
-            for key, value in d.items():
-                if isinstance(value, str):
-                    items.append(f'"{key}" = "{value}"')
-                elif isinstance(value, (int, float)):
-                    items.append(f'"{key}" = {value}')
-                elif isinstance(value, list):
-                    # Handle list values
-                    formatted_values = [f'"{v}"' if isinstance(v, str) else str(v) for v in value]
-                    items.append(f'"{key}" = [{", ".join(formatted_values)}]')
-            return "{ " + ", ".join(items) + " }"
+        # For KV data, we use inline tables which require manual formatting
+        # Build the TOML header manually to use inline table format for KV
+        lines = [MarkdownDocument.FRONTMATTER_DELIMITER]
+        lines.append(f'id = "{TOMLSerializer.escape_string(self.id)}"')
+        lines.append(f'incident_id = "{TOMLSerializer.escape_string(self.incident_id)}"')
+        lines.append(f'timestamp = "{TOMLSerializer.escape_string(self.timestamp)}"')
+        lines.append(f'author = "{TOMLSerializer.escape_string(self.author)}"')
+        lines.append(f'kv_strings = {TOMLSerializer.dict_to_inline_table(self.kv_strings or {})}')
+        lines.append(f'kv_integers = {TOMLSerializer.dict_to_inline_table(self.kv_integers or {})}')
+        lines.append(f'kv_floats = {TOMLSerializer.dict_to_inline_table(self.kv_floats or {})}')
+        lines.append(MarkdownDocument.FRONTMATTER_DELIMITER)
+        lines.append('')
+        lines.append(self.message)
         
-        toml_header = f"""+++
-id = "{self.id}"
-incident_id = "{self.incident_id}"
-timestamp = "{self.timestamp}"
-author = "{self.author}"
-kv_strings = {dict_to_toml_inline(self.kv_strings or {})}
-kv_integers = {dict_to_toml_inline(self.kv_integers or {})}
-kv_floats = {dict_to_toml_inline(self.kv_floats or {})}
-+++
-
-"""
-        return toml_header + self.message
+        return '\n'.join(lines)
 
     @classmethod
     def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
         """Parse update from Markdown with TOML header."""
-        # Split on +++ delimiter
-        parts = content.split("+++")
-        if len(parts) < 3:
-            raise ValueError("Invalid update file format")
-
-        toml_str = parts[1].strip()
-        message = parts[2].strip() if len(parts) > 2 else ""
-
+        # Use MarkdownDocument for parsing
         try:
-            data = tomllib.loads(toml_str)
-        except Exception as e:
-            raise ValueError(f"Failed to parse TOML header: {e}")
+            frontmatter, message = MarkdownDocument.parse(content)
+        except ValueError as e:
+            raise ValueError(f"Invalid update file format: {e}")
 
-        # Parse KV data with type conversions
-        kv_strings = data.get("kv_strings", {})
-        kv_integers = {}
-        kv_floats = {}
-        
-        # Convert integer strings to integers
-        for key, values in data.get("kv_integers", {}).items():
-            kv_integers[key] = [int(v) if isinstance(v, str) else v for v in values]
-        
-        # Convert float strings to floats
-        for key, values in data.get("kv_floats", {}).items():
-            kv_floats[key] = [float(v) if isinstance(v, str) else v for v in values]
+        # Parse KV data using KVStore helper
+        kv_strings, kv_integers, kv_floats = KVStore.parse_kv_from_dict(frontmatter)
 
         return cls(
-            id=data.get("id", update_id),
-            incident_id=data.get("incident_id", incident_id),
-            timestamp=data.get("timestamp", ""),
-            author=data.get("author", ""),
-            message=message if message else "",
+            id=frontmatter.get("id", update_id),
+            incident_id=frontmatter.get("incident_id", incident_id),
+            timestamp=frontmatter.get("timestamp", ""),
+            author=frontmatter.get("author", ""),
+            message=message,
             kv_strings=kv_strings if kv_strings else None,
             kv_integers=kv_integers if kv_integers else None,
             kv_floats=kv_floats if kv_floats else None,
