@@ -31,8 +31,10 @@ except ImportError:
 
 try:
     import tomli_w as toml_writer
+    toml_w = toml_writer  # Alias for consistent usage throughout the code
 except ImportError:
     toml_writer = None
+    toml_w = None
 
 # ============================================================================
 # Data Models
@@ -230,7 +232,7 @@ class Incident:
         if not match:
             raise ValueError("Invalid Markdown format: missing TOML frontmatter")
         
-        toml_dict = tomli.loads(match.group(1))
+        toml_dict = tomllib.loads(match.group(1))
         
         # Rebuild KV from special fields
         kv_strings = {}
@@ -273,7 +275,7 @@ class Incident:
             custom_match = re.search(r'## Custom Fields\n\n(.*)', rest, re.DOTALL)
             if custom_match:
                 try:
-                    custom_toml = toml.loads(custom_match.group(1))
+                    custom_toml = tomllib.loads(custom_match.group(1))
                     for key_with_hint, val in custom_toml.items():
                         # Strip type hint from key
                         clean_key, value_type = cls._strip_type_hint(key_with_hint)
@@ -651,6 +653,7 @@ class DatabaseDiscovery:
             print(f"Permission error: {e}", file=sys.stderr)
             sys.exit(1)
 
+    @staticmethod
     def dict_to_namespace(d):
         """
         Recursively convert a dictionary to SimpleNamespace for dot notation access.
@@ -712,7 +715,7 @@ class DatabaseDiscovery:
         if missing_user_fields:
             raise ValueError(
                 f"User configuration at {config_path} is missing required fields: "
-                f"{', '.join(missing_fields)}\n\n"
+                f"{', '.join(missing_user_fields)}\n\n"
                 f"Please configure your user identity:\n\n"
                 f"  aver config set-user-global --handle <your-handle> --email <your-email>\n\n"
             )
@@ -898,62 +901,62 @@ class DatabaseDiscovery:
     
         return candidates
 
-        @staticmethod
-        def select_database_interactive(candidates: Dict[str, Dict]) -> Path:
-            """
-            Present user with database choices grouped by category.
-        
-            Groups:
-            - Contextual (closest match to current directory)
-            - Available (other configured locations)
-            """
-            if not candidates:
-                raise RuntimeError("No incident databases found")
-        
-            if len(candidates) == 1:
-                selected = list(candidates.values())[0]
-                print(f"Using: {selected['source']}")
-                return selected['path']
-        
-            # Organize by category
-            contextual = [(k, v) for k, v in candidates.items() if v.get('category') == 'contextual']
-            available = [(k, v) for k, v in candidates.items() if v.get('category') == 'available']
-            
-            print("\n" + "="*70)
-            print("Incident databases available:")
-            print("="*70)
-        
-            all_items = []
+    @staticmethod
+    def select_database_interactive(candidates: Dict[str, Dict]) -> Path:
+        """
+        Present user with database choices grouped by category.
     
-            # Show contextual options first
-            if contextual:
-                print("\n[Contextual - closest match to current directory]")
-                for idx, (key, info) in enumerate(contextual, 1):
-                    all_items.append((key, info))
-                    print(f"  [{idx}] {info['source']}")
-                    print(f"      {info['path']}")
+        Groups:
+        - Contextual (closest match to current directory)
+        - Available (other configured locations)
+        """
+        if not candidates:
+            raise RuntimeError("No incident databases found")
+    
+        if len(candidates) == 1:
+            selected = list(candidates.values())[0]
+            print(f"Using: {selected['source']}")
+            return selected['path']
+    
+        # Organize by category
+        contextual = [(k, v) for k, v in candidates.items() if v.get('category') == 'contextual']
+        available = [(k, v) for k, v in candidates.items() if v.get('category') == 'available']
         
-            # Show other available options
-            if available:
-                start_idx = len(contextual) + 1
-                print(f"\n[Available - other configured locations]")
-                for idx, (key, info) in enumerate(available, start_idx):
-                    all_items.append((key, info))
-                    print(f"  [{idx}] {info['source']}")
-                    print(f"      {info['path']}")
-        
-            print("\n" + "="*70)
-            while True:
-                try:
-                    choice = input(f"Select database (1-{len(all_items)}): ").strip()
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(all_items):
-                        selected = all_items[idx][1]
-                        print(f"✓ Using: {selected['source']}\n")
-                        return selected['path']
-                except ValueError:
-                    pass
-                print("Invalid selection. Please try again.")
+        print("\n" + "="*70)
+        print("Incident databases available:")
+        print("="*70)
+    
+        all_items = []
+
+        # Show contextual options first
+        if contextual:
+            print("\n[Contextual - closest match to current directory]")
+            for idx, (key, info) in enumerate(contextual, 1):
+                all_items.append((key, info))
+                print(f"  [{idx}] {info['source']}")
+                print(f"      {info['path']}")
+    
+        # Show other available options
+        if available:
+            start_idx = len(contextual) + 1
+            print(f"\n[Available - other configured locations]")
+            for idx, (key, info) in enumerate(available, start_idx):
+                all_items.append((key, info))
+                print(f"  [{idx}] {info['source']}")
+                print(f"      {info['path']}")
+    
+        print("\n" + "="*70)
+        while True:
+            try:
+                choice = input(f"Select database (1-{len(all_items)}): ").strip()
+                idx = int(choice) - 1
+                if 0 <= idx < len(all_items):
+                    selected = all_items[idx][1]
+                    print(f"✓ Using: {selected['source']}\n")
+                    return selected['path']
+            except ValueError:
+                pass
+            print("Invalid selection. Please try again.")
     
     @staticmethod
     def select_database_contextual(candidates: Dict[str, Dict]) -> Path:
@@ -1014,7 +1017,9 @@ class DatabaseDiscovery:
         "/root/path/longer" = "/other/path/to/data"
         """
         config = DatabaseDiscovery.get_user_config()
-        locations = config.locations.items() if hasattr(config,"locations") else []
+        locations = config.get('locations', {})
+        if not locations:
+            return None
         cwd_resolved = cwd.resolve()
 
         matches = [
@@ -1445,7 +1450,7 @@ class KVParser:
         if is_removal:
             if not kv_str:
                 raise ValueError("Key cannot be empty in removal format")
-            if not self._is_valid_key(kv_str):
+            if not KVParser._is_valid_key(kv_str):
                 raise ValueError(
                     f"Invalid key '{kv_str}': keys must contain only alphanumeric characters, "
                     f"underscores, and hyphens"
@@ -1827,7 +1832,10 @@ class IncidentIndexDatabase:
             (incident.id,)
         )
     
-        content = f"{incident.title}\n\n{incident.description or ''}"
+        # Get title and description from kv_strings
+        title = incident.kv_strings.get('title', [''])[0] if incident.kv_strings else ''
+        description = incident.kv_strings.get('description', [''])[0] if incident.kv_strings else ''
+        content = f"{title}\n\n{description}"
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
             (incident.id, "incident", incident.id, content),
@@ -2426,9 +2434,10 @@ class IncidentIndexDatabase:
 class IncidentReindexer:
     """Rebuild index from files."""
 
-    def __init__(self, storage: IncidentFileStorage, index_db: IncidentIndexDatabase):
+    def __init__(self, storage: IncidentFileStorage, index_db: IncidentIndexDatabase, project_config: ProjectConfig):
         self.storage = storage
         self.index_db = index_db
+        self.project_config = project_config
 
     def reindex_all(self, verbose: bool = False) -> int:
         """
@@ -2448,19 +2457,21 @@ class IncidentReindexer:
         
         indexed_count = 0
         for incident_id in incident_ids:
-            incident = self.storage.load_incident(incident_id)
+            incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
-                self.index_db.index_incident(incident)
+                self.index_db.index_incident(incident, self.project_config)
+                self.index_db.index_kv_data(incident)
                 indexed_count += 1
                 if verbose:
                     print(f"  ✓ {incident_id}")
             else:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
+            
+            # Index updates for this incident (moved inside the loop)
             updates = self.storage.load_updates(incident_id)
-
-        for update in updates:
-            self.index_db.index_update(update)
+            for update in updates:
+                self.index_db.index_update(update)
 
         if verbose:
             print(f"✓ Reindexed {indexed_count} records")
