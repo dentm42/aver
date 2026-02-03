@@ -3091,6 +3091,540 @@ class IncidentManager:
                 results.append((matching_update, incident_id, incident_title))
         
         return results
+class IncidentManager:
+    """High-level incident management API."""
+    
+    def __init__(
+        self,
+        explicit_location: Optional[Path] = None,
+        interactive: bool = None,
+    ):
+        """Initialize manager with database and project config."""
+        if explicit_location:
+            self.db_root = Path(explicit_location).resolve()
+        else:
+            candidates = DatabaseDiscovery.find_all_databases()
+            if not candidates:
+                raise RuntimeError("No incident databases found")
+            
+            user_config = DatabaseDiscovery.get_user_config()
+            behavior = user_config.get('behavior', {})
+            selection_mode = behavior.get('database_selection', 'contextual')
+            
+            if interactive is not None:
+                selection_mode = 'interactive' if interactive else 'contextual'
+            elif not sys.stdin.isatty():
+                selection_mode = 'contextual'
+            
+            if selection_mode == 'interactive':
+                self.db_root = DatabaseDiscovery.select_database_interactive(candidates)
+            else:
+                self.db_root = DatabaseDiscovery.select_database_contextual(candidates)
+        
+        if not self.db_root.exists():
+            raise RuntimeError(f"Incident database not found: {self.db_root}")
+        
+        self.storage = IncidentFileStorage(self.db_root)
+        self.index_db = IncidentIndexDatabase(self.db_root / "aver.db")
+        self.project_config = ProjectConfig(self.db_root)
+    
+    def _validate_and_store_kv(
+        self,
+        key: str,
+        kvtype: Optional[str],
+        value: Any,
+        incident: Incident,
+    ) -> None:
+        """
+        Validate and store a KV pair.
+        
+        If key is special (config-defined), validates based on config.
+        Otherwise stores with provided type hint (or as string if no hint).
+        Validation only happens on write, so old values remain searchable
+        if config changes.
+        
+        Args:
+            key: Field name
+            kvtype: Type hint from KVParser ($ for string, # for int, % for float, None for untyped)
+            value: Value to store
+            incident: Incident to store in
+        """
+        field = self.project_config.get_special_field(key)
+        
+        if field:
+            # Special field - validate against config, ignore type hint
+            if not field.editable:
+                raise ValueError(f"'{key}' cannot be edited")
+            
+            if field.field_type == "single":
+                is_valid, error = self.project_config.validate_field(key, value)
+                if not is_valid:
+                    raise ValueError(error)
+            
+            # Store with config-defined type
+            if field.value_type == "string":
+                if field.field_type == "single":
+                    incident.kv_strings[key] = [value]
+                else:
+                    if not isinstance(value, list):
+                        value = [value]
+                    incident.kv_strings[key] = value
+            elif field.value_type == "integer":
+                if field.field_type == "single":
+                    incident.kv_integers[key] = [int(value)]
+                else:
+                    if not isinstance(value, list):
+                        value = [value]
+                    incident.kv_integers[key] = [int(v) for v in value]
+            elif field.value_type == "float":
+                if field.field_type == "single":
+                    incident.kv_floats[key] = [float(value)]
+                else:
+                    if not isinstance(value, list):
+                        value = [value]
+                    incident.kv_floats[key] = [float(v) for v in value]
+        else:
+            # Non-special field - use type hint
+            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                # Default to string if no type hint
+                if isinstance(value, list):
+                    incident.kv_strings[key] = [str(v) for v in value]
+                else:
+                    incident.kv_strings[key] = [str(value)] if value is not None else []
+            elif kvtype == KVParser.TYPE_INTEGER:
+                if isinstance(value, list):
+                    incident.kv_integers[key] = [int(v) for v in value]
+                else:
+                    incident.kv_integers[key] = [int(value)] if value is not None else []
+            elif kvtype == KVParser.TYPE_FLOAT:
+                if isinstance(value, list):
+                    incident.kv_floats[key] = [float(v) for v in value]
+                else:
+                    incident.kv_floats[key] = [float(value)] if value is not None else []
+    
+    def create_incident(
+        self,
+        kv_list: List[str],
+        description: Optional[str] = None,
+    ) -> str:
+        """
+        Create new incident from KV list.
+        
+        Args:
+            kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
+            description: Optional incident description
+        
+        Example:
+            manager.create_incident(
+                kv_list=[
+                    "title$Database error",
+                    "severity$high",
+                    "status$open",
+                    "tags$backend",
+                    "tags$database",
+                ]
+            )
+        """
+        user_config = DatabaseDiscovery.get_user_config()
+        incident_id = IDGenerator.generate_incident_id()
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        
+        # Initialize empty incident
+        incident = Incident(id=incident_id)
+        
+        # Parse and apply all KV updates
+        parsed_kv = KVParser.parse_kv_list(kv_list)
+        for key, kvtype, op, value in parsed_kv:
+            if op == '-':
+                raise ValueError(f"Cannot use removal operator '-' when creating incident")
+            self._validate_and_store_kv(key, kvtype, value, incident)
+        
+        # Add system fields (no type hints, will validate if special)
+        self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
+        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, user_config["user"]["handle"], incident)
+        self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
+        
+        if description:
+            self._validate_and_store_kv('description', KVParser.TYPE_STRING, description, incident)
+        
+        # Save to file
+        self.storage.save_incident(incident, self.project_config)
+        
+        # Update index
+        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_kv_data(incident)
+        
+        # Create initial update
+        initial_message = self._format_initial_update(incident)
+        initial_update = IncidentUpdate(
+            id="auto",
+            incident_id=incident_id,
+            timestamp=now,
+            author=user_config["user"]["handle"],
+            message=initial_message,
+        )
+        
+        self.storage.save_update(incident_id, initial_update)
+        self.index_db.index_update(initial_update)
+        
+        return incident_id
+    
+    def _format_initial_update(self, incident: Incident) -> str:
+        """Format initial update message from all KV data."""
+        lines = ["## Incident Created"]
+        lines.append("")
+        
+        # System fields to skip
+        skip_fields = {'title', 'created_at', 'created_by', 'updated_at', 'description'}
+        
+        # Format all string KV that isn't in skip list
+        for key, values in incident.kv_strings.items():
+            if key not in skip_fields and values:
+                values_str = ', '.join(str(v) for v in values)
+                lines.append(f"**{key}:** {values_str}")
+        
+        # Format all integer KV
+        for key, values in incident.kv_integers.items():
+            if values:
+                values_str = ', '.join(str(v) for v in values)
+                lines.append(f"**{key}:** {values_str}")
+        
+        # Format all float KV
+        for key, values in incident.kv_floats.items():
+            if values:
+                values_str = ', '.join(str(v) for v in values)
+                lines.append(f"**{key}:** {values_str}")
+        
+        # Add description if present
+        if 'description' in incident.kv_strings:
+            description = incident.kv_strings['description'][0] if incident.kv_strings['description'] else None
+            if description:
+                lines.append("")
+                lines.append("### Description")
+                lines.append("")
+                lines.append(description)
+        
+        return "\n".join(lines)
+    
+    def update_incident_kv(
+        self,
+        incident_id: str,
+        kv_list: List[str],
+    ) -> bool:
+        """
+        Update incident fields from KV list.
+        
+        Args:
+            incident_id: Incident ID
+            kv_list: List of KV strings to update/remove
+        
+        Example:
+            manager.update_incident_info(
+                incident_id,
+                ["status$resolved", "assignees$alice"]
+            )
+        """
+        incident = self.storage.load_incident(incident_id, self.project_config)
+        if not incident:
+            raise RuntimeError(f"Incident {incident_id} not found")
+        
+        user_config = DatabaseDiscovery.get_user_config()
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        
+        updated_fields = []
+        
+        # Parse KV updates
+        parsed_kv = KVParser.parse_kv_list(kv_list)
+        for key, kvtype, op, value in parsed_kv:
+            if op == '-':
+                # Removal
+                if key in incident.kv_strings:
+                    del incident.kv_strings[key]
+                if key in incident.kv_integers:
+                    del incident.kv_integers[key]
+                if key in incident.kv_floats:
+                    del incident.kv_floats[key]
+                updated_fields.append(f"removed {key}")
+            else:
+                # Update
+                self._validate_and_store_kv(key, kvtype, value, incident)
+                updated_fields.append(key)
+        
+        # Update timestamp
+        incident.kv_strings['updated_at'] = [now]
+        
+        # Save and reindex
+        self.storage.save_incident(incident, self.project_config)
+        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_kv_data(incident)
+        
+        # Log update
+        update_msg = f"Updated: {', '.join(updated_fields)}"
+        incident_update = IncidentUpdate(
+            id="auto",
+            incident_id=incident_id,
+            timestamp=now,
+            author=user_config["user"]["handle"],
+            message=update_msg,
+        )
+        self.storage.save_update(incident_id, incident_update)
+        self.index_db.index_update(incident_update)
+        
+        return True
+    
+    def get_incident(self, incident_id: str) -> Optional[Incident]:
+        """Get incident from file storage."""
+        return self.storage.load_incident(incident_id, self.project_config)
+    
+    def get_updates(self, incident_id: str) -> List[IncidentUpdate]:
+        """
+        Get all updates for an incident.
+        
+        Args:
+            incident_id: Incident ID
+            
+        Returns:
+            List of updates in chronological order
+        """
+        return self.storage.load_updates(incident_id)
+    
+    def add_update(
+        self,
+        incident_id: str,
+        message: Optional[str] = None,
+        use_stdin: bool = False,
+        use_editor: bool = False,
+        kv_single: Optional[List[str]] = None,
+        kv_multi: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Add update with optional independent KV data.
+        
+        Args:
+            incident_id: Incident ID
+            message: Update message
+            use_stdin: Read from STDIN
+            use_editor: Open editor
+            kv_single: Single-value KV for UPDATE only (replaces keys)
+            kv_multi: Multi-value KV for UPDATE only (adds values)
+        
+        Returns:
+            Update ID
+        """
+        incident = self.get_incident(incident_id)
+        if not incident:
+            raise RuntimeError(f"Incident {incident_id} not found")
+        
+        user_config = DatabaseDiscovery.get_user_config()
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        
+        # Determine message source
+        final_message = None
+        
+        if message:
+            final_message = message
+        elif use_stdin and StdinHandler.has_stdin_data():
+            final_message = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+        elif use_editor:
+            final_message = EditorConfig.launch_editor(
+                initial_content=(
+                    "# Add your update below\n"
+                    "# Lines starting with # are ignored\n"
+                    "\n"
+                ),
+            )
+            final_message = "\n".join(
+                line
+                for line in final_message.split("\n")
+                if not line.strip().startswith("#")
+            ).strip()
+        
+        if not final_message:
+            raise RuntimeError(
+                "No update provided.\n"
+                "\nUsage:\n"
+                "  incident add-update <id> --message \"text\"\n"
+                "  echo \"text\" | incident add-update <id>\n"
+                "  incident add-update <id>  # opens editor"
+            )
+        
+        # Parse KV data for the UPDATE ONLY
+        update_kv_strings = {}
+        update_kv_integers = {}
+        update_kv_floats = {}
+        
+        if kv_single:
+            parsed_kv = KVParser.parse_kv_list(kv_single)
+            for key, kvtype, op, value in parsed_kv:
+                if op != '-':
+                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                        update_kv_strings[key] = [str(value)]
+                    elif kvtype == KVParser.TYPE_INTEGER:
+                        update_kv_integers[key] = [int(value)]
+                    elif kvtype == KVParser.TYPE_FLOAT:
+                        update_kv_floats[key] = [float(value)]
+        
+        if kv_multi:
+            parsed_kv = KVParser.parse_kv_list(kv_multi)
+            for key, kvtype, op, value in parsed_kv:
+                if op != '-':
+                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                        if key not in update_kv_strings:
+                            update_kv_strings[key] = []
+                        update_kv_strings[key].append(str(value))
+                    elif kvtype == KVParser.TYPE_INTEGER:
+                        if key not in update_kv_integers:
+                            update_kv_integers[key] = []
+                        update_kv_integers[key].append(int(value))
+                    elif kvtype == KVParser.TYPE_FLOAT:
+                        if key not in update_kv_floats:
+                            update_kv_floats[key] = []
+                        update_kv_floats[key].append(float(value))
+        
+        # Generate update ID
+        update_id = IDGenerator.generate_update_id()
+        
+        update = IncidentUpdate(
+            id=update_id,
+            incident_id=incident_id,
+            timestamp=now,
+            author=user_config["user"]["handle"],
+            message=final_message,
+            kv_strings=update_kv_strings if update_kv_strings else None,
+            kv_integers=update_kv_integers if update_kv_integers else None,
+            kv_floats=update_kv_floats if update_kv_floats else None,
+        )
+        
+        # Save update
+        self.storage.save_update(incident_id, update)
+        self.index_db.index_update(update)
+        
+        # Index update KV data (completely independent from incident KV)
+        self.index_db.index_update_kv_data(
+            incident_id,
+            update_id,
+            kv_strings=update_kv_strings or None,
+            kv_integers=update_kv_integers or None,
+            kv_floats=update_kv_floats or None,
+        )
+        
+        # Update incident's updated_at
+        incident.kv_strings['updated_at'] = [now]
+        self.storage.save_incident(incident, self.project_config)
+        
+        return update_id
+    
+    def list_incidents(
+        self,
+        ksearch_list: Optional[List[str]] = None,
+        ksort_list: Optional[List[str]] = None,
+        limit: int = 100,
+    ) -> List[Incident]:
+        """
+        List incidents with optional KV search and sort.
+        
+        Args:
+            ksearch_list: List of search expressions like ["status=open", "severity>low"]
+            ksort_list: List of sort expressions like ["severity", "created_at-"]
+            limit: Max results
+        
+        Raises:
+            RuntimeError: If search/sort expressions are invalid
+        """
+        # Search (returns all if ksearch_list is None/empty)
+        parsed_ksearch = []
+        if ksearch_list:
+            try:
+                parsed_ksearch = [KVSearchParser.parse_ksearch(expr) for expr in ksearch_list]
+            except ValueError as e:
+                raise RuntimeError(f"Invalid ksearch expression: {e}")
+        
+        incident_ids = self.index_db.search_kv(parsed_ksearch, return_updates=False)
+        
+        if not incident_ids:
+            return []
+        
+        # Sort if requested
+        if ksort_list:
+            try:
+                parsed_ksort = [KVSearchParser.parse_ksort(expr) for expr in ksort_list]
+                incident_ids = self.index_db.get_sorted_incidents(incident_ids, parsed_ksort)
+            except ValueError as e:
+                raise RuntimeError(f"Invalid ksort expression: {e}")
+        
+        # Load incident objects from file storage
+        incidents = []
+        for incident_id in incident_ids[:limit]:
+            incident = self.storage.load_incident(incident_id, self.project_config)
+            if incident:
+                incidents.append(incident)
+        
+        return incidents
+    
+    def search_updates(
+        self,
+        ksearch: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[tuple]:
+        """
+        Search updates by key-value filters.
+        
+        Args:
+            ksearch: List of key-value search expressions for update KV
+            limit: Maximum results
+        
+        Returns:
+            List of (update, incident_id, incident_title) tuples
+        
+        Raises:
+            RuntimeError: If ksearch expressions are invalid
+        """
+        if not ksearch:
+            return []
+        
+        try:
+            ksearch_parsed = [KVSearchParser.parse_ksearch(expr) for expr in ksearch]
+        except ValueError as e:
+            raise RuntimeError(f"Invalid ksearch expression: {e}")
+        
+        # Search for updates with KV data
+        matching_update_ids = self.index_db.search_kv(
+            ksearch_parsed,
+            return_updates=True
+        )
+        
+        if not matching_update_ids:
+            return []
+        
+        # Load updates and their parent incidents
+        results = []
+        seen_updates = set()
+        
+        for update_id in matching_update_ids[:limit * 2]:
+            if update_id in seen_updates:
+                continue
+            
+            # Find which incident this update belongs to
+            # (need to search incident KV index for incident_id references)
+            for incident_id in self.index_db.list_all_incident_ids_with_update(update_id):
+                updates = self.storage.load_updates(incident_id)
+                matching_update = next(
+                    (u for u in updates if u.id == update_id),
+                    None
+                )
+                
+                if matching_update:
+                    incident = self.get_incident(incident_id)
+                    if incident:
+                        incident_title = (
+                            incident.kv_strings.get('title', ['Unknown'])[0]
+                            if incident.kv_strings else 'Unknown'
+                        )
+                        results.append((matching_update, incident_id, incident_title))
+                        seen_updates.add(update_id)
+                        break
+        
+        return results[:limit]
 
 
 # ============================================================================
