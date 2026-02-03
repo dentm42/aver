@@ -3033,6 +3033,67 @@ class IncidentCLI:
             help="Prompt to choose database if multiple available",
         )
 
+    def _add_kv_options(self, parser, include_old_style=True):
+        """
+        Add key-value options to a parser.
+        
+        Includes both new intuitive options and legacy options for tech-heads.
+        """
+        # New intuitive single-value options
+        parser.add_argument(
+            "--text", "-t",
+            action="append",
+            dest="text",
+            help="Single-value text data: 'key=value' (can use multiple times)",
+        )
+        parser.add_argument(
+            "--number", "-n",
+            action="append",
+            dest="number",
+            help="Single-value numeric data: 'key=123' (can use multiple times)",
+        )
+        parser.add_argument(
+            "--decimal", "-d",
+            action="append",
+            dest="decimal",
+            help="Single-value decimal data: 'key=1.5' (can use multiple times)",
+        )
+        
+        # New intuitive multi-value options
+        parser.add_argument(
+            "--text-multi", "--tm",
+            action="append",
+            dest="text_multi",
+            help="Multi-value text data: 'key=value' (can use multiple times)",
+        )
+        parser.add_argument(
+            "--number-multi", "--nm",
+            action="append",
+            dest="number_multi",
+            help="Multi-value numeric data: 'key=123' (can use multiple times)",
+        )
+        parser.add_argument(
+            "--decimal-multi", "--dm",
+            action="append",
+            dest="decimal_multi",
+            help="Multi-value decimal data: 'key=1.5' (can use multiple times)",
+        )
+        
+        # Legacy options (for tech-heads)
+        if include_old_style:
+            parser.add_argument(
+                "--kv",
+                action="append",
+                dest="kv_single",
+                help="[Legacy] Single-value KV data: 'key$value', 'key#123', 'key%%1.5'",
+            )
+            parser.add_argument(
+                "--kmv",
+                action="append",
+                dest="kv_multi",
+                help="[Legacy] Multi-value KV data: 'key$value', 'key#123', 'key%%1.5'",
+            )
+
     def _get_manager(self, args) -> IncidentManager:
         """Handle database selection and return manager."""
         interactive = getattr(args, 'choose', False)
@@ -3042,20 +3103,83 @@ class IncidentCLI:
             interactive=interactive,
         )
 
+    def _parse_and_convert_kv(self, raw_values: List[str], type_marker: str) -> List[str]:
+        """
+        Parse key=value pairs and convert to internal kv format.
+        
+        Args:
+            raw_values: List of "key=value" strings
+            type_marker: "$" for string, "#" for int, "%" for float
+        
+        Returns:
+            List of "key<marker>value" strings
+        
+        Raises:
+            ValueError: If format is invalid
+        """
+        result = []
+        if not raw_values:
+            return result
+        
+        for item in raw_values:
+            if "=" not in item:
+                raise ValueError(f"Invalid format: {item}. Expected 'key=value'")
+            key, value = item.split("=", 1)
+            if not key:
+                raise ValueError(f"Empty key in: {item}")
+            if not value:
+                raise ValueError(f"Empty value in: {item}")
+            result.append(f"{key}{type_marker}{value}")
+        
+        return result
+
     def _build_kv_list(self, manager: IncidentManager, args) -> List[str]:
         """
         Build KV list from special field arguments and generic KV options.
         
-        Processes special fields defined in ProjectConfig as well as
-        generic --kv and --kmv arguments.
+        Processes special fields defined in ProjectConfig, new intuitive options,
+        and legacy --kv/--kmv arguments. Prevents mixing special keys with new-style options.
         """
         kv_list = []
+        special_fields = manager.project_config.get_special_fields()
+        special_field_names = set(special_fields.keys())
+        
+        # Check if any new-style options were used
+        new_style_used = (
+            getattr(args, 'text', None) or 
+            getattr(args, 'number', None) or 
+            getattr(args, 'decimal', None) or
+            getattr(args, 'text_multi', None) or
+            getattr(args, 'number_multi', None) or
+            getattr(args, 'decimal_multi', None)
+        )
+        
+        # If new-style options are used, check for conflicts with special keys
+        if new_style_used:
+            used_keys = set()
+            for opt in [
+                getattr(args, 'text', None),
+                getattr(args, 'number', None),
+                getattr(args, 'decimal', None),
+                getattr(args, 'text_multi', None),
+                getattr(args, 'number_multi', None),
+                getattr(args, 'decimal_multi', None),
+            ]:
+                if opt:
+                    for item in opt:
+                        key = item.split("=", 1)[0]
+                        used_keys.add(key)
+            
+            # Check for intersection with special keys
+            conflicts = used_keys & special_field_names
+            if conflicts:
+                raise ValueError(
+                    f"Cannot use special keys with new-style options: {', '.join(sorted(conflicts))}. "
+                    f"Use special field arguments instead: --{' --'.join(sorted(conflicts))}"
+                )
         
         # Process special fields from config
-        special_fields = manager.project_config.get_special_fields()
-        
         for field_name, field_def in special_fields.items():
-            # Check if this special field was provided as an argument
             if hasattr(args, field_name) and getattr(args, field_name) is not None:
                 value = getattr(args, field_name)
                 
@@ -3078,11 +3202,34 @@ class IncidentCLI:
                     else:
                         kv_list.append(f"{field_name}{type_prefix}{value}")
         
-        # Add generic single-value KV arguments
+        # Process new-style options (with key=value parsing)
+        try:
+            if getattr(args, 'text', None):
+                kv_list.extend(self._parse_and_convert_kv(args.text, "$"))
+            
+            if getattr(args, 'number', None):
+                kv_list.extend(self._parse_and_convert_kv(args.number, "#"))
+            
+            if getattr(args, 'decimal', None):
+                kv_list.extend(self._parse_and_convert_kv(args.decimal, "%"))
+            
+            if getattr(args, 'text_multi', None):
+                kv_list.extend(self._parse_and_convert_kv(args.text_multi, "$"))
+            
+            if getattr(args, 'number_multi', None):
+                kv_list.extend(self._parse_and_convert_kv(args.number_multi, "#"))
+            
+            if getattr(args, 'decimal_multi', None):
+                kv_list.extend(self._parse_and_convert_kv(args.decimal_multi, "%"))
+        
+        except ValueError as e:
+            raise RuntimeError(str(e))
+        
+        # Add legacy single-value KV arguments
         if hasattr(args, 'kv_single') and args.kv_single:
             kv_list.extend(args.kv_single)
         
-        # Add generic multi-value KV arguments
+        # Add legacy multi-value KV arguments
         if hasattr(args, 'kv_multi') and args.kv_multi:
             kv_list.extend(args.kv_multi)
         
@@ -3101,10 +3248,8 @@ class IncidentCLI:
             if not field_def.editable:
                 continue
             
-            # Build argument name
             arg_name = f"--{field_name}"
             
-            # Determine argument type and properties
             kwargs = {
                 "help": f"{field_name} ({field_def.field_type}, {field_def.value_type})",
                 "dest": field_name,
@@ -3144,26 +3289,11 @@ class IncidentCLI:
             help="Create a new record",
         )
         self._add_common_args(record_new_parser)
-        
-        # We'll add special fields dynamically in _cmd_create
-        record_new_parser.add_argument(
-            "--kv",
-            action="append",
-            dest="kv_single",
-            help="Single-value KV data: 'key$value', 'key#123', 'key%1.5'",
-        )
-        record_new_parser.add_argument(
-            "--kmv",
-            action="append",
-            dest="kv_multi",
-            help="Multi-value KV data: 'key$value', 'key#123', 'key%1.5'",
-        )
+        self._add_kv_options(record_new_parser)
         record_new_parser.add_argument(
             "--description",
             help="Detailed description",
         )
-        
-        # Store parser reference for dynamic arg addition
         record_new_parser._special_fields_parser = True
         
         # record view
@@ -3206,19 +3336,8 @@ class IncidentCLI:
         )
         self._add_common_args(record_update_parser)
         record_update_parser.add_argument("record_id", help="Record ID")
+        self._add_kv_options(record_update_parser)
         record_update_parser._special_fields_parser = True
-        record_update_parser.add_argument(
-            "--kv",
-            action="append",
-            dest="kv_single",
-            help="Single-value KV data: 'key$value' or 'key-' to remove",
-        )
-        record_update_parser.add_argument(
-            "--kmv",
-            action="append",
-            dest="kv_multi",
-            help="Multi-value KV data: 'key$value' or 'key$value-' to remove",
-        )
         
         # ====================================================================
         # NOTE COMMANDS
@@ -3249,18 +3368,7 @@ class IncidentCLI:
             "--message",
             help="Note message text",
         )
-        note_add_parser.add_argument(
-            "--kv",
-            action="append",
-            dest="kv_single",
-            help="Single-value KV data for note only: 'key$value'",
-        )
-        note_add_parser.add_argument(
-            "--kmv",
-            action="append",
-            dest="kv_multi",
-            help="Multi-value KV data for note only: 'key$value'",
-        )
+        self._add_kv_options(note_add_parser, include_old_style=True)
         
         # note list
         note_list_parser = note_subparsers.add_parser(
@@ -3415,7 +3523,6 @@ class IncidentCLI:
         if args.location:
             db_root = Path(args.location)
         else:
-            # Try to find git repo root
             try:
                 result = subprocess.run(
                     ["git", "rev-parse", "--show-toplevel"],
@@ -3428,7 +3535,6 @@ class IncidentCLI:
             except subprocess.CalledProcessError:
                 db_root = Path.cwd() / ".aver"
 
-        # Enforce repo boundary
         if not DatabaseDiscovery.enforce_repo_boundary(
             db_root,
             override=getattr(args, 'override_repo_boundary', False),
@@ -3442,7 +3548,6 @@ class IncidentCLI:
 
         db_root.mkdir(parents=True, exist_ok=True)
         
-        # Initialize storage and index
         storage = IncidentFileStorage(db_root)
         index_db = IncidentIndexDatabase(db_root / "aver.db")
 
@@ -3518,12 +3623,10 @@ class IncidentCLI:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        # Format and display record
         print(f"\n{'='*70}")
         print(f"Record: {record.id}")
         print(f"{'='*70}\n")
         
-        # Display all KV data
         if record.kv_strings:
             print("String Fields:")
             for key, values in record.kv_strings.items():
@@ -3562,7 +3665,6 @@ class IncidentCLI:
             print("No records found")
             return
 
-        # Print table header
         print(f"\n{'ID':<15} {'Title':<40} {'Updated':<20}")
         print("─" * 80)
 
@@ -3588,7 +3690,6 @@ class IncidentCLI:
             print("Error: No fields to update", file=sys.stderr)
             sys.exit(1)
         
-        # Update record
         manager.update_incident_info(
             args.record_id,
             kv_list=kv_list,
@@ -3600,18 +3701,20 @@ class IncidentCLI:
         """Add note to record."""
         manager = self._get_manager(args)
 
-        # Determine message source
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
 
         try:
+            # Build KV list for note (uses new-style options)
+            kv_list = self._build_kv_list(manager, args)
+            
             note_id = manager.add_update(
                 args.record_id,
                 message=args.message if has_message else None,
                 use_stdin=has_stdin and not has_message,
                 use_editor=not (has_message or has_stdin),
-                kv_single=getattr(args, 'kv_single', None),
-                kv_multi=getattr(args, 'kv_multi', None),
+                kv_single=kv_list,  # Pass as single list since we've already converted
+                kv_multi=None,
             )
             print(f"✓ Added note: {note_id}")
         except RuntimeError as e:
@@ -3641,7 +3744,6 @@ class IncidentCLI:
             print("─" * 70)
             print(note.message)
             
-            # Show note KV data if present
             if note.kv_strings or note.kv_integers or note.kv_floats:
                 print("\nNote KV Data:")
                 if note.kv_strings:
@@ -3687,7 +3789,6 @@ class IncidentCLI:
         """Rebuild search index."""
         try:
             manager = self._get_manager(args)
-            # Assuming IncidentReindexer exists or we need to implement it
             reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
             count = reindexer.reindex_all(verbose=args.verbose)
             print(f"✓ Reindexed {count} records")
@@ -3726,6 +3827,7 @@ class IncidentCLI:
         print("Use: --choose to select interactively")
         print("     --location PATH to specify explicitly")
         print("="*70 + "\n")
+
 
 
 # ============================================================================
