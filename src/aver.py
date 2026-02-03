@@ -69,120 +69,258 @@ class UserIdentity:
 
 @dataclass
 class Incident:
-    """Incident record."""
-
-    id: str
-    title: str
-    created_at: str
-    created_by: str
-    severity: str
-    status: str
-    tags: List[str]
-    assignees: List[str]
-    description: Optional[str] = None
-    updated_at: Optional[str] = None
-    kv_strings: Optional[Dict[str, List[str]]] = None
-    kv_integers: Optional[Dict[str, List[int]]] = None
-    kv_floats: Optional[Dict[str, List[float]]] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        d = self.__dict__.copy()
-        # Remove empty KV dicts from output
-        if not self.kv_strings:
-            d.pop('kv_strings', None)
-        if not self.kv_integers:
-            d.pop('kv_integers', None)
-        if not self.kv_floats:
-            d.pop('kv_floats', None)
-        return d
-
-    def to_markdown(self) -> str:
-        """Convert incident to Markdown with TOML header."""
+    """Incident with all metadata stored in KV."""
     
-        def dict_to_toml_inline(d):
-            """Convert dict to inline TOML table format."""
-            if not d:
-                return "{}"
-            items = []
-            for key, value in d.items():
-                if isinstance(value, str):
-                    items.append(f'{key} = "{value}"')
-                elif isinstance(value, (int, float)):
-                    items.append(f'{key} = {value}')
-                elif isinstance(value, list):
-                    # Handle list values
-                    formatted_values = [f'"{v}"' if isinstance(v, str) else str(v) for v in value]
-                    items.append(f'{key} = [{", ".join(formatted_values)}]')
-            return "{ " + ", ".join(items) + " }"
+    # Type hint suffixes
+    TYPE_HINT_STRING = "$"
+    TYPE_HINT_INTEGER = "#"
+    TYPE_HINT_FLOAT = "%"
     
-        def list_to_toml(lst):
-            """Convert list to TOML array format."""
-            if not lst:
-                return "[]"
-            formatted = [f'"{item}"' if isinstance(item, str) else str(item) for item in lst]
-            return "[" + ", ".join(formatted) + "]"
+    TYPE_HINTS = {
+        TYPE_HINT_STRING: "string",
+        TYPE_HINT_INTEGER: "integer",
+        TYPE_HINT_FLOAT: "float",
+    }
     
-        toml_header = f"""+++
-id = "{self.id}"
-title = "{self.title}"
-created_at = "{self.created_at}"
-created_by = "{self.created_by}"
-severity = "{self.severity}"
-status = "{self.status}"
-tags = {list_to_toml(self.tags)}
-assignees = {list_to_toml(self.assignees)}
-updated_at = "{self.updated_at or self.created_at}"
-kv_strings = {dict_to_toml_inline(self.kv_strings or {})}
-kv_integers = {dict_to_toml_inline(self.kv_integers or {})}
-kv_floats = {dict_to_toml_inline(self.kv_floats or {})}
-+++
-
-"""
-        return toml_header + (self.description or "")
-
+    def __init__(
+        self,
+        id: str,
+        kv_strings: Optional[Dict[str, List[str]]] = None,
+        kv_integers: Optional[Dict[str, List[int]]] = None,
+        kv_floats: Optional[Dict[str, List[float]]] = None,
+    ):
+        self.id = id
+        self.kv_strings = kv_strings or {}
+        self.kv_integers = kv_integers or {}
+        self.kv_floats = kv_floats or {}
+    
+    @staticmethod
+    def _add_type_hint(key: str, value_type: str) -> str:
+        """Add type hint suffix to key."""
+        if value_type == "string":
+            return f"{key}{Incident.TYPE_HINT_STRING}"
+        elif value_type == "integer":
+            return f"{key}{Incident.TYPE_HINT_INTEGER}"
+        elif value_type == "float":
+            return f"{key}{Incident.TYPE_HINT_FLOAT}"
+        return key
+    
+    @staticmethod
+    def _strip_type_hint(key: str) -> tuple[str, Optional[str]]:
+        """
+        Strip type hint suffix from key.
+        
+        Returns:
+            (clean_key, type_hint) where type_hint is "string", "integer", "float", or None
+        """
+        if key.endswith(Incident.TYPE_HINT_STRING):
+            return key[:-1], "string"
+        elif key.endswith(Incident.TYPE_HINT_INTEGER):
+            return key[:-1], "integer"
+        elif key.endswith(Incident.TYPE_HINT_FLOAT):
+            return key[:-1], "float"
+        return key, None
+    
+    def get_value(
+        self,
+        field_name: str,
+        project_config: ProjectConfig,
+        default: Any = None,
+    ) -> Any:
+        """Get field value, respecting config type."""
+        field = project_config.get_special_field(field_name)
+        if not field:
+            return default
+        
+        if field.value_type == "string":
+            values = self.kv_strings.get(field_name, [default])
+        elif field.value_type == "integer":
+            values = self.kv_integers.get(field_name, [default])
+        elif field.value_type == "float":
+            values = self.kv_floats.get(field_name, [default])
+        else:
+            return default
+        
+        return values[0] if field.field_type == "single" else values
+    
+    def set_value(
+        self,
+        field_name: str,
+        value: Any,
+        project_config: ProjectConfig,
+    ) -> None:
+        """Set field value, respecting config type."""
+        field = project_config.get_special_field(field_name)
+        if not field:
+            raise ValueError(f"Unknown field: {field_name}")
+        
+        if not field.editable:
+            raise ValueError(f"Field '{field_name}' is not editable")
+        
+        if field.value_type == "string":
+            self.kv_strings[field_name] = [value] if field.field_type == "single" else value
+        elif field.value_type == "integer":
+            self.kv_integers[field_name] = [int(value)] if field.field_type == "single" else [int(v) for v in value]
+        elif field.value_type == "float":
+            self.kv_floats[field_name] = [float(value)] if field.field_type == "single" else [float(v) for v in value]
+    
+    def to_markdown(self, project_config: ProjectConfig) -> str:
+        """Serialize to Markdown with TOML frontmatter."""
+        toml_dict = {}
+        
+        # Extract special fields for TOML section (in order they're defined)
+        for field_name in project_config.get_special_fields().keys():
+            field = project_config.get_special_field(field_name)
+            
+            if field.field_type == "single":
+                if field.value_type == "string":
+                    value = self.kv_strings.get(field_name, [''])[0]
+                elif field.value_type == "integer":
+                    value = self.kv_integers.get(field_name, [0])[0]
+                elif field.value_type == "float":
+                    value = self.kv_floats.get(field_name, [0.0])[0]
+            else:  # multi
+                if field.value_type == "string":
+                    value = self.kv_strings.get(field_name, [])
+                elif field.value_type == "integer":
+                    value = self.kv_integers.get(field_name, [])
+                elif field.value_type == "float":
+                    value = self.kv_floats.get(field_name, [])
+            
+            toml_dict[field_name] = value
+        
+        toml_str = toml.dumps(toml_dict)
+        
+        # Any OTHER KV data (custom fields not in special_fields)
+        other_kv = self._get_other_kv(project_config)
+        other_section = ""
+        if other_kv:
+            # Add type hints to custom field keys
+            hinted_kv = {}
+            for key, val in other_kv.items():
+                # Determine type from which dict it came from
+                if key in self.kv_strings:
+                    hinted_key = self._add_type_hint(key, "string")
+                elif key in self.kv_integers:
+                    hinted_key = self._add_type_hint(key, "integer")
+                elif key in self.kv_floats:
+                    hinted_key = self._add_type_hint(key, "float")
+                else:
+                    hinted_key = key
+                hinted_kv[hinted_key] = val
+            
+            other_section = f"\n## Custom Fields\n\n{toml.dumps(hinted_kv)}"
+        
+        return f"+++\n{toml_str}+++\n\n{other_section}"
+    
+    def _get_other_kv(self, project_config: ProjectConfig) -> dict:
+        """Get KV data that's NOT special fields."""
+        special_names = set(project_config.get_special_fields().keys())
+        
+        other = {}
+        for key in self.kv_strings.keys():
+            if key not in special_names:
+                other[key] = self.kv_strings[key]
+        for key in self.kv_integers.keys():
+            if key not in special_names:
+                other[key] = self.kv_integers[key]
+        for key in self.kv_floats.keys():
+            if key not in special_names:
+                other[key] = self.kv_floats[key]
+        
+        return other
+    
     @classmethod
-    def from_markdown(cls, content: str, incident_id: str) -> "Incident":
-        """Parse incident from Markdown with TOML header."""
-        # Split on +++ delimiter
-        parts = content.split("+++")
-        if len(parts) < 3:
-            raise ValueError("Invalid incident file format")
-
-        toml_str = parts[1].strip()
-        description = parts[2].strip() if len(parts) > 2 else ""
-
-        try:
-            data = tomllib.loads(toml_str)
-        except Exception as e:
-            raise ValueError(f"Failed to parse TOML header: {e}")
-
-        # Parse KV data with type conversions
-        kv_strings = data.get("kv_strings", {})
+    def from_markdown(
+        cls,
+        content: str,
+        incident_id: str,
+        project_config: ProjectConfig,
+    ) -> "Incident":
+        """Deserialize from Markdown."""
+        # Parse TOML frontmatter
+        match = re.match(r'^\+\+\+\n(.*?)\n\+\+\+', content, re.DOTALL)
+        if not match:
+            raise ValueError("Invalid Markdown format: missing TOML frontmatter")
+        
+        toml_dict = toml.loads(match.group(1))
+        
+        # Rebuild KV from special fields
+        kv_strings = {}
         kv_integers = {}
         kv_floats = {}
         
-        # Convert integer strings to integers
-        for key, values in data.get("kv_integers", {}).items():
-            kv_integers[key] = [int(v) if isinstance(v, str) else v for v in values]
+        special_fields = project_config.get_special_fields()
+        special_field_names = set(special_fields.keys())
         
-        # Convert float strings to floats
-        for key, values in data.get("kv_floats", {}).items():
-            kv_floats[key] = [float(v) if isinstance(v, str) else v for v in values]
-
+        # Process items in frontmatter TOML
+        for field_name, value in toml_dict.items():
+            if field_name in special_field_names:
+                # Handle as special field
+                field = special_fields[field_name]
+                
+                if field.field_type == "single":
+                    if field.value_type == "string":
+                        kv_strings[field_name] = [value]
+                    elif field.value_type == "integer":
+                        kv_integers[field_name] = [int(value)]
+                    elif field.value_type == "float":
+                        kv_floats[field_name] = [float(value)]
+                else:  # multi
+                    if not isinstance(value, list):
+                        value = [value]
+                    if field.value_type == "string":
+                        kv_strings[field_name] = value
+                    elif field.value_type == "integer":
+                        kv_integers[field_name] = [int(v) for v in value]
+                    elif field.value_type == "float":
+                        kv_floats[field_name] = [float(v) for v in value]
+            else:
+                # Handle as custom field - should be in "Custom Fields" section
+                # Skip frontmatter items not in special_fields
+                pass
+        
+        # Parse "Custom Fields" section if present
+        rest = content[match.end():].strip()
+        if rest.startswith("## Custom Fields"):
+            custom_match = re.search(r'## Custom Fields\n\n(.*)', rest, re.DOTALL)
+            if custom_match:
+                try:
+                    custom_toml = toml.loads(custom_match.group(1))
+                    for key_with_hint, val in custom_toml.items():
+                        # Strip type hint from key
+                        clean_key, value_type = cls._strip_type_hint(key_with_hint)
+                        
+                        # Store in appropriate KV dictionary
+                        if value_type == "string":
+                            if isinstance(val, list):
+                                kv_strings[clean_key] = val
+                            else:
+                                kv_strings[clean_key] = [str(val)]
+                        elif value_type == "integer":
+                            if isinstance(val, list):
+                                kv_integers[clean_key] = [int(v) for v in val]
+                            else:
+                                kv_integers[clean_key] = [int(val)]
+                        elif value_type == "float":
+                            if isinstance(val, list):
+                                kv_floats[clean_key] = [float(v) for v in val]
+                            else:
+                                kv_floats[clean_key] = [float(val)]
+                        else:
+                            # No type hint - shouldn't happen, but fallback to string
+                            if isinstance(val, list):
+                                kv_strings[clean_key] = [str(v) for v in val]
+                            else:
+                                kv_strings[clean_key] = [str(val)]
+                except Exception as e:
+                    print(f"Warning: Failed to parse custom fields: {e}", file=sys.stderr)
+        
         return cls(
-            id=data.get("id", incident_id),
-            title=data.get("title", ""),
-            created_at=data.get("created_at", ""),
-            created_by=data.get("created_by", ""),
-            severity=data.get("severity", "medium"),
-            status=data.get("status", "open"),
-            tags=data.get("tags", []),
-            assignees=data.get("assignees", []),
-            description=description if description else None,
-            updated_at=data.get("updated_at"),
-            kv_strings=kv_strings if kv_strings else None,
-            kv_integers=kv_integers if kv_integers else None,
-            kv_floats=kv_floats if kv_floats else None,
+            id=incident_id,
+            kv_strings=kv_strings or None,
+            kv_integers=kv_integers or None,
+            kv_floats=kv_floats or None,
         )
 
 
@@ -352,6 +490,131 @@ class ConfigDict(dict):
             del self[key]
         except KeyError:
             raise AttributeError(f"No attribute '{key}'")
+
+# ============================================================================
+# Project Configuration
+# ============================================================================
+
+class SpecialField:
+    """Definition of a special (meta) field."""
+    
+    def __init__(
+        self,
+        name: str,
+        field_type: str,  # "single" or "multi"
+        value_type: str = "string",  # "string", "integer", "float"
+        accepted_values: Optional[List[str]] = None,
+        editable: bool = True,
+    ):
+        self.name = name
+        self.field_type = field_type  # single vs multi-value
+        self.value_type = value_type
+        self.accepted_values = accepted_values or []
+        self.editable = editable
+    
+    def validate(self, value: Any) -> bool:
+        """Check if value is acceptable."""
+        if self.accepted_values and str(value) not in self.accepted_values:
+            return False
+        return True
+
+
+class ProjectConfig:
+    """Project-level configuration (stored in .aver/config.toml)."""
+    
+    def __init__(self, db_root: Path):
+        self.db_root = db_root
+        self.config_path = db_root / "config.toml"
+        self._raw_config = {}
+        self._special_fields: Dict[str, SpecialField] = {}
+        self.load()
+    
+    def load(self):
+        """Load and parse project config."""
+        if not self.config_path.exists():
+            self._init_defaults()
+            return
+        
+        try:
+            with open(self.config_path, "rb") as f:
+                self._raw_config = tomllib.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to read project config: {e}", file=sys.stderr)
+            self._init_defaults()
+            return
+        
+        self._parse_special_fields()
+    
+    def _init_defaults(self):
+        """Initialize with sensible defaults."""
+        self._raw_config = {
+            "special_fields": {
+                "title": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": True,
+                },
+            }
+        }
+        self._parse_special_fields()
+    
+    def _parse_special_fields(self):
+        """Parse special_fields section into SpecialField objects."""
+        self._special_fields = {}
+        
+        special_fields_config = self._raw_config.get("special_fields", {})
+        
+        for field_name, field_def in special_fields_config.items():
+            field_type = field_def.get("type", "single")
+            value_type = field_def.get("value_type", "string")
+            accepted_values = field_def.get("accepted_values", [])
+            editable = field_def.get("editable", True)
+            
+            self._special_fields[field_name] = SpecialField(
+                name=field_name,
+                field_type=field_type,
+                value_type=value_type,
+                accepted_values=accepted_values,
+                editable=editable,
+            )
+    
+    def get_special_fields(self) -> Dict[str, SpecialField]:
+        """Get all special field definitions."""
+        return self._special_fields
+    
+    def get_special_field(self, name: str) -> Optional[SpecialField]:
+        """Get specific special field definition."""
+        return self._special_fields.get(name)
+    
+    def is_special_field(self, name: str) -> bool:
+        """Check if field is a special field."""
+        return name in self._special_fields
+    
+    def validate_field(self, name: str, value: Any) -> tuple[bool, Optional[str]]:
+        """
+        Validate a field value.
+        
+        Returns:
+            (is_valid, error_message)
+        """
+        field = self._special_fields.get(name)
+        if not field:
+            return False, f"Unknown field: {name}"
+        
+        if field.accepted_values and str(value) not in field.accepted_values:
+            return False, f"Invalid {name}: {value}. Accepted: {field.accepted_values}"
+        
+        return True, None
+    
+    def save(self):
+        """Save config back to file."""
+        if not toml_writer:
+            raise RuntimeError(
+                "tomli_w not available. Cannot write TOML config.\n"
+                "Install with: pip install tomli_w"
+            )
+        with open(self.config_path, "wb") as f:
+            toml_writer.dump(self._raw_config, f)
 
 
 # ============================================================================
