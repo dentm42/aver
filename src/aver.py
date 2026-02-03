@@ -1422,9 +1422,8 @@ class IncidentFileStorage:
  
 
 # ============================================================================
-# Index Database
+# Index Database (UPDATED)
 # ============================================================================
-
 
 class IncidentIndexDatabase:
     """SQLite-based index for incidents (search and filtering only)."""
@@ -1477,38 +1476,46 @@ class IncidentIndexDatabase:
             ON incident_tags(tag)
         """)
     
-        # Key-Value tables
+        # Key-Value tables - NOW WITH update_id SUPPORT
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS kv_strings (
                 incident_id TEXT NOT NULL,
+                update_id TEXT,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                PRIMARY KEY (incident_id, key, value)
+                PRIMARY KEY (incident_id, update_id, key, value)
             )
         """)
     
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS kv_integers (
                 incident_id TEXT NOT NULL,
+                update_id TEXT,
                 key TEXT NOT NULL,
                 value INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
-                PRIMARY KEY (incident_id, key, value)
+                PRIMARY KEY (incident_id, update_id, key, value)
             )
         """)
     
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS kv_floats (
                 incident_id TEXT NOT NULL,
+                update_id TEXT,
                 key TEXT NOT NULL,
                 value REAL NOT NULL,
                 created_at TEXT NOT NULL,
-                PRIMARY KEY (incident_id, key, value)
+                PRIMARY KEY (incident_id, update_id, key, value)
             )
         """)
     
         # Indices for KV searching and sorting
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_kv_strings_incident
+            ON kv_strings(incident_id, update_id)
+        """)
+
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_kv_strings_key
             ON kv_strings(key)
@@ -1520,6 +1527,11 @@ class IncidentIndexDatabase:
         """)
     
         cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_kv_integers_incident
+            ON kv_integers(incident_id, update_id)
+        """)
+
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_kv_integers_key
             ON kv_integers(key)
         """)
@@ -1527,6 +1539,11 @@ class IncidentIndexDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_kv_integers_value
             ON kv_integers(value)
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_kv_floats_incident
+            ON kv_floats(incident_id, update_id)
         """)
 
         cursor.execute("""
@@ -1569,7 +1586,7 @@ class IncidentIndexDatabase:
             ),
         )
 
-        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident.id,))
+        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ? AND source = 'incident'", (incident.id,))
 
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
@@ -1587,7 +1604,7 @@ class IncidentIndexDatabase:
             cursor.execute(
                 "INSERT INTO incident_tags (incident_id, tag) VALUES (?, ?)",
                 (incident.id, tag),
-    	    )
+            )
 
         conn.commit()
         conn.close()
@@ -1658,7 +1675,7 @@ class IncidentIndexDatabase:
                     GROUP BY incident_id
                     HAVING COUNT(DISTINCT tag) = ?
                 )
-    		"""
+            """
             params.extend(tags)
             params.append(len(tags))
 
@@ -1694,6 +1711,7 @@ class IncidentIndexDatabase:
         ]
 
     def index_update(self, update: IncidentUpdate):
+        """Index update in FTS and store KV data."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
 
@@ -1724,22 +1742,22 @@ class IncidentIndexDatabase:
         conn.close()
 
     def index_kv_data(self, incident: Incident):
-        """Index key-value data for incident."""
+        """Index key-value data for incident (update_id = NULL)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
-        # Clear existing KV data for this incident
-        cursor.execute("DELETE FROM kv_strings WHERE incident_id = ?", (incident.id,))
-        cursor.execute("DELETE FROM kv_integers WHERE incident_id = ?", (incident.id,))
-        cursor.execute("DELETE FROM kv_floats WHERE incident_id = ?", (incident.id,))
+        # Clear existing KV data for this incident (incident-level only)
+        cursor.execute("DELETE FROM kv_strings WHERE incident_id = ? AND update_id IS NULL", (incident.id,))
+        cursor.execute("DELETE FROM kv_integers WHERE incident_id = ? AND update_id IS NULL", (incident.id,))
+        cursor.execute("DELETE FROM kv_floats WHERE incident_id = ? AND update_id IS NULL", (incident.id,))
     
         # Insert string KV data
         for key, values in (incident.kv_strings or {}).items():
             for value in values:
                 try:
                     cursor.execute(
-                        "INSERT INTO kv_strings (incident_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO kv_strings (incident_id, update_id, key, value, created_at) VALUES (?, NULL, ?, ?, ?)",
                         (incident.id, key, value, now)
                     )
                 except sqlite3.IntegrityError:
@@ -1750,7 +1768,7 @@ class IncidentIndexDatabase:
             for value in values:
                 try:
                     cursor.execute(
-                        "INSERT INTO kv_integers (incident_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO kv_integers (incident_id, update_id, key, value, created_at) VALUES (?, NULL, ?, ?, ?)",
                         (incident.id, key, value, now)
                     )
                 except sqlite3.IntegrityError:
@@ -1761,7 +1779,7 @@ class IncidentIndexDatabase:
             for value in values:
                 try:
                     cursor.execute(
-                        "INSERT INTO kv_floats (incident_id, key, value, created_at) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO kv_floats (incident_id, update_id, key, value, created_at) VALUES (?, NULL, ?, ?, ?)",
                         (incident.id, key, value, now)
                     )
                 except sqlite3.IntegrityError:
@@ -1769,8 +1787,53 @@ class IncidentIndexDatabase:
     
         conn.commit()
         conn.close()
+
+    def index_update_kv_data(self, incident_id: str, update_id: str, 
+                            kv_strings: Optional[Dict] = None,
+                            kv_integers: Optional[Dict] = None,
+                            kv_floats: Optional[Dict] = None):
+        """Index key-value data for update (update_id is NOT NULL)."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
-    def set_kv_single(self, incident_id: str, key: str, op: str, value: Any):
+        # Insert string KV data for update
+        for key, values in (kv_strings or {}).items():
+            for value in values:
+                try:
+                    cursor.execute(
+                        "INSERT INTO kv_strings (incident_id, update_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (incident_id, update_id, key, value, now)
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+    
+        # Insert integer KV data for update
+        for key, values in (kv_integers or {}).items():
+            for value in values:
+                try:
+                    cursor.execute(
+                        "INSERT INTO kv_integers (incident_id, update_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (incident_id, update_id, key, value, now)
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+    
+        # Insert float KV data for update
+        for key, values in (kv_floats or {}).items():
+            for value in values:
+                try:
+                    cursor.execute(
+                        "INSERT INTO kv_floats (incident_id, update_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (incident_id, update_id, key, value, now)
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+    
+        conn.commit()
+        conn.close()
+    
+    def set_kv_single(self, incident_id: str, key: str, op: str, value: Any, update_id: Optional[str] = None):
         """Set single-value KV (replaces existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
@@ -1786,18 +1849,23 @@ class IncidentIndexDatabase:
             raise ValueError(f"Invalid operator: {op}")
     
         # Delete existing values for this key
-        cursor.execute(f"DELETE FROM {table} WHERE incident_id = ? AND key = ?", (incident_id, key))
+        if update_id:
+            cursor.execute(f"DELETE FROM {table} WHERE incident_id = ? AND update_id = ? AND key = ?", 
+                          (incident_id, update_id, key))
+        else:
+            cursor.execute(f"DELETE FROM {table} WHERE incident_id = ? AND update_id IS NULL AND key = ?", 
+                          (incident_id, key))
         
         # Insert new value
         cursor.execute(
-            f"INSERT INTO {table} (incident_id, key, value, created_at) VALUES (?, ?, ?, ?)",
-            (incident_id, key, value, now)
+            f"INSERT INTO {table} (incident_id, update_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+            (incident_id, update_id, key, value, now)
         )
     
         conn.commit()
         conn.close()
     
-    def add_kv_multi(self, incident_id: str, key: str, op: str, value: Any):
+    def add_kv_multi(self, incident_id: str, key: str, op: str, value: Any, update_id: Optional[str] = None):
         """Add multi-value KV (keeps existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
@@ -1815,8 +1883,8 @@ class IncidentIndexDatabase:
         # Insert value (PRIMARY KEY prevents true duplication)
         try:
             cursor.execute(
-                f"INSERT INTO {table} (incident_id, key, value, created_at) VALUES (?, ?, ?, ?)",
-                (incident_id, key, value, now)
+                f"INSERT INTO {table} (incident_id, update_id, key, value, created_at) VALUES (?, ?, ?, ?, ?)",
+                (incident_id, update_id, key, value, now)
             )
         except sqlite3.IntegrityError:
             pass  # Value already exists
@@ -1824,20 +1892,31 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
     
-    def remove_kv_key(self, incident_id: str, key: str):
-        """Remove all values for a key (kv mode)."""
+    def remove_kv_key(self, incident_id: str, key: str, update_id: Optional[str] = None):
+        """Remove all values for a key."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
     
-        cursor.execute("DELETE FROM kv_strings WHERE incident_id = ? AND key = ?", (incident_id, key))
-        cursor.execute("DELETE FROM kv_integers WHERE incident_id = ? AND key = ?", (incident_id, key))
-        cursor.execute("DELETE FROM kv_floats WHERE incident_id = ? AND key = ?", (incident_id, key))
+        if update_id:
+            cursor.execute("DELETE FROM kv_strings WHERE incident_id = ? AND update_id = ? AND key = ?", 
+                          (incident_id, update_id, key))
+            cursor.execute("DELETE FROM kv_integers WHERE incident_id = ? AND update_id = ? AND key = ?", 
+                          (incident_id, update_id, key))
+            cursor.execute("DELETE FROM kv_floats WHERE incident_id = ? AND update_id = ? AND key = ?", 
+                          (incident_id, update_id, key))
+        else:
+            cursor.execute("DELETE FROM kv_strings WHERE incident_id = ? AND update_id IS NULL AND key = ?", 
+                          (incident_id, key))
+            cursor.execute("DELETE FROM kv_integers WHERE incident_id = ? AND update_id IS NULL AND key = ?", 
+                          (incident_id, key))
+            cursor.execute("DELETE FROM kv_floats WHERE incident_id = ? AND update_id IS NULL AND key = ?", 
+                          (incident_id, key))
     
         conn.commit()
         conn.close()
     
-    def remove_kv_value(self, incident_id: str, key: str, op: str, value: Any):
-        """Remove specific key/value pair (kmv mode)."""
+    def remove_kv_value(self, incident_id: str, key: str, op: str, value: Any, update_id: Optional[str] = None):
+        """Remove specific key/value pair."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
     
@@ -1850,146 +1929,170 @@ class IncidentIndexDatabase:
         else:
             raise ValueError(f"Invalid operator: {op}")
     
-        cursor.execute(
-            f"DELETE FROM {table} WHERE incident_id = ? AND key = ? AND value = ?",
-            (incident_id, key, value)
-        )
+        if update_id:
+            cursor.execute(
+                f"DELETE FROM {table} WHERE incident_id = ? AND update_id = ? AND key = ? AND value = ?",
+                (incident_id, update_id, key, value)
+            )
+        else:
+            cursor.execute(
+                f"DELETE FROM {table} WHERE incident_id = ? AND update_id IS NULL AND key = ? AND value = ?",
+                (incident_id, key, value)
+            )
     
         conn.commit()
         conn.close()
 
-    def search_kv(self, ksearch_list: List[tuple]) -> List[str]:
+    def search_kv(
+        self, 
+        ksearch_list: List[tuple], 
+        incident_ids: Optional[List[str]] = None,
+        update_ids: Optional[List[str]] = None,
+        return_updates: bool = False
+    ) -> List[str]:
         """
-        Search incidents by key-value criteria.
+        Search by key-value criteria.
         
         Args:
             ksearch_list: List of (key, operator, value) tuples
+            incident_ids: If provided, search only within these incidents (None = search all)
+            update_ids: If provided, search only within these updates
+            return_updates: If True, return update IDs; if False, return incident IDs
             
         Returns:
-            List of matching incident IDs
+            List of matching incident IDs or update IDs (depending on return_updates)
         """
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         
-        matching_incidents = None
+        matching_results = None
+        
+        # Determine which column to return
+        return_column = "update_id" if return_updates else "incident_id"
         
         for key, operator, value in ksearch_list:
             results = set()
             
+            # Build WHERE clause
+            where_parts = []
+            params = [key, value]
+            
+            if return_updates:
+                # Must have update_id when searching for updates
+                where_parts.append("update_id IS NOT NULL")
+            
+            if incident_ids:
+                placeholders = ",".join("?" * len(incident_ids))
+                where_parts.append(f"incident_id IN ({placeholders})")
+                params.extend(incident_ids)
+            
+            if update_ids:
+                placeholders = ",".join("?" * len(update_ids))
+                where_parts.append(f"update_id IN ({placeholders})")
+                params.extend(update_ids)
+            elif not return_updates and incident_ids and not update_ids:
+                # If searching for incidents and incident_ids specified but update_ids is None,
+                # only search incident-level KV
+                where_parts.append("update_id IS NULL")
+            
+            where_clause = " AND ".join(where_parts)
+            where_clause = f"WHERE {where_clause}" if where_clause else ""
+            
             # Try string search
             try:
                 if operator == '=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_strings WHERE key = ? AND value = ?",
-                        (key, value)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_strings WHERE key = ? AND value = ? {where_clause}"
                 elif operator == '<':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_strings WHERE key = ? AND value < ?",
-                        (key, value)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_strings WHERE key = ? AND value < ? {where_clause}"
                 elif operator == '>':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_strings WHERE key = ? AND value > ?",
-                        (key, value)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_strings WHERE key = ? AND value > ? {where_clause}"
                 elif operator == '<=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_strings WHERE key = ? AND value <= ?",
-                        (key, value)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_strings WHERE key = ? AND value <= ? {where_clause}"
                 elif operator == '>=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_strings WHERE key = ? AND value >= ?",
-                        (key, value)
-                    )
-                results.update(row[0] for row in cursor.fetchall())
+                    query = f"SELECT DISTINCT {return_column} FROM kv_strings WHERE key = ? AND value >= ? {where_clause}"
+                else:
+                    continue
+                
+                cursor.execute(query, params)
+                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
             # Try integer search
             try:
                 val = int(value)
+                int_params = [key, val]
+                if incident_ids:
+                    int_params.extend(incident_ids)
+                if update_ids:
+                    int_params.extend(update_ids)
+                
                 if operator == '=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_integers WHERE key = ? AND value = ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value = ? {where_clause}"
                 elif operator == '<':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_integers WHERE key = ? AND value < ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value < ? {where_clause}"
                 elif operator == '>':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_integers WHERE key = ? AND value > ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value > ? {where_clause}"
                 elif operator == '<=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_integers WHERE key = ? AND value <= ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value <= ? {where_clause}"
                 elif operator == '>=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_integers WHERE key = ? AND value >= ?",
-                        (key, val)
-                    )
-                results.update(row[0] for row in cursor.fetchall())
+                    query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value >= ? {where_clause}"
+                else:
+                    continue
+                
+                cursor.execute(query, int_params)
+                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
             # Try float search
             try:
                 val = float(value)
+                float_params = [key, val]
+                if incident_ids:
+                    float_params.extend(incident_ids)
+                if update_ids:
+                    float_params.extend(update_ids)
+                
                 if operator == '=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_floats WHERE key = ? AND value = ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_floats WHERE key = ? AND value = ? {where_clause}"
                 elif operator == '<':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_floats WHERE key = ? AND value < ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_floats WHERE key = ? AND value < ? {where_clause}"
                 elif operator == '>':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_floats WHERE key = ? AND value > ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_floats WHERE key = ? AND value > ? {where_clause}"
                 elif operator == '<=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_floats WHERE key = ? AND value <= ?",
-                        (key, val)
-                    )
+                    query = f"SELECT DISTINCT {return_column} FROM kv_floats WHERE key = ? AND value <= ? {where_clause}"
                 elif operator == '>=':
-                    cursor.execute(
-                        "SELECT DISTINCT incident_id FROM kv_floats WHERE key = ? AND value >= ?",
-                        (key, val)
-                    )
-                results.update(row[0] for row in cursor.fetchall())
+                    query = f"SELECT DISTINCT {return_column} FROM kv_floats WHERE key = ? AND value >= ? {where_clause}"
+                else:
+                    continue
+                
+                cursor.execute(query, float_params)
+                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
             # Intersect with previous results (AND logic)
-            if matching_incidents is None:
-                matching_incidents = results
+            if matching_results is None:
+                matching_results = results
             else:
-                matching_incidents &= results
+                matching_results &= results
         
         conn.close()
-        return list(matching_incidents) if matching_incidents is not None else []
+        return list(matching_results) if matching_results is not None else []
     
-    def get_sorted_incidents(self, incident_ids: List[str], ksort_list: List[tuple]) -> List[str]:
+    
+    def get_sorted_incidents(self, incident_ids: List[str], ksort_list: List[tuple], update_id: Optional[str] = None) -> List[str]:
         """
-        Sort incidents by key-value criteria.
+        Sort by key-value criteria.
         
         Args:
-            incident_ids: List of incident IDs to sort
-            ksort_list: List of (key, ascending) tuples for sort order
+            incident_ids: List of IDs to sort
+            ksort_list: List of (key, ascending) tuples
+            update_id: If provided, sort by update KV; if None, sort by incident KV
             
         Returns:
-            Sorted list of incident IDs
+            Sorted list of IDs
         """
         if not ksort_list or not incident_ids:
             return incident_ids
@@ -1998,33 +2101,51 @@ class IncidentIndexDatabase:
         cursor = conn.cursor()
         
         # Fetch all KV data for incidents
-        kv_data = {}  # {incident_id: {key: [values]}}
+        kv_data = {}
         
         for inc_id in incident_ids:
             kv_data[inc_id] = {'strings': {}, 'integers': {}, 'floats': {}}
             
-            cursor.execute(
-                "SELECT key, value FROM kv_strings WHERE incident_id = ?",
-                (inc_id,)
-            )
+            if update_id:
+                cursor.execute(
+                    "SELECT key, value FROM kv_strings WHERE incident_id = ? AND update_id = ?",
+                    (inc_id, update_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT key, value FROM kv_strings WHERE incident_id = ? AND update_id IS NULL",
+                    (inc_id,)
+                )
             for key, value in cursor.fetchall():
                 if key not in kv_data[inc_id]['strings']:
                     kv_data[inc_id]['strings'][key] = []
                 kv_data[inc_id]['strings'][key].append(value)
             
-            cursor.execute(
-                "SELECT key, value FROM kv_integers WHERE incident_id = ?",
-                (inc_id,)
-            )
+            if update_id:
+                cursor.execute(
+                    "SELECT key, value FROM kv_integers WHERE incident_id = ? AND update_id = ?",
+                    (inc_id, update_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT key, value FROM kv_integers WHERE incident_id = ? AND update_id IS NULL",
+                    (inc_id,)
+                )
             for key, value in cursor.fetchall():
                 if key not in kv_data[inc_id]['integers']:
                     kv_data[inc_id]['integers'][key] = []
                 kv_data[inc_id]['integers'][key].append(value)
             
-            cursor.execute(
-                "SELECT key, value FROM kv_floats WHERE incident_id = ?",
-                (inc_id,)
-            )
+            if update_id:
+                cursor.execute(
+                    "SELECT key, value FROM kv_floats WHERE incident_id = ? AND update_id = ?",
+                    (inc_id, update_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT key, value FROM kv_floats WHERE incident_id = ? AND update_id IS NULL",
+                    (inc_id,)
+                )
             for key, value in cursor.fetchall():
                 if key not in kv_data[inc_id]['floats']:
                     kv_data[inc_id]['floats'][key] = []
@@ -2036,20 +2157,17 @@ class IncidentIndexDatabase:
         def sort_key(incident_id):
             keys = []
             for sort_key_name, ascending in ksort_list:
-                # Try to find the key value in any of the three types
                 value = None
                 
                 if sort_key_name in kv_data[incident_id]['integers']:
-                    # Use first integer value
                     value = kv_data[incident_id]['integers'][sort_key_name][0]
                 elif sort_key_name in kv_data[incident_id]['floats']:
                     value = kv_data[incident_id]['floats'][sort_key_name][0]
                 elif sort_key_name in kv_data[incident_id]['strings']:
                     value = kv_data[incident_id]['strings'][sort_key_name][0]
                 
-                # Use None (sorts to end) if not found, negate for descending
                 if value is None:
-                    keys.append((1, ""))  # None sorts last
+                    keys.append((1, ""))
                 else:
                     if isinstance(value, (int, float)):
                         sort_val = value if ascending else -value
@@ -2332,12 +2450,15 @@ class IncidentManager:
         
         incident_ids = [result["id"] for result in index_results]
         
-        # Apply KV search filters
+        # Apply KV search filters - batch search with IN clause
         if ksearch:
             try:
                 ksearch_parsed = [KVSearchParser.parse_ksearch(expr) for expr in ksearch]
-                matching_ids = self.index_db.search_kv(ksearch_parsed)
-                incident_ids = [iid for iid in incident_ids if iid in matching_ids]
+                incident_ids = self.index_db.search_kv(
+                    ksearch_parsed,
+                    incident_ids=incident_ids,
+                    return_updates=False
+                )
             except ValueError as e:
                 raise RuntimeError(f"Invalid ksearch: {e}")
         
@@ -2466,30 +2587,27 @@ class IncidentManager:
         kv_multi: Optional[List[str]] = None,
     ) -> str:
         """
-        Add update/comment to incident with optional KV data inheritance.
-    
-        Priority for message: explicit message > STDIN > editor
+        Add update with INDEPENDENT KV data (does NOT affect incident KV).
     
         Args:
-            incident_id: Incident ID
-            message: Explicit message
-            use_stdin: Try reading from STDIN
+            incident_id: Incident ID 
+            message: Update message
+            use_stdin: Read from STDIN
             use_editor: Open editor
-            kv_single: Single-value KV updates to apply to incident
-            kv_multi: Multi-value KV updates to apply to incident
-    
+            kv_single: Single-value KV for UPDATE only
+            kv_multi: Multi-value KV for UPDATE only
+
         Returns:
-            Timestamp of the update
+            Update ID
         """
-        # Verify incident exists
         if not self.storage.load_incident(incident_id):
             raise RuntimeError(f"Incident {incident_id} not found")
-    
+
         user_config = DatabaseDiscovery.get_user_config()
-        
+    
         # Determine message source
         final_message = None
-    
+
         if message:
             final_message = message
         elif use_stdin and StdinHandler.has_stdin_data():
@@ -2502,13 +2620,12 @@ class IncidentManager:
                     "\n"
                 ),
             )
-            # Remove comment lines
             final_message = "\n".join(
                 line
                 for line in final_message.split("\n")
                 if not line.strip().startswith("#")
             ).strip()
-    
+
         if not final_message:
             raise RuntimeError(
                 "No update provided.\n"
@@ -2517,14 +2634,14 @@ class IncidentManager:
                 "  echo \"text\" | incident add-update <id>\n"
                 "  incident add-update <id>  # opens editor"
             )
-    
+
         timestamp = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-        
-        # Parse KV data for the update
+    
+        # Parse KV data for the UPDATE ONLY
         update_kv_strings = {}
         update_kv_integers = {}
         update_kv_floats = {}
-        
+    
         if kv_single:
             for key, kvtype, op, value in KVParser.parse_kv_list(kv_single):
                 if op != '-':
@@ -2534,7 +2651,7 @@ class IncidentManager:
                         update_kv_integers[key] = [value]
                     elif kvtype == KVParser.TYPE_FLOAT:
                         update_kv_floats[key] = [value]
-        
+    
         if kv_multi:
             for key, kvtype, op, value in KVParser.parse_kv_list(kv_multi):
                 if op != '-':
@@ -2550,9 +2667,12 @@ class IncidentManager:
                         if key not in update_kv_floats:
                             update_kv_floats[key] = []
                         update_kv_floats[key].append(value)
-        
+    
+        # Generate update ID
+        update_id = IDGenerator.generate_update_id()
+    
         update = IncidentUpdate(
-            id="auto",
+            id=update_id,
             incident_id=incident_id,
             timestamp=timestamp,
             author=user_config.handle,
@@ -2561,19 +2681,153 @@ class IncidentManager:
             kv_integers=update_kv_integers if update_kv_integers else None,
             kv_floats=update_kv_floats if update_kv_floats else None,
         )
-        
+    
+        # Save update
         self.storage.save_update(incident_id, update)
         self.index_db.index_update(update)
     
-        # Inherit KV data from update to incident
-        if kv_single or kv_multi:
-            self.update_incident_kv(incident_id, kv_single=kv_single, kv_multi=kv_multi)
+        # Index update KV data (completely independent from incident KV)
+        self.index_db.index_update_kv_data(
+            incident_id, 
+            update_id,
+            kv_strings=update_kv_strings or None,
+            kv_integers=update_kv_integers or None,
+            kv_floats=update_kv_floats or None,
+        )
     
-        return timestamp
+        return update_id
     
     def get_updates(self, incident_id: str) -> List[IncidentUpdate]:
         """Get updates for incident."""
         return self.storage.load_updates(incident_id)
+        
+    def search_incidents(
+        self,
+        query: Optional[str] = None,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        ksearch: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[Incident]:
+        """
+        Search incidents by full-text query and/or key-value filters.
+    
+        Args:
+            query: Full-text search in title and description
+            status: Filter by status
+            severity: Filter by severity
+            tags: Filter by tags
+            ksearch: List of key-value search expressions
+            limit: Maximum results
+        
+        Returns:
+            List of matching incidents
+    
+        Raises:
+            RuntimeError: If ksearch expressions are invalid
+        """
+        # Get IDs from full-text search (if provided)
+        if query:
+            index_results = self.index_db.list_incidents_from_index(
+                status=status,
+                severity=severity,
+                tags=tags,
+                limit=limit * 2,  # Get extra to account for KV filtering
+            )
+            incident_ids = [result["id"] for result in index_results]
+        else:
+            # No full-text query, get all incidents matching filters
+            index_results = self.index_db.list_incidents_from_index(
+                status=status,
+                severity=severity,
+                tags=tags,
+                search=query,
+                limit=limit * 2,
+            )
+            incident_ids = [result["id"] for result in index_results]
+    
+        # Apply KV search filters
+        if ksearch:
+            try:
+                ksearch_parsed = [KVSearchParser.parse_ksearch(expr) for expr in ksearch]
+                matching_ids = self.index_db.search_kv(ksearch_parsed)
+                incident_ids = [iid for iid in incident_ids if iid in matching_ids]
+            except ValueError as e:
+                raise RuntimeError(f"Invalid ksearch: {e}")
+        
+        # Apply limit after filtering
+        incident_ids = incident_ids[:limit]
+    
+        # Load full incidents from files
+        incidents = []
+        for incident_id in incident_ids:
+            incident = self.storage.load_incident(incident_id)
+            if incident:
+                incidents.append(incident)
+    
+        return incidents
+
+
+    def search_updates(
+        self,
+        query: Optional[str] = None,
+        ksearch: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[tuple]:
+        """Search updates/notes by full-text query and/or key-value filters."""
+        # Get update IDs from full-text search (if provided)
+        if query:
+            update_results = self.index_db.search_updates_from_index(
+                query=query,
+                limit=limit * 2,
+            )
+            update_info = update_results
+        else:
+            update_info = self.index_db.list_all_updates_from_index(
+                limit=limit * 2,
+            )
+        
+        # Extract incident and update IDs for batch KV search
+        incident_ids_for_updates = list(set(info["incident_id"] for info in update_info))
+        update_ids_from_index = [info["id"] for info in update_info]
+        
+        # Apply KV search filters to updates - batch search with IN clause
+        if ksearch:
+            try:
+                ksearch_parsed = [KVSearchParser.parse_ksearch(expr) for expr in ksearch]
+                matching_update_ids = self.index_db.search_kv(
+                    ksearch_parsed, 
+                    incident_ids=incident_ids_for_updates,
+                    update_ids=update_ids_from_index,
+                    return_updates=True
+                )
+                update_info = [
+                    info for info in update_info 
+                    if info["id"] in matching_update_ids
+                ]
+            except ValueError as e:
+                raise RuntimeError(f"Invalid ksearch: {e}")
+        
+        update_info = update_info[:limit]
+        
+        # Load full updates from files
+        results = []
+        for info in update_info:
+            update_id = info["id"]
+            incident_id = info["incident_id"]
+            incident_title = info["title"]
+            
+            updates = self.storage.load_updates(incident_id)
+            matching_update = next(
+                (u for u in updates if u.id == update_id),
+                None
+            )
+            
+            if matching_update:
+                results.append((matching_update, incident_id, incident_title))
+        
+        return results
 
 
 # ============================================================================
