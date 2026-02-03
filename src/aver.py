@@ -2,21 +2,7 @@
 """
 aver: a verified knowledge tracking tool
 
-Zero external dependencies. Sin
-import os
-import sqlite3
-import subprocess
-import sys
-import tempfile
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from types import SimpleNamespace
-import select
-import secrets
-import time
-
-try:gle-file deployment.
+Minimal external dependencies. 
 Stores records and updates as Markdown files with TOML headers.
 Uses SQLite for indexing and searching only.
 """
@@ -29,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -189,7 +176,7 @@ class Incident:
             
             toml_dict[field_name] = value
         
-        toml_str = toml.dumps(toml_dict)
+        toml_str = toml_w.dumps(toml_dict)
         
         # Any OTHER KV data (custom fields not in special_fields)
         other_kv = self._get_other_kv(project_config)
@@ -209,7 +196,7 @@ class Incident:
                     hinted_key = key
                 hinted_kv[hinted_key] = val
             
-            other_section = f"\n## Custom Fields\n\n{toml.dumps(hinted_kv)}"
+            other_section = f"\n## Custom Fields\n\n{toml_w.dumps(hinted_kv)}"
         
         return f"+++\n{toml_str}+++\n\n{other_section}"
     
@@ -243,7 +230,7 @@ class Incident:
         if not match:
             raise ValueError("Invalid Markdown format: missing TOML frontmatter")
         
-        toml_dict = toml.loads(match.group(1))
+        toml_dict = tomli.loads(match.group(1))
         
         # Rebuild KV from special fields
         kv_strings = {}
@@ -363,13 +350,13 @@ class IncidentUpdate:
             items = []
             for key, value in d.items():
                 if isinstance(value, str):
-                    items.append(f'{key} = "{value}"')
+                    items.append(f'"{key}" = "{value}"')
                 elif isinstance(value, (int, float)):
-                    items.append(f'{key} = {value}')
+                    items.append(f'"{key}" = {value}')
                 elif isinstance(value, list):
                     # Handle list values
                     formatted_values = [f'"{v}"' if isinstance(v, str) else str(v) for v in value]
-                    items.append(f'{key} = [{", ".join(formatted_values)}]')
+                    items.append(f'"{key}" = [{", ".join(formatted_values)}]')
             return "{ " + ", ".join(items) + " }"
         
         toml_header = f"""+++
@@ -462,6 +449,10 @@ class IDGenerator:
         epoch_ns = time.time_ns()
         rand = secrets.token_hex(2)  # small entropy bump
         return f"UPD-{IDGenerator.to_base36(epoch_ns)}-{rand}.md"
+
+    @staticmethod
+    def generate_update_id() -> str:
+        return IDGenerator.generate_update_filename().removesuffix(".md")
 
 
 # ============================================================================
@@ -1023,12 +1014,12 @@ class DatabaseDiscovery:
         "/root/path/longer" = "/other/path/to/data"
         """
         config = DatabaseDiscovery.get_user_config()
-        locations = config.locations if hasattr(config,"locations") else []
+        locations = config.locations.items() if hasattr(config,"locations") else []
         cwd_resolved = cwd.resolve()
 
         matches = [
             (Path(key).resolve(), Path(value).resolve())
-            for key, value in locations
+            for key, value in locations.items()
             if cwd_resolved.is_relative_to(Path(key).resolve())  # Python 3.9+
         ]
 
@@ -1619,15 +1610,19 @@ class IncidentFileStorage:
         updates_dir.mkdir(parents=True, exist_ok=True)
         return updates_dir
             
-    def save_incident(self, incident: Incident):
+    def save_incident(self, incident: Incident, project_config: ProjectConfig):
         """Save incident to Markdown file."""
         path = self._get_incident_path(incident.id)
-        content = incident.to_markdown()
+        content = incident.to_markdown(project_config)
         
         with open(path, "w") as f:
             f.write(content)
-
-    def load_incident(self, incident_id: str) -> Optional[Incident]:
+    
+    def load_incident(
+        self,
+        incident_id: str,
+        project_config: ProjectConfig,
+    ) -> Optional[Incident]:
         """Load incident from Markdown file."""
         path = self._get_incident_path(incident_id)
         
@@ -1637,7 +1632,7 @@ class IncidentFileStorage:
         try:
             with open(path, "r") as f:
                 content = f.read()
-            return Incident.from_markdown(content, incident_id)
+            return Incident.from_markdown(content, incident_id, project_config)
         except Exception as e:
             print(f"Warning: Failed to load incident {incident_id}: {e}", file=sys.stderr)
             return None
@@ -1705,19 +1700,10 @@ class IncidentIndexDatabase:
             """
             CREATE TABLE IF NOT EXISTS incidents_index (
                 id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                created_by TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                status TEXT NOT NULL,
-                tags TEXT NOT NULL,
-                assignees TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
                 indexed_at TEXT NOT NULL
             )
             """
-        )
-    
+        )    
         # Full-text search index
         cursor.execute(
             """
@@ -1822,55 +1808,32 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
-    def index_incident(self, incident: Incident):
+    def index_incident(self, incident: Incident, project_config: ProjectConfig):
         """Add or update incident in index."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-
+    
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-
+    
+        # Update minimal index entry
         cursor.execute(
-            """
-            INSERT OR REPLACE INTO incidents_index
-            (id, title, created_at, created_by, severity, status, tags, assignees, updated_at, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                incident.id,
-                incident.title,
-                incident.created_at,
-                incident.created_by,
-                incident.severity,
-                incident.status,
-                json.dumps(incident.tags),
-                json.dumps(incident.assignees),
-                incident.updated_at or incident.created_at,
-                now,
-            ),
+            "INSERT OR REPLACE INTO incidents_index (id, indexed_at) VALUES (?, ?)",
+            (incident.id, now),
         )
-
-        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ? AND source = 'incident'", (incident.id,))
-
+    
+        # Index FTS for description and other content
+        cursor.execute(
+            "DELETE FROM incidents_fts WHERE incident_id = ? AND source = 'incident'",
+            (incident.id,)
+        )
+    
+        content = f"{incident.title}\n\n{incident.description or ''}"
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
-            (
-                incident.id,
-                "incident",
-                incident.id,
-                f"{incident.title}\n\n{incident.description or ''}",
-            ),
+            (incident.id, "incident", incident.id, content),
         )
-
-        cursor.execute("DELETE FROM incident_tags WHERE incident_id = ?", (incident.id,))
-
-        for tag in incident.tags:
-            cursor.execute(
-                "INSERT INTO incident_tags (incident_id, tag) VALUES (?, ?)",
-                (incident.id, tag),
-            )
-
+    
         conn.commit()
-        conn.close()
 
     def remove_incident_from_index(self, incident_id: str):
         """Remove incident from index."""
@@ -1908,70 +1871,81 @@ class IncidentIndexDatabase:
 
     def list_incidents_from_index(
         self,
-        status: Optional[str] = None,
-        severity: Optional[str] = None,
-        tags: Optional[List[str]] = None,
+        project_config: ProjectConfig,
+        filters: Optional[Dict[str, Any]] = None,
         search: Optional[str] = None,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
-        """List incidents from index with optional filters."""
+    ) -> List[str]:
+        """List incident IDs from index with filters."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-
-        query = "SELECT * FROM incidents_index WHERE 1=1"
+    
+        # Start with all incidents
+        incident_ids_query = "SELECT id FROM incidents_index"
         params = []
-
-        if status:
-            query += " AND status = ?"
-            params.append(status)
-
-        if severity:
-            query += " AND severity = ?"
-            params.append(severity)
-
-        if tags:
-            tag_placeholders = ",".join("?" for _ in tags)
-            query += f"""
-                AND id IN (
-                    SELECT incident_id FROM incident_tags
-                    WHERE tag IN ({tag_placeholders})
-                    GROUP BY incident_id
-                    HAVING COUNT(DISTINCT tag) = ?
-                )
-            """
-            params.extend(tags)
-            params.append(len(tags))
-
+    
+        # Apply special field filters
+        if filters:
+            for field_name, value in filters.items():
+                field = project_config.get_special_field(field_name)
+                if not field:
+                    continue  # Skip unknown fields
+            
+                if field.value_type == "string":
+                    table = "kv_strings"
+                elif field.value_type == "integer":
+                    table = "kv_integers"
+                elif field.value_type == "float":
+                    table = "kv_floats"
+                else:
+                    continue
+            
+                if field.field_type == "single":
+                    incident_ids_query += f"""
+                        AND id IN (
+                            SELECT incident_id FROM {table}
+                            WHERE key = ? AND value = ? AND update_id IS NULL
+                        )
+                    """
+                    params.extend([field_name, value])
+                else:  # multi - value must be in the list
+                    incident_ids_query += f"""
+                        AND id IN (
+                            SELECT incident_id FROM {table}
+                            WHERE key = ? AND value = ? AND update_id IS NULL
+                        )
+                    """
+                    if isinstance(value, list):
+                        # Match ANY value in the list
+                        value_placeholders = ",".join("?" * len(value))
+                        incident_ids_query = incident_ids_query.replace(
+                            "AND value = ?",
+                            f"AND value IN ({value_placeholders})"
+                        )
+                        params = params[:-1]  # Remove the last value
+                        params.extend(value)
+                    else:
+                        params = params[:-1]
+                        params.append(value)
+     
+        # Apply FTS search
         if search:
-            query += """
+            incident_ids_query += """
                 AND id IN (
                     SELECT DISTINCT incident_id FROM incidents_fts
                     WHERE incidents_fts MATCH ?
                 )
             """
             params.append(search)
-
-        query += " ORDER BY created_at DESC LIMIT ?"
+    
+        incident_ids_query += f" ORDER BY id DESC LIMIT ?"
         params.append(limit)
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+    
+        cursor.execute(incident_ids_query, params)
+        incident_ids = [row[0] for row in cursor.fetchall()]
+    
         conn.close()
-
-        return [
-            {
-                "id": row[0],
-                "title": row[1],
-                "created_at": row[2],
-                "created_by": row[3],
-                "severity": row[4],
-                "status": row[5],
-                "tags": json.loads(row[6]),
-                "assignees": json.loads(row[7]),
-                "updated_at": row[8],
-            }
-            for row in rows
-        ]
+        return incident_ids
 
     def index_update(self, update: IncidentUpdate):
         """Index update in FTS and store KV data."""
@@ -3037,295 +3011,398 @@ class IncidentManager:
 # ============================================================================
 # CLI
 # ============================================================================
-
-
 class IncidentCLI:
-    """Command-line interface."""
+    """Command-line interface for record management."""
 
     def __init__(self):
         self.parser = argparse.ArgumentParser(
-            description="aver: a verified knowledge tracking tool",
+            description="aver: record tracking and management",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
 
     def _add_common_args(self, parser):
-        """Add common incident manager arguments."""
+        """Add common database selection arguments."""
         parser.add_argument(
             "--location",
-            help="Explicit incident database path (overrides all detection)",
+            help="Explicit database path (overrides all detection)",
         )
         parser.add_argument(
             "--choose",
             action="store_true",
             help="Prompt to choose database if multiple available",
         )
-        parser.add_argument(
-            "--list-databases",
-            action="store_true",
-            help="Show all available databases and exit",
-        )
-    
+
     def _get_manager(self, args) -> IncidentManager:
-        """Handle database selection."""
+        """Handle database selection and return manager."""
         interactive = getattr(args, 'choose', False)
         
         return IncidentManager(
             explicit_location=getattr(args, 'location', None),
             interactive=interactive,
         )
-    
+
+    def _build_kv_list(self, manager: IncidentManager, args) -> List[str]:
+        """
+        Build KV list from special field arguments and generic KV options.
+        
+        Processes special fields defined in ProjectConfig as well as
+        generic --kv and --kmv arguments.
+        """
+        kv_list = []
+        
+        # Process special fields from config
+        special_fields = manager.project_config.get_special_fields()
+        
+        for field_name, field_def in special_fields.items():
+            # Check if this special field was provided as an argument
+            if hasattr(args, field_name) and getattr(args, field_name) is not None:
+                value = getattr(args, field_name)
+                
+                # Determine type prefix based on field definition
+                if field_def.value_type == "integer":
+                    type_prefix = "#"
+                elif field_def.value_type == "float":
+                    type_prefix = "%"
+                else:
+                    type_prefix = "$"
+                
+                # Handle single vs multi-value fields
+                if field_def.field_type == "single":
+                    kv_list.append(f"{field_name}{type_prefix}{value}")
+                else:
+                    # Multi-value: value could be a list
+                    if isinstance(value, list):
+                        for v in value:
+                            kv_list.append(f"{field_name}{type_prefix}{v}")
+                    else:
+                        kv_list.append(f"{field_name}{type_prefix}{value}")
+        
+        # Add generic single-value KV arguments
+        if hasattr(args, 'kv_single') and args.kv_single:
+            kv_list.extend(args.kv_single)
+        
+        # Add generic multi-value KV arguments
+        if hasattr(args, 'kv_multi') and args.kv_multi:
+            kv_list.extend(args.kv_multi)
+        
+        return kv_list
+
+    def _add_special_field_args(self, parser, manager: IncidentManager):
+        """
+        Dynamically add arguments for special fields defined in ProjectConfig.
+        
+        This allows admins to define custom fields like --severity, --assignees,
+        etc. in their config, and they become available as CLI arguments.
+        """
+        special_fields = manager.project_config.get_special_fields()
+        
+        for field_name, field_def in special_fields.items():
+            if not field_def.editable:
+                continue
+            
+            # Build argument name
+            arg_name = f"--{field_name}"
+            
+            # Determine argument type and properties
+            kwargs = {
+                "help": f"{field_name} ({field_def.field_type}, {field_def.value_type})",
+                "dest": field_name,
+            }
+            
+            if field_def.field_type == "multi":
+                kwargs["nargs"] = "*"
+            
+            if field_def.accepted_values:
+                kwargs["choices"] = field_def.accepted_values
+            
+            if field_def.value_type == "integer":
+                kwargs["type"] = int
+            elif field_def.value_type == "float":
+                kwargs["type"] = float
+            
+            parser.add_argument(arg_name, **kwargs)
+
     def setup_commands(self):
         """Set up all CLI commands."""
-        # init
-        init_parser = self.subparsers.add_parser(
-            "init",
-            help="Initialize database",
+        
+        # ====================================================================
+        # RECORD COMMANDS
+        # ====================================================================
+        record_parser = self.subparsers.add_parser(
+            "record",
+            help="Record Management",
         )
-        self._add_common_args(init_parser)
-    
-        # config
-        config_parser = self.subparsers.add_parser(
-            "config",
-            help="Manage user configuration",
+        record_subparsers = record_parser.add_subparsers(
+            dest="record_command",
+            required=True,
         )
-        self._add_common_args(config_parser)
-        config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
-    
-        set_user_parser = config_subparsers.add_parser(
-            "set-user-global",
-            help="Set global user identity",
-        )
-        set_user_parser.add_argument("--handle", required=True, help="User handle")
-        set_user_parser.add_argument("--email", required=True, help="User email")
-    
-        set_editor_parser = config_subparsers.add_parser(
-            "set-editor",
-            help="Set user's preferred editor",
-            description=(
-                "Set the editor that aver uses when opening an editor.\n"
-                "This is a user-global setting stored in ~/.config/aver/user.toml\n"
-                "Takes precedence over the EDITOR environment variable."
-            )
-        )
-        set_editor_parser.add_argument("editor", help="Editor command (e.g., vim, nano, code, emacs")
-    
-        get_editor_parser = config_subparsers.add_parser(
-            "get-editor",
-            help="Show current editor",
-        )
-    
-        # create
-        create_parser = self.subparsers.add_parser(
+        
+        # record new
+        record_new_parser = record_subparsers.add_parser(
             "new",
-            help="Create new record",
+            help="Create a new record",
         )
-        self._add_common_args(create_parser)
-        create_parser.add_argument(
-            "--override-repo-boundary",
-            action="store_true",
-            help="Bypass git repository boundary checks",
-        )
-        create_parser.add_argument("--title", required=True, help="Report title")
-        create_parser.add_argument(
-            "--severity",
-            choices=["low", "medium", "high", "critical"],
-            default="medium",
-            help="Report severity",
-        )
-        create_parser.add_argument(
-            "--set-tags",
-            nargs="*",
-            default=[],
-            dest="tags",
-            help="Tags (space-separated)",
-        )
-        create_parser.add_argument(
+        self._add_common_args(record_new_parser)
+        
+        # We'll add special fields dynamically in _cmd_create
+        record_new_parser.add_argument(
             "--kv",
             action="append",
             dest="kv_single",
-            help="Single-value key-value data (replaces existing): 'key$value', 'key#123', 'key%1.5'",
+            help="Single-value KV data: 'key$value', 'key#123', 'key%1.5'",
         )
-        create_parser.add_argument(
+        record_new_parser.add_argument(
             "--kmv",
             action="append",
             dest="kv_multi",
-            help="Multi-value key-value data (adds to existing): 'key$value', 'key#123', 'key%1.5'",
+            help="Multi-value KV data: 'key$value', 'key#123', 'key%1.5'",
         )
-        create_parser.add_argument(
-            "--assignees",
-            nargs="*",
-            default=[],
-            dest="assignees",
-            help="Assignees (space-separated)",
-        )
-        create_parser.add_argument(
+        record_new_parser.add_argument(
             "--description",
-            dest="description",
             help="Detailed description",
         )
-    
-        # get
-        get_parser = self.subparsers.add_parser(
+        
+        # Store parser reference for dynamic arg addition
+        record_new_parser._special_fields_parser = True
+        
+        # record view
+        record_view_parser = record_subparsers.add_parser(
             "view",
-            help="View record details",
+            help="View a specific record's details",
         )
-        self._add_common_args(get_parser)
-        get_parser.add_argument("record_id", help="Record ID")
-    
-        # list
-        list_parser = self.subparsers.add_parser(
+        self._add_common_args(record_view_parser)
+        record_view_parser.add_argument("record_id", help="Record ID")
+        
+        # record list
+        record_list_parser = record_subparsers.add_parser(
             "list",
-            help="List records",
+            help="List/search records with filters",
         )
-        self._add_common_args(list_parser)
-        list_parser.add_argument(
-            "--status",
-            help="Filter by status",
-        )
-        list_parser.add_argument(
-            "--severity",
-            help="Filter by severity",
-        )
-        list_parser.add_argument(
-            "--search",
-            help="Full-text search in title and description",
-        )
-        list_parser.add_argument(
+        self._add_common_args(record_list_parser)
+        record_list_parser.add_argument(
             "--ksearch",
             action="append",
             dest="ksearch",
-            help="Search by key-value: 'key=value', 'cost>100', 'priority<=5' (can use multiple times)",
+            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
         )
-        list_parser.add_argument(
+        record_list_parser.add_argument(
             "--ksort",
-            help="Sort by key-values: 'key1,key2-,key3+' (+ = asc, - = desc, default = asc)",
+            action="append",
+            dest="ksort",
+            help="Sort by key-values: 'key1', 'key2-' (- = desc, default = asc, can use multiple)",
         )
-
-        list_parser.add_argument(
+        record_list_parser.add_argument(
             "--limit",
             type=int,
             default=50,
             help="Maximum records to show",
         )
-        list_parser.add_argument(
-            "--tag",
-            action="append",
-            dest="tags",
-            help="Filter by tag (can be used multiple times)",
-        )
-    
-        # update
-        update_parser = self.subparsers.add_parser(
+        
+        # record update
+        record_update_parser = record_subparsers.add_parser(
             "update",
-            help="Update record",
+            help="Update record status and metadata",
         )
-        self._add_common_args(update_parser)
-        update_parser.add_argument("record_id", help="Record ID")
-        update_parser.add_argument(
-            "--status",
-            required=True,
-            choices=["open", "investigating", "mitigating", "resolved", "closed"],
-            help="New status",
-        )
-        update_parser.add_argument(
-            "-kv",
+        self._add_common_args(record_update_parser)
+        record_update_parser.add_argument("record_id", help="Record ID")
+        record_update_parser._special_fields_parser = True
+        record_update_parser.add_argument(
+            "--kv",
             action="append",
             dest="kv_single",
             help="Single-value KV data: 'key$value' or 'key-' to remove",
         )
-        update_parser.add_argument(
-            "-kmv",
+        record_update_parser.add_argument(
+            "--kmv",
             action="append",
             dest="kv_multi",
-            help="Multi-value KV data: 'key$value' or 'key$value-' to remove specific value",
+            help="Multi-value KV data: 'key$value' or 'key$value-' to remove",
         )
-    
-        # add-update
-        add_update_parser = self.subparsers.add_parser(
+        
+        # ====================================================================
+        # NOTE COMMANDS
+        # ====================================================================
+        note_parser = self.subparsers.add_parser(
             "note",
-            help="Add a note to a record (message > STDIN > editor)",
+            help="Note Management",
+        )
+        note_subparsers = note_parser.add_subparsers(
+            dest="note_command",
+            required=True,
+        )
+        
+        # note add
+        note_add_parser = note_subparsers.add_parser(
+            "add",
+            help="Add a note to a record",
             description=(
-                "Add note to record. Priority:\n"
+                "Add note to record. Message source priority:\n"
                 "  1. --message flag (explicit message)\n"
                 "  2. STDIN (if piped)\n"
                 "  3. Editor (if STDIN unavailable)"
             ),
         )
-        self._add_common_args(add_update_parser)
-        add_update_parser.add_argument("record_id", help="Record ID")
-        add_update_parser.add_argument(
+        self._add_common_args(note_add_parser)
+        note_add_parser.add_argument("record_id", help="Record ID")
+        note_add_parser.add_argument(
             "--message",
-            help="text of note",
+            help="Note message text",
         )
-        add_update_parser.add_argument(
-            "-kv",
+        note_add_parser.add_argument(
+            "--kv",
             action="append",
             dest="kv_single",
-            help="Single-value KV data to apply to note (also updates record)",
+            help="Single-value KV data for note only: 'key$value'",
         )
-        add_update_parser.add_argument(
-            "-kmv",
+        note_add_parser.add_argument(
+            "--kmv",
             action="append",
             dest="kv_multi",
-            help="Multi-value KV data to apply to note (also updates record): 'key$value' or 'key$value-' to remove specific value",
+            help="Multi-value KV data for note only: 'key$value'",
         )
-
-    
-        # get-updates
-        get_updates_parser = self.subparsers.add_parser(
-            "get-notes",
-            help="View all notes in a record",
+        
+        # note list
+        note_list_parser = note_subparsers.add_parser(
+            "list",
+            help="View all notes for a specific record",
         )
-        self._add_common_args(get_updates_parser)
-        get_updates_parser.add_argument("record_id", help="Report ID")
-    
-        # reindex
-        reindex_parser = self.subparsers.add_parser(
+        self._add_common_args(note_list_parser)
+        note_list_parser.add_argument("record_id", help="Record ID")
+        
+        # note search
+        note_search_parser = note_subparsers.add_parser(
+            "search",
+            help="Search notes by KV data",
+        )
+        self._add_common_args(note_search_parser)
+        note_search_parser.add_argument(
+            "--ksearch",
+            action="append",
+            dest="ksearch",
+            required=True,
+            help="Search by note KV: 'key=value' (required, can use multiple times)",
+        )
+        note_search_parser.add_argument(
+            "--limit",
+            type=int,
+            default=50,
+            help="Maximum results",
+        )
+        
+        # ====================================================================
+        # ADMIN COMMANDS
+        # ====================================================================
+        admin_parser = self.subparsers.add_parser(
+            "admin",
+            help="Administrative Operations",
+        )
+        admin_subparsers = admin_parser.add_subparsers(
+            dest="admin_command",
+            required=True,
+        )
+        
+        # admin init
+        admin_init_parser = admin_subparsers.add_parser(
+            "init",
+            help="Initialize a new database",
+        )
+        admin_init_parser.add_argument(
+            "--location",
+            help="Database location (default: .aver in git root or current directory)",
+        )
+        admin_init_parser.add_argument(
+            "--override-repo-boundary",
+            action="store_true",
+            help="Bypass git repository boundary checks",
+        )
+        
+        # admin config
+        admin_config_parser = admin_subparsers.add_parser(
+            "config",
+            help="Configuration subcommands",
+        )
+        config_subparsers = admin_config_parser.add_subparsers(
+            dest="config_command",
+            required=True,
+        )
+        
+        set_user_parser = config_subparsers.add_parser(
+            "set-user",
+            help="Set global user identity",
+        )
+        set_user_parser.add_argument("--handle", required=True, help="User handle")
+        set_user_parser.add_argument("--email", required=True, help="User email")
+        
+        set_editor_parser = config_subparsers.add_parser(
+            "set-editor",
+            help="Set preferred editor",
+            description=(
+                "Set the editor for opening in aver.\n"
+                "Stored in ~/.config/aver/user.toml\n"
+                "Takes precedence over EDITOR environment variable."
+            )
+        )
+        set_editor_parser.add_argument("editor", help="Editor command (vim, nano, code, etc.)")
+        
+        get_editor_parser = config_subparsers.add_parser(
+            "get-editor",
+            help="Show current editor",
+        )
+        
+        # admin reindex
+        admin_reindex_parser = admin_subparsers.add_parser(
             "reindex",
-            help="Rebuild search index from files",
+            help="Rebuild search index",
         )
-        self._add_common_args(reindex_parser)
-        reindex_parser.add_argument(
+        self._add_common_args(admin_reindex_parser)
+        admin_reindex_parser.add_argument(
             "--verbose",
             "-v",
             action="store_true",
             help="Verbose output",
         )
-
-        # list-databases
-        list_databases_parser = self.subparsers.add_parser(
+        
+        # admin list-databases
+        admin_list_databases_parser = admin_subparsers.add_parser(
             "list-databases",
             help="Show all available databases",
         )
-        list_databases_parser.set_defaults(func=self._cmd_list_databases)
-    
+
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
         parsed = self.parser.parse_args(args)
 
         try:
-            if parsed.command == "init":
-                self._cmd_init(parsed)
-            elif parsed.command == "config":
-                self._cmd_config(parsed)
-            elif parsed.command == "new":
-                self._cmd_create(parsed)
-            elif parsed.command == "view":
-                self._cmd_get(parsed)
-            elif parsed.command == "list":
-                self._cmd_list(parsed)
-            elif parsed.command == "update":
-                self._cmd_update(parsed)
-            elif parsed.command == "add-note":
-                self._cmd_add_update(parsed)
-            elif parsed.command == "get-notes":
-                self._cmd_get_updates(parsed)
-            elif parsed.command == "reindex":
-                self._cmd_reindex(parsed)
-            elif parsed.command == "list-databases":
-                self._cmd_list_databases(parsed)
+            if parsed.command == "record":
+                if parsed.record_command == "new":
+                    self._cmd_create(parsed)
+                elif parsed.record_command == "view":
+                    self._cmd_view(parsed)
+                elif parsed.record_command == "list":
+                    self._cmd_list(parsed)
+                elif parsed.record_command == "update":
+                    self._cmd_update(parsed)
+                    
+            elif parsed.command == "note":
+                if parsed.note_command == "add":
+                    self._cmd_add_update(parsed)
+                elif parsed.note_command == "list":
+                    self._cmd_list_updates(parsed)
+                elif parsed.note_command == "search":
+                    self._cmd_search_updates(parsed)
+                    
+            elif parsed.command == "admin":
+                if parsed.admin_command == "init":
+                    self._cmd_init(parsed)
+                elif parsed.admin_command == "config":
+                    self._cmd_config(parsed)
+                elif parsed.admin_command == "reindex":
+                    self._cmd_reindex(parsed)
+                elif parsed.admin_command == "list-databases":
+                    self._cmd_list_databases(parsed)
+                    
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -3346,17 +3423,19 @@ class IncidentCLI:
                     text=True,
                     check=True,
                 )
-
                 repo_root = Path(result.stdout.strip())
                 db_root = repo_root / ".aver"
             except subprocess.CalledProcessError:
                 db_root = Path.cwd() / ".aver"
 
         # Enforce repo boundary
-        if not DatabaseDiscovery.enforce_repo_boundary(db_root, override=getattr(args, 'override_repo_boundary', False)):
+        if not DatabaseDiscovery.enforce_repo_boundary(
+            db_root,
+            override=getattr(args, 'override_repo_boundary', False),
+        ):
             print(
-                f"Error: aver database at {db_root} is outside the current git repository.\n"
-                "Use --override-repo-boundary to bypass this check.",
+                f"Error: Database at {db_root} is outside git repository.\n"
+                "Use --override-repo-boundary to bypass.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3367,15 +3446,15 @@ class IncidentCLI:
         storage = IncidentFileStorage(db_root)
         index_db = IncidentIndexDatabase(db_root / "aver.db")
 
-        print(f"✓ Aver database initialized at {db_root}")
-        print(f"  Reports: {storage.incidents_dir}")
+        print(f"✓ Database initialized at {db_root}")
+        print(f"  Records: {storage.incidents_dir}")
         print(f"  Notes: {storage.updates_dir}")
         print(f"  Index: {db_root / 'aver.db'}")
         print(f"  Config: {db_root / 'config.toml'}")
 
     def _cmd_config(self, args):
         """Handle config commands."""
-        if args.config_command == "set-user-global":
+        if args.config_command == "set-user":
             config = DatabaseDiscovery.get_user_config()
             config["user"] = {
                 "handle": args.handle,
@@ -3385,7 +3464,6 @@ class IncidentCLI:
             print(f"✓ User configured: {args.handle} <{args.email}>")
 
         elif args.config_command == "set-editor":
-            # Verify editor exists
             if not EditorConfig._editor_exists(args.editor):
                 print(f"Error: Editor '{args.editor}' not found in PATH", file=sys.stderr)
                 sys.exit(1)
@@ -3403,213 +3481,251 @@ class IncidentCLI:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
 
-    def _get_manager(self,args) -> IncidentManager:
-        """
-        Helper to instantiate IncidentManager with standard args handling.
-    
-        Extracts location and override_repo_boundary from args if present.
-    
-        Args:
-            args: Parsed arguments namespace
-    
-        Returns:
-            Initialized IncidentManager instance
-        """
-        interactive = getattr(args, 'choose', False)
-
-        return IncidentManager(
-            explicit_location=getattr(args, 'location', None),
-            interactive=interactive,
-        )
-
     def _cmd_create(self, args):
-        """Create incident."""
+        """Create record."""
         manager = self._get_manager(args)
-
-        incident_id = manager.create_incident(
-            title=args.title,
-            severity=args.severity,
-            tags=args.tags if args.tags else None,
-            assignees=args.assignees if args.assignees else None,
+        
+        # Dynamically add special field arguments
+        self._add_special_field_args(args._parser, manager)
+        
+        # Build KV list from special fields and generic KV arguments
+        kv_list = self._build_kv_list(manager, args)
+        
+        # Create record
+        record_id = manager.create_incident(
+            kv_list=kv_list,
             description=args.description,
-            kv_single=args.kv_single if hasattr(args, 'kv_single') and args.kv_single else None,
-            kv_multi=args.kv_multi if hasattr(args, 'kv_multi') and args.kv_multi else None,
         )
 
-        print(f"✓ Created: {incident_id}")
-        print(f"  Title: {args.title}")
-        print(f"  Severity: {args.severity}")
+        print(f"✓ Created record: {record_id}")
+        
+        # Show summary from KV data
+        record = manager.get_incident(record_id)
+        if record:
+            if 'title' in record.kv_strings:
+                title = record.kv_strings['title'][0]
+                print(f"  Title: {title}")
+            for key, values in record.kv_strings.items():
+                if key not in ('title', 'description', 'created_at', 'created_by', 'updated_at'):
+                    print(f"  {key}: {', '.join(values)}")
 
-
-    def _cmd_get(self, args):
-        """View incident."""
-        #manager = IncidentManager(explicit_location=args.location)
+    def _cmd_view(self, args):
+        """View record details."""
         manager = self._get_manager(args)
-        incident = manager.get_incident(args.incident_id)
+        record = manager.get_incident(args.record_id)
 
-        if not incident:
-            print(f"Error: Incident {args.incident_id} not found", file=sys.stderr)
+        if not record:
+            print(f"Error: Record {args.record_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        print(f"ID:        {incident.id}")
-        print(f"Title:     {incident.title}")
-        print(f"Status:    {incident.status}")
-        print(f"Severity:  {incident.severity}")
-        print(f"Created:   {incident.created_at} by {incident.created_by}")
-        if incident.updated_at and incident.updated_at != incident.created_at:
-            print(f"Updated:   {incident.updated_at}")
-        if incident.tags:
-            print(f"Tags:      {', '.join(incident.tags)}")
-        if incident.assignees:
-            print(f"Assignees: {', '.join(incident.assignees)}")
-        if incident.description:
-            print(f"\n{incident.description}")
+        # Format and display record
+        print(f"\n{'='*70}")
+        print(f"Record: {record.id}")
+        print(f"{'='*70}\n")
+        
+        # Display all KV data
+        if record.kv_strings:
+            print("String Fields:")
+            for key, values in record.kv_strings.items():
+                values_str = ', '.join(str(v) for v in values)
+                print(f"  {key}: {values_str}")
+        
+        if record.kv_integers:
+            print("\nInteger Fields:")
+            for key, values in record.kv_integers.items():
+                values_str = ', '.join(str(v) for v in values)
+                print(f"  {key}: {values_str}")
+        
+        if record.kv_floats:
+            print("\nFloat Fields:")
+            for key, values in record.kv_floats.items():
+                values_str = ', '.join(str(v) for v in values)
+                print(f"  {key}: {values_str}")
+        
+        print(f"\n{'='*70}\n")
 
     def _cmd_list(self, args):
-        """List incidents with KV filtering and sorting."""
+        """List records with KV search and sort."""
         manager = self._get_manager(args)
-    
+        
         try:
-            incidents = manager.list_incidents(
-                status=args.status,
-                severity=args.severity,
-                tags=args.tags,
-                search=args.search,
+            records = manager.list_incidents(
+                ksearch_list=getattr(args, 'ksearch', None),
+                ksort_list=getattr(args, 'ksort', None),
                 limit=args.limit,
-                ksearch=getattr(args, 'ksearch', None),
-                ksort=getattr(args, 'ksort', None),
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
-        if not incidents:
+        if not records:
             print("No records found")
             return
 
         # Print table header
-        print(f"{'ID':<15} {'Title':<40} {'Status':<12} {'Severity':<10}")
+        print(f"\n{'ID':<15} {'Title':<40} {'Updated':<20}")
         print("─" * 80)
 
-        for inc in incidents:
-            title = inc.title[:37]  # Truncate for display
-            print(f"{inc.id:<15} {title:<40} {inc.status:<12} {inc.severity:<10}")
+        for rec in records:
+            title = rec.kv_strings.get('title', ['Unknown'])[0] if rec.kv_strings else 'Unknown'
+            title = title[:37] if len(title) > 37 else title
+            updated = rec.kv_strings.get('updated_at', ['Unknown'])[0] if rec.kv_strings else 'Unknown'
+            print(f"{rec.id:<15} {title:<40} {updated:<20}")
+        
+        print()
 
     def _cmd_update(self, args):
-        """Update incident status and KV data."""
+        """Update record metadata."""
         manager = self._get_manager(args)
-        manager.update_incident_status(args.incident_id, args.status)
         
-        # Update KV data if provided
-        if hasattr(args, 'kv_single') and args.kv_single or hasattr(args, 'kv_multi') and args.kv_multi:
-            manager.update_incident_kv(
-                args.incident_id,
-                kv_single=getattr(args, 'kv_single', None),
-                kv_multi=getattr(args, 'kv_multi', None),
-            )
-    
-        print(f"✓ Updated {args.incident_id} to {args.status}")
+        # Dynamically add special field arguments
+        self._add_special_field_args(args._parser, manager)
+        
+        # Build KV list from special fields and generic KV arguments
+        kv_list = self._build_kv_list(manager, args)
+        
+        if not kv_list:
+            print("Error: No fields to update", file=sys.stderr)
+            sys.exit(1)
+        
+        # Update record
+        manager.update_incident_info(
+            args.record_id,
+            kv_list=kv_list,
+        )
+        
+        print(f"✓ Updated record: {args.record_id}")
 
     def _cmd_add_update(self, args):
-        """Add update to incident with optional KV data."""
+        """Add note to record."""
         manager = self._get_manager(args)
 
-        # Determine input mode
+        # Determine message source
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
 
-        if has_message:
-            manager.add_update(
-                args.incident_id,
-                message=args.message,
+        try:
+            note_id = manager.add_update(
+                args.record_id,
+                message=args.message if has_message else None,
+                use_stdin=has_stdin and not has_message,
+                use_editor=not (has_message or has_stdin),
                 kv_single=getattr(args, 'kv_single', None),
                 kv_multi=getattr(args, 'kv_multi', None),
             )
-        elif has_stdin:
-            manager.add_update(
-                args.incident_id,
-                use_stdin=True,
-                kv_single=getattr(args, 'kv_single', None),
-                kv_multi=getattr(args, 'kv_multi', None),
-            )
-        else:
-            manager.add_update(
-                args.incident_id,
-                use_editor=True,
-                kv_single=getattr(args, 'kv_single', None),
-                kv_multi=getattr(args, 'kv_multi', None),
-            )
-
-        print(f"✓ Update added to {args.incident_id}")
-
-    def _cmd_get_updates(self, args):
-        """View all updates for incident."""
-        #manager = IncidentManager(explicit_location=args.location)
-        manager = self._get_manager(args)
-        incident = manager.get_incident(args.incident_id)
-
-        if not incident:
-            print(f"Error: Incident {args.incident_id} not found", file=sys.stderr)
+            print(f"✓ Added note: {note_id}")
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
-        updates = manager.get_updates(args.incident_id)
+    def _cmd_list_updates(self, args):
+        """View all notes for record."""
+        manager = self._get_manager(args)
+        record = manager.get_incident(args.record_id)
 
-        print(f"Updates for {args.incident_id}:\n")
+        if not record:
+            print(f"Error: Record {args.record_id} not found", file=sys.stderr)
+            sys.exit(1)
 
-        if not updates:
-            print("No updates yet")
+        notes = manager.get_updates(args.record_id)
+
+        print(f"\nNotes for {args.record_id}:\n")
+
+        if not notes:
+            print("No notes yet")
             return
 
-        for i, update in enumerate(updates, 1):
-            print(f"{i}. [{update.timestamp}] {update.author}")
-            # Indent message
-            for line in update.message.split("\n"):
-                print(f"   {line}")
+        for i, note in enumerate(notes, 1):
+            print("─" * 70)
+            print(f"Note {i}: [{note.timestamp}] by {note.author}")
+            print("─" * 70)
+            print(note.message)
+            
+            # Show note KV data if present
+            if note.kv_strings or note.kv_integers or note.kv_floats:
+                print("\nNote KV Data:")
+                if note.kv_strings:
+                    for key, values in note.kv_strings.items():
+                        print(f"  {key}: {', '.join(str(v) for v in values)}")
+                if note.kv_integers:
+                    for key, values in note.kv_integers.items():
+                        print(f"  {key}: {', '.join(str(v) for v in values)}")
+                if note.kv_floats:
+                    for key, values in note.kv_floats.items():
+                        print(f"  {key}: {', '.join(str(v) for v in values)}")
+            
+            print()
+
+    def _cmd_search_updates(self, args):
+        """Search notes by KV data."""
+        manager = self._get_manager(args)
+        
+        try:
+            results = manager.search_updates(
+                ksearch=args.ksearch,
+                limit=args.limit,
+            )
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        if not results:
+            print("No matching notes found")
+            return
+
+        print(f"\nFound {len(results)} matching notes:\n")
+
+        for note, record_id, record_title in results:
+            print("─" * 70)
+            print(f"Record: {record_id} - {record_title}")
+            print(f"Note: {note.id} [{note.timestamp}] by {note.author}")
+            print("─" * 70)
+            print(note.message[:200] + ("..." if len(note.message) > 200 else ""))
             print()
 
     def _cmd_reindex(self, args):
-        """Rebuild search index from files."""
+        """Rebuild search index."""
         try:
-            #manager = IncidentManager(explicit_location=args.location)
             manager = self._get_manager(args)
-            reindexer = IncidentReindexer(manager.storage, manager.index_db)
+            # Assuming IncidentReindexer exists or we need to implement it
+            reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
             count = reindexer.reindex_all(verbose=args.verbose)
-            print(f"✓ Successfully reindexed {count} records")
+            print(f"✓ Reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
     def _cmd_list_databases(self, args):
-        """Show all available incident databases."""
+        """Show available databases."""
         candidates = DatabaseDiscovery.find_all_databases()
     
         if not candidates:
-            print("No incident databases found.")
+            print("No databases found.")
             return
     
         print("\n" + "="*70)
-        print("Available incident databases:")
+        print("Available Databases")
         print("="*70)
     
         contextual = {k: v for k, v in candidates.items() if v.get('category') == 'contextual'}
         available = {k: v for k, v in candidates.items() if v.get('category') == 'available'}
         
         if contextual:
-            print("\n[Contextual]")
+            print("\n[Contextual (will be used by default)]")
             for key, info in contextual.items():
-                marker = "→" if self._is_default_selection(candidates) == key else " "
-                print(f"  {marker} {info['source']}")
-                print(f"      {info['path']}")
+                print(f"  → {info['source']}")
+                print(f"    {info['path']}")
     
         if available:
             print("\n[Available]")
             for key, info in available.items():
                 print(f"    {info['source']}")
-                print(f"      {info['path']}")
+                print(f"    {info['path']}")
     
         print("\n" + "="*70)
-        print("Tip: Use --choose to select interactively, --location to specify explicitly")
-        print("="*70 + "\n\n")
+        print("Use: --choose to select interactively")
+        print("     --location PATH to specify explicitly")
+        print("="*70 + "\n")
 
 
 # ============================================================================
