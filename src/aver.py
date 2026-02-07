@@ -430,9 +430,9 @@ class Incident:
         """Serialize to Markdown with TOML frontmatter."""
         # Build frontmatter from special fields
 
-        body = self.kv_strings.pop("description", None)
-        if body is not None:
-            body = body[0]
+        #body = self.kv_strings.pop("description", None)
+        #if body is not None:
+        #    body = body[0]
         
         frontmatter = {}
         for field_name in project_config.get_special_fields().keys():
@@ -475,7 +475,7 @@ class Incident:
         #sections = {"Custom Fields": custom_fields} if custom_fields else None
         #return MarkdownDocument.serialize_with_sections(frontmatter, sections)
         all_frontmatter = custom_fields | frontmatter
-        return MarkdownDocument.serialize( all_frontmatter, body = body )
+        return MarkdownDocument.serialize( all_frontmatter, body = self.content )
         
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
@@ -507,12 +507,14 @@ class Incident:
             frontmatter, body = MarkdownDocument.parse(content)
         except ValueError:
             # Fallback to original regex parsing for compatibility
+            print ("Markdown Parse failed, falling back")
             match = re.match(r'^\+\+\+\n(.*?)\n\+\+\+', content, re.DOTALL)
             if not match:
                 raise ValueError("Invalid Markdown format: missing TOML frontmatter")
             frontmatter = TOMLSerializer.loads(match.group(1))
             body = content[match.end():].strip()
-        
+
+
         # Rebuild KV from frontmatter
         kv_strings = {}
         kv_integers = {}
@@ -2101,7 +2103,8 @@ class IncidentIndexDatabase:
     
         # Get title and description from kv_strings
         title = incident.kv_strings.get('title', [''])[0] if incident.kv_strings else ''
-        description = incident.kv_strings.get('description', [''])[0] if incident.kv_strings else ''
+        #description = incident.kv_strings.get('description', [''])[0] if incident.kv_strings else ''
+        description = incident.content
         content = f"{title}\n\n{description}"
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
@@ -2940,8 +2943,9 @@ class IncidentManager:
         self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
         
         if final_description:
-            self._validate_and_store_kv('description', KVParser.TYPE_STRING, final_description, incident)
-        
+            #self._validate_and_store_kv('description', KVParser.TYPE_STRING, final_description, incident)
+            incident.content=final_description
+
         # Save to file
         self.storage.save_incident(incident, self.project_config)
         
@@ -2977,10 +2981,13 @@ class IncidentManager:
             lines.append("### Content")
             lines.append("")
             lines.append(incident.content)
-
+            lines.append("")
+            lines.append("---")
+            lines.append("")
         
         # System fields to skip
-        skip_fields = {'title', 'created_at', 'created_by', 'updated_at', 'description'}
+        # skip_fields = {'title', 'created_at', 'created_by', 'updated_at', 'description'}
+        skip_fields = {}
         
         # Format all string KV that isn't in skip list
         for key, values in incident.kv_strings.items():
@@ -2999,8 +3006,9 @@ class IncidentManager:
             if values:
                 values_str = ', '.join(str(v) for v in values)
                 lines.append(f"**{key}:** {values_str}")
-        
-        
+
+        lines.append("\n\n")
+
         return "\n".join(lines)
     
     def update_incident_info(
