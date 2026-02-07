@@ -624,21 +624,7 @@ class IncidentUpdate:
             "author": self.author,
         }
         
-        # For KV data, we use inline tables which require manual formatting
-        # Build the TOML header manually to use inline table format for KV
-        lines = [MarkdownDocument.FRONTMATTER_DELIMITER]
-        lines.append(f'id = "{TOMLSerializer.escape_string(self.id)}"')
-        lines.append(f'incident_id = "{TOMLSerializer.escape_string(self.incident_id)}"')
-        lines.append(f'timestamp = "{TOMLSerializer.escape_string(self.timestamp)}"')
-        lines.append(f'author = "{TOMLSerializer.escape_string(self.author)}"')
-        lines.append(f'kv_strings = {TOMLSerializer.dict_to_inline_table(self.kv_strings or {})}')
-        lines.append(f'kv_integers = {TOMLSerializer.dict_to_inline_table(self.kv_integers or {})}')
-        lines.append(f'kv_floats = {TOMLSerializer.dict_to_inline_table(self.kv_floats or {})}')
-        lines.append(MarkdownDocument.FRONTMATTER_DELIMITER)
-        lines.append('')
-        lines.append(self.message)
-        
-        return '\n'.join(lines)
+        return MarkdownDocument.serialize( frontmatter, body = self.message )
 
     @classmethod
     def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
@@ -691,9 +677,9 @@ class IDGenerator:
     def generate_incident_id() -> str:
         """
         Generate a distributed-safe incident ID based on epoch time.
-        Format: INC-<base36 epoch seconds - 1770300000>
+        Format: REC-<base36 epoch seconds - 1735689600>    # Since Jan 1, 2026
         """
-        epochtime = time.time() - 1770300000
+        epochtime = time.time() - 1735689600  # Time 0 = Jan 1, 2026
         rand = secrets.token_hex(1)
         recid = f"REC-{IDGenerator.to_base36(epochtime)}{rand}"
         return recid.upper()
@@ -1932,7 +1918,7 @@ class IncidentFileStorage:
     def list_incident_files(self) -> List[str]:
         """List all incident IDs from files."""
         incident_ids = []
-        for file_path in self.incidents_dir.glob("INC-*.md"):
+        for file_path in self.incidents_dir.glob("REC-*.md"):
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
@@ -2749,6 +2735,7 @@ class IncidentReindexer:
             print(f"Reindexing {len(incident_ids)} records...")
         
         indexed_count = 0
+        indexed_updates = 0
         for incident_id in incident_ids:
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
@@ -2756,18 +2743,22 @@ class IncidentReindexer:
                 self.index_db.index_kv_data(incident)
                 indexed_count += 1
                 if verbose:
-                    print(f"  ✓ {incident_id}")
+                    print(f"  ✓ {incident_id}",end=":")
             else:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
             
             # Index updates for this incident (moved inside the loop)
             updates = self.storage.load_updates(incident_id)
+
             for update in updates:
                 self.index_db.index_update(update)
-
+                if verbose:
+                    print(f".",end="")
+                indexed_updates += 1
+            print()
         if verbose:
-            print(f"✓ Reindexed {indexed_count} records")
+            print(f"✓ Reindexed {indexed_count} records, {indexed_updates} updates")
         
         return indexed_count
 
@@ -2959,7 +2950,7 @@ class IncidentManager:
         self.index_db.index_kv_data(incident)
         
         # Create initial update
-        initial_message = self._format_initial_update(incident)
+        initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
         initial_update = IncidentUpdate(
             id=update_id,
@@ -2974,10 +2965,19 @@ class IncidentManager:
         
         return incident_id
      
-    def _format_initial_update(self, incident: Incident) -> str:
+    def _format_incident_update(self, id: str) -> str:
         """Format initial update message from all KV data."""
-        lines = ["## Incident Created"]
+
+        incident = self.storage.load_incident(id, self.project_config)
+        lines = ["## Record Data"]
         lines.append("")
+
+        # Add description if present
+        if incident.content:
+            lines.append("### Content")
+            lines.append("")
+            lines.append(incident.content)
+
         
         # System fields to skip
         skip_fields = {'title', 'created_at', 'created_by', 'updated_at', 'description'}
@@ -3000,14 +3000,6 @@ class IncidentManager:
                 values_str = ', '.join(str(v) for v in values)
                 lines.append(f"**{key}:** {values_str}")
         
-        # Add description if present
-        if 'description' in incident.kv_strings:
-            description = incident.kv_strings['description'][0] if incident.kv_strings['description'] else None
-            if description:
-                lines.append("")
-                lines.append("### Description")
-                lines.append("")
-                lines.append(description)
         
         return "\n".join(lines)
     
@@ -3665,7 +3657,7 @@ class IncidentCLI:
         self._add_common_args(record_update_parser)
         record_update_parser.add_argument("record_id", help="Record ID")
         self._add_kv_options(record_update_parser)
-        record_update_parser._special_fields_parser = True
+        self.record_update_parser = record_update_parser
 
         
         # ====================================================================
@@ -3815,13 +3807,14 @@ class IncidentCLI:
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
-        parsed = self.parser.parse_args(args)
+        parsed,remaining = self.parser.parse_known_args(args)
 
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
                     manager = self._get_manager(parsed)  # Fix: use parsed, not args
                     self._add_special_field_args(self.record_new_parser, manager)
+                    print (f"PREPARSED: {parsed}")
                     parsed = self.parser.parse_args(args)
                     print (f"NEWPARSED: {parsed}")
                     self._cmd_create(parsed)
@@ -3831,8 +3824,10 @@ class IncidentCLI:
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
                     manager = self._get_manager(args)
-                    self._add_special_field_args(self.parser, manager)
+                    self._add_special_field_args(self.record_update_parser, manager)
+                    print (f"PREPARSED: {parsed}")
                     parsed = self.parser.parse_args(args)
+                    print (f"NEWPARSED: {parsed}")
                     self._cmd_update(parsed)
                     
             elif parsed.command == "note":
