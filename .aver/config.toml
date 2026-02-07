@@ -1,0 +1,29 @@
+[special_fields]
+
+[special_fields.title]
+type = "single"
+value_type = "string"
+editable = true
+
+[special_fields.type]
+type = "single"
+value_type = "string"
+editable = true
+accepted_values = ["bug", "feature", "support", "suggestion", "documentation", "other"]
+
+[special_fields.status]
+type = "single"
+value_type = "string"
+editable = true
+accepted_values = ["new", "open", "investigating", "resolved", "asked", "answered", "closed"]
+
+[special_fields.severity]
+type = "single"
+value_type = "string"
+editable = true
+accepted_values = ["low", "medium", "high", "critical"]
+
+[special_fields.tag]
+type = "multi"
+value_type = "string"
+editable = true

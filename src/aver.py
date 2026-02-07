@@ -25,18 +25,14 @@ from types import SimpleNamespace
 import select
 import secrets
 import time
+import tomli_w
+from string import Template
 
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib
 
-try:
-    import tomli_w as toml_writer
-    toml_w = toml_writer  # Alias for consistent usage throughout the code
-except ImportError:
-    toml_writer = None
-    toml_w = None
 
 
 # ============================================================================
@@ -151,7 +147,7 @@ class TOMLSerializer:
         """
         Convert a dict to TOML string with proper escaping.
         
-        This is a fallback when toml_w is not available.
+        This is a fallback when tomli_w is not available.
         Handles nested dicts, lists, strings, ints, floats, and bools.
         """
         lines = []
@@ -177,16 +173,35 @@ class TOMLSerializer:
                 lines.append(f"{prefix}{escaped_key} = {TOMLSerializer.format_value(value)}")
         
         return '\n'.join(lines)
+        
+    @staticmethod
+    def normalize_dict_values(data):
+        """
+        Walks through first-level keys and converts single-element lists to single values.
+        Leaves lists with multiple elements and dictionaries unchanged.
+        """
+        result = {}
+        for key, value in data.items():
+            if isinstance(value, list) and len(value) == 1:
+                # Single-element list -> unwrap to single value
+                result[key] = value[0]
+            else:
+                # Keep as-is (multi-element list, dict, or single value)
+                result[key] = value
+        return result
 
     @staticmethod
     def dumps(d: dict) -> str:
         """
         Serialize a dict to TOML string.
         
-        Uses toml_w if available, otherwise falls back to manual serialization.
+        Uses tomli_w if available, otherwise falls back to manual serialization.
         """
-        if toml_w:
-            return toml_w.dumps(d)
+        print (f"DUMP DICT: {d}")
+        if tomli_w:
+            result = tomli_w.dumps(TOMLSerializer.normalize_dict_values(d))
+            result = re.sub(r',\s*\n\s*', ', ', result)
+            return re.sub(r'\[\s*\n\s*', '[ ', result)
         else:
             result = TOMLSerializer.dict_to_toml(d)
             return result + '\n' if result else '\n'
@@ -196,33 +211,21 @@ class TOMLSerializer:
         """Parse a TOML string into a dict."""
         return tomllib.loads(s)
 
-    @classmethod
-    def add_type_hint(cls, key: str, value_type: str) -> str:
-        """Add type hint suffix to key."""
-        if value_type == "string":
-            return f"{key}{cls.TYPE_HINT_STRING}"
-        elif value_type == "integer":
-            return f"{key}{cls.TYPE_HINT_INTEGER}"
-        elif value_type == "float":
-            return f"{key}{cls.TYPE_HINT_FLOAT}"
-        return key
-
-    @classmethod
-    def strip_type_hint(cls, key: str) -> tuple[str, Optional[str]]:
-        """
-        Strip type hint suffix from key.
-        
-        Returns:
-            (clean_key, type_hint) where type_hint is "string", "integer", "float", or None
-        """
-        if key.endswith(cls.TYPE_HINT_STRING):
-            return key[:-1], "string"
-        elif key.endswith(cls.TYPE_HINT_INTEGER):
-            return key[:-1], "integer"
-        elif key.endswith(cls.TYPE_HINT_FLOAT):
-            return key[:-1], "float"
+    TYPE_HINT_SUFFIX = "__"  # e.g., my_field__string
+    
+    @staticmethod
+    def add_type_hint(key: str, value_type: str) -> str:
+        """Add type hint suffix to key. e.g., 'foo' + 'string' -> 'foo__string'"""
+        return f"{key}{TOMLSerializer.TYPE_HINT_SUFFIX}{value_type}"
+    
+    @staticmethod
+    def strip_type_hint(key: str) -> tuple[str, Optional[str]]:
+        """Remove type hint suffix from key. Returns (clean_key, type_or_none)."""
+        for vtype in ("string", "integer", "float"):
+            suffix = f"{TOMLSerializer.TYPE_HINT_SUFFIX}{vtype}"
+            if key.endswith(suffix):
+                return key[:-len(suffix)], vtype
         return key, None
-
 
 class MarkdownDocument:
     """
@@ -237,102 +240,32 @@ class MarkdownDocument:
         +++
         
         Body content here...
-    """
-    
+    """    
     FRONTMATTER_DELIMITER = "+++"
-    
     @classmethod
     def parse(cls, content: str) -> tuple[dict, str]:
-        """
-        Parse a Markdown document with TOML frontmatter.
-        
-        Args:
-            content: Full document content
-            
-        Returns:
-            (frontmatter_dict, body_content)
-            
-        Raises:
-            ValueError: If format is invalid
-        """
-        # Try +++ delimited format first
-        parts = content.split(cls.FRONTMATTER_DELIMITER)
-        if len(parts) >= 3:
-            toml_str = parts[1].strip()
-            body = cls.FRONTMATTER_DELIMITER.join(parts[2:]).strip()
-            
-            try:
-                frontmatter = TOMLSerializer.loads(toml_str)
-                return frontmatter, body
-            except Exception as e:
-                raise ValueError(f"Failed to parse TOML frontmatter: {e}")
-        
-        # Try regex match for more flexible parsing
-        match = re.match(
-            r'^\+\+\+\n(.*?)\n\+\+\+\s*(.*)$',
-            content,
-            re.DOTALL
-        )
-        if match:
-            try:
-                frontmatter = TOMLSerializer.loads(match.group(1))
-                body = match.group(2).strip()
-                return frontmatter, body
-            except Exception as e:
-                raise ValueError(f"Failed to parse TOML frontmatter: {e}")
-        
-        raise ValueError("Invalid Markdown format: missing TOML frontmatter delimiters (+++)")
+        """Parse Markdown with TOML frontmatter. Returns (frontmatter_dict, body)."""
+        pattern = rf'^\+\+\+\s*(.*?)\s*\+\+\+(.*?)$'
+        match = re.match(pattern, content, re.DOTALL)
+        if not match:
+            frontmatter = ""
+            body = content
+        else:
+            frontmatter = TOMLSerializer.loads(match.group(1))
+            body = match.group(2).strip()
 
+        return frontmatter, body
+    
     @classmethod
     def serialize(cls, frontmatter: dict, body: str = "") -> str:
-        """
-        Serialize frontmatter and body to Markdown with TOML frontmatter.
-        
-        Args:
-            frontmatter: Dict of frontmatter key-values
-            body: Optional body content
-            
-        Returns:
-            Complete Markdown document string
-        """
+        """Serialize to Markdown with TOML frontmatter."""
         toml_str = TOMLSerializer.dumps(frontmatter)
-        
-        result = f"{cls.FRONTMATTER_DELIMITER}\n{toml_str}{cls.FRONTMATTER_DELIMITER}\n\n"
+        parts = [cls.FRONTMATTER_DELIMITER, toml_str.strip(), cls.FRONTMATTER_DELIMITER]
         if body:
-            result += body
-        
-        return result
-
-    @classmethod
-    def serialize_with_sections(
-        cls,
-        frontmatter: dict,
-        sections: Optional[Dict[str, dict]] = None,
-        body: str = ""
-    ) -> str:
-        """
-        Serialize with additional named sections.
-        
-        Args:
-            frontmatter: Main frontmatter dict
-            sections: Optional dict of section_name -> section_dict
-            body: Optional body content
-            
-        Returns:
-            Complete Markdown document string
-        """
-        result = cls.serialize(frontmatter, "")
-        
-        if sections:
-            for section_name, section_data in sections.items():
-                if section_data:
-                    result += f"\n## {section_name}\n\n{TOMLSerializer.dumps(section_data)}"
-        
-        if body:
-            result += f"\n{body}"
-        
-        return result
-
+            parts.append("")
+            parts.append(body)
+            parts.append("\n\n")
+        return "\n".join(parts)
 
 class KVStore:
     """
@@ -442,11 +375,13 @@ class Incident:
         kv_strings: Optional[Dict[str, List[str]]] = None,
         kv_integers: Optional[Dict[str, List[int]]] = None,
         kv_floats: Optional[Dict[str, List[float]]] = None,
+        content: Optional[str] = None,
     ):
         self.id = id
         self.kv_strings = kv_strings or {}
         self.kv_integers = kv_integers or {}
         self.kv_floats = kv_floats or {}
+        self.content = content or ""
     
     def get_value(
         self,
@@ -494,6 +429,11 @@ class Incident:
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with TOML frontmatter."""
         # Build frontmatter from special fields
+
+        body = self.kv_strings.pop("description", None)
+        if body is not None:
+            body = body[0]
+        
         frontmatter = {}
         for field_name in project_config.get_special_fields().keys():
             field = project_config.get_special_field(field_name)
@@ -532,9 +472,11 @@ class Incident:
                 custom_fields[hinted_key] = val
         
         # Use MarkdownDocument for serialization
-        sections = {"Custom Fields": custom_fields} if custom_fields else None
-        return MarkdownDocument.serialize_with_sections(frontmatter, sections)
-    
+        #sections = {"Custom Fields": custom_fields} if custom_fields else None
+        #return MarkdownDocument.serialize_with_sections(frontmatter, sections)
+        all_frontmatter = custom_fields | frontmatter
+        return MarkdownDocument.serialize( all_frontmatter, body = body )
+        
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
         special_names = set(project_config.get_special_fields().keys())
@@ -571,7 +513,7 @@ class Incident:
             frontmatter = TOMLSerializer.loads(match.group(1))
             body = content[match.end():].strip()
         
-        # Rebuild KV from special fields
+        # Rebuild KV from frontmatter
         kv_strings = {}
         kv_integers = {}
         kv_floats = {}
@@ -579,56 +521,69 @@ class Incident:
         special_fields = project_config.get_special_fields()
         special_field_names = set(special_fields.keys())
         
-        # Process items in frontmatter TOML
-        for field_name, value in frontmatter.items():
-            if field_name in special_field_names:
-                field = special_fields[field_name]
+        # Process all items in frontmatter TOML
+        for key_with_hint, value in frontmatter.items():
+            # Check if this is a special field (by raw key name)
+            if key_with_hint in special_field_names:
+                # Special field - use config to determine type
+                field = special_fields[key_with_hint]
                 
                 if field.field_type == "single":
                     if field.value_type == "string":
-                        kv_strings[field_name] = [value]
+                        kv_strings[key_with_hint] = [value]
                     elif field.value_type == "integer":
-                        kv_integers[field_name] = [int(value)]
+                        kv_integers[key_with_hint] = [int(value)]
                     elif field.value_type == "float":
-                        kv_floats[field_name] = [float(value)]
+                        kv_floats[key_with_hint] = [float(value)]
                 else:  # multi
                     if not isinstance(value, list):
                         value = [value]
                     if field.value_type == "string":
-                        kv_strings[field_name] = value
+                        kv_strings[key_with_hint] = value
                     elif field.value_type == "integer":
-                        kv_integers[field_name] = [int(v) for v in value]
+                        kv_integers[key_with_hint] = [int(v) for v in value]
                     elif field.value_type == "float":
-                        kv_floats[field_name] = [float(v) for v in value]
-        
-        # Parse "Custom Fields" section if present
-        if body.startswith("## Custom Fields"):
-            custom_match = re.search(r'## Custom Fields\n\n(.*)', body, re.DOTALL)
-            if custom_match:
-                try:
-                    custom_toml = TOMLSerializer.loads(custom_match.group(1))
-                    for key_with_hint, val in custom_toml.items():
-                        clean_key, value_type = TOMLSerializer.strip_type_hint(key_with_hint)
-                        
-                        if value_type == "string":
-                            kv_strings[clean_key] = val if isinstance(val, list) else [str(val)]
-                        elif value_type == "integer":
-                            kv_integers[clean_key] = [int(v) for v in val] if isinstance(val, list) else [int(val)]
-                        elif value_type == "float":
-                            kv_floats[clean_key] = [float(v) for v in val] if isinstance(val, list) else [float(val)]
-                        else:
-                            # No type hint - fallback to string
-                            kv_strings[clean_key] = [str(v) for v in val] if isinstance(val, list) else [str(val)]
-                except Exception as e:
-                    print(f"Warning: Failed to parse custom fields: {e}", file=sys.stderr)
+                        kv_floats[key_with_hint] = [float(v) for v in value]
+            else:
+                # Custom field - check for type hint
+                clean_key, value_type = TOMLSerializer.strip_type_hint(key_with_hint)
+                
+                # Also check if clean_key is a special field (in case hint was added erroneously)
+                if clean_key in special_field_names:
+                    field = special_fields[clean_key]
+                    if field.field_type == "single":
+                        if field.value_type == "string":
+                            kv_strings[clean_key] = [value]
+                        elif field.value_type == "integer":
+                            kv_integers[clean_key] = [int(value)]
+                        elif field.value_type == "float":
+                            kv_floats[clean_key] = [float(value)]
+                    else:  # multi
+                        if not isinstance(value, list):
+                            value = [value]
+                        if field.value_type == "string":
+                            kv_strings[clean_key] = value
+                        elif field.value_type == "integer":
+                            kv_integers[clean_key] = [int(v) for v in value]
+                        elif field.value_type == "float":
+                            kv_floats[clean_key] = [float(v) for v in value]
+                else:
+                    # True custom field - use type hint or default to string
+                    if value_type == "integer":
+                        kv_integers[clean_key] = [int(v) for v in value] if isinstance(value, list) else [int(value)]
+                    elif value_type == "float":
+                        kv_floats[clean_key] = [float(v) for v in value] if isinstance(value, list) else [float(value)]
+                    else:
+                        # No hint or string hint - treat as string
+                        kv_strings[clean_key] = [str(v) for v in value] if isinstance(value, list) else [str(value)]
         
         return cls(
             id=incident_id,
             kv_strings=kv_strings or None,
             kv_integers=kv_integers or None,
             kv_floats=kv_floats or None,
+            content=body,
         )
-
 
 @dataclass
 class IncidentUpdate:
@@ -726,6 +681,7 @@ class IDGenerator:
             return "0"
 
         result = []
+        num = int(num)
         while num:
             num, rem = divmod(num, 36)
             result.append(chars[rem])
@@ -735,21 +691,32 @@ class IDGenerator:
     def generate_incident_id() -> str:
         """
         Generate a distributed-safe incident ID based on epoch time.
-        Format: INC-<base36 epoch nanoseconds>
+        Format: INC-<base36 epoch seconds - 1770300000>
         """
-        epoch_ns = time.time_ns()
-        return f"INC-{IDGenerator.to_base36(epoch_ns)}"
+        epochtime = time.time() - 1770300000
+        rand = secrets.token_hex(1)
+        recid = f"REC-{IDGenerator.to_base36(epochtime)}{rand}"
+        return recid.upper()
 
     @staticmethod
-    def generate_update_filename() -> str:
-        epoch_ns = time.time_ns()
-        rand = secrets.token_hex(2)  # small entropy bump
-        return f"UPD-{IDGenerator.to_base36(epoch_ns)}-{rand}.md"
+    def generate_update_filename(id:Optional [str] = None) -> str:
+        
+        if id is not None:
+            return f"{id}.md"
+        else:
+            raise ValueError(
+                f"Invalid TOML syntax in {config_path}: {e}\n"
+                f"To reset your configuration, run:\n\n"
+                f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+            )
+            
 
     @staticmethod
     def generate_update_id() -> str:
-        return IDGenerator.generate_update_filename().removesuffix(".md")
-
+        epochtime = time.time() - 1770300000
+        rand = secrets.token_hex(1)  # small entropy bump
+        notefn = f"NT-{IDGenerator.to_base36(epochtime)}{rand}"
+        return notefn.upper()
 
 # ============================================================================
 # DICTIONARY HELPER
@@ -836,6 +803,26 @@ class ProjectConfig:
         """Initialize with sensible defaults."""
         self._raw_config = {
             "special_fields": {
+                "recordname": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": True,
+                },
+                "created_at": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": True,
+                },
+                "created_by": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": True,
+                },
+                "updated_at": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": True,
+                },
                 "title": {
                     "type": "single",
                     "value_type": "string",
@@ -895,13 +882,13 @@ class ProjectConfig:
     
     def save(self):
         """Save config back to file."""
-        if not toml_writer:
+        if not tomli_w:
             raise RuntimeError(
                 "tomli_w not available. Cannot write TOML config.\n"
                 "Install with: pip install tomli_w"
             )
         with open(self.config_path, "wb") as f:
-            toml_writer.dump(self._raw_config, f)
+            tomli_w.dump(self._raw_config, f)
 
 
 # ============================================================================
@@ -1060,7 +1047,7 @@ class DatabaseDiscovery:
     @staticmethod
     def set_user_config(config: dict):
         """Save the global user configuration."""
-        if not toml_writer:
+        if not tomli_w:
             raise RuntimeError(
                 "tomli_w not available. Cannot write TOML config.\n"
                 "Install with: pip install tomli_w"
@@ -1068,7 +1055,7 @@ class DatabaseDiscovery:
         config_path = DatabaseDiscovery.get_user_config_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "wb") as f:
-            toml_writer.dump(config, f)
+            tomli_w.dump(config, f)
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
@@ -1086,14 +1073,14 @@ class DatabaseDiscovery:
     @staticmethod
     def set_project_config(db_root: Path, config: dict):
         """Save the project configuration."""
-        if not toml_writer:
+        if not tomli_w:
             raise RuntimeError(
                 "tomli_w not available. Cannot write TOML config.\n"
                 "Install with: pip install tomli_w"
             )
         config_path = DatabaseDiscovery.get_project_config_path(db_root)
         with open(config_path, "wb") as f:
-            toml_writer.dump(config, f)
+            tomli_w.dump(config, f)
 
     # =========================================================================
     # Database Discovery
@@ -1933,7 +1920,7 @@ class IncidentFileStorage:
                 content = f.read()
             return Incident.from_markdown(content, incident_id, project_config)
         except Exception as e:
-            print(f"Warning: Failed to load incident {incident_id}: {e}", file=sys.stderr)
+            print(f"Warning: Failed to load incident {incident_id}: path: {path} {e}", file=sys.stderr)
             return None
 
     def delete_incident(self, incident_id: str):
@@ -1952,7 +1939,7 @@ class IncidentFileStorage:
     def save_update(self, incident_id: str, update: IncidentUpdate):
         """Save update to Markdown file with TOML header."""
         updates_dir = self._get_updates_dir(incident_id)
-        filename = IDGenerator.generate_update_filename()
+        filename = IDGenerator.generate_update_filename(update.id)
         update_file = updates_dir / filename
 
         content = update.to_markdown()
@@ -2487,7 +2474,8 @@ class IncidentIndexDatabase:
         ksearch_list: List[tuple], 
         incident_ids: Optional[List[str]] = None,
         update_ids: Optional[List[str]] = None,
-        return_updates: bool = False
+        return_updates: bool = False,
+        search_updates: bool = False
     ) -> List[str]:
         """
         Search by key-value criteria.
@@ -2497,6 +2485,7 @@ class IncidentIndexDatabase:
             incident_ids: If provided, search only within these incidents (None = search all)
             update_ids: If provided, search only within these updates
             return_updates: If True, return update IDs; if False, return incident IDs
+            search_updates: If True, search for updates; if False, search only incidents
             
         Returns:
             List of matching incident IDs or update IDs (depending on return_updates)
@@ -2507,7 +2496,7 @@ class IncidentIndexDatabase:
         matching_results = None
         
         # Determine which column to return
-        return_column = "update_id" if return_updates else "incident_id"
+        return_column = "incident_id,update_id" if return_updates else "incident_id"
         
         for key, operator, value in ksearch_list:
             results = set()
@@ -2516,7 +2505,7 @@ class IncidentIndexDatabase:
             where_parts = []
             params = [key, value]
             
-            if return_updates:
+            if search_updates:
                 # Must have update_id when searching for updates
                 where_parts.append("update_id IS NOT NULL")
             
@@ -2535,7 +2524,8 @@ class IncidentIndexDatabase:
                 where_parts.append("update_id IS NULL")
             
             where_clause = " AND ".join(where_parts)
-            where_clause = f"WHERE {where_clause}" if where_clause else ""
+            #where_clause = f"WHERE {where_clause}" if where_clause else ""
+            where_clause = f"AND {where_clause}" if where_clause else ""
             
             # Try string search
             try:
@@ -2553,7 +2543,7 @@ class IncidentIndexDatabase:
                     continue
                 
                 cursor.execute(query, params)
-                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
+                results.update(tuple(row) for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
@@ -2578,9 +2568,10 @@ class IncidentIndexDatabase:
                     query = f"SELECT DISTINCT {return_column} FROM kv_integers WHERE key = ? AND value >= ? {where_clause}"
                 else:
                     continue
-                
+                print(f"QUERY: {query}")
+                print(f"PARAMS: {int_params}")
                 cursor.execute(query, int_params)
-                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
+                results.update(tuple(row) for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
@@ -2607,7 +2598,7 @@ class IncidentIndexDatabase:
                     continue
                 
                 cursor.execute(query, float_params)
-                results.update(row[0] for row in cursor.fetchall() if row[0] is not None)
+                results.update(tuple(row) for row in cursor.fetchall() if row[0] is not None)
             except:
                 pass
             
@@ -2618,7 +2609,15 @@ class IncidentIndexDatabase:
                 matching_results &= results
         
         conn.close()
-        return list(matching_results) if matching_results is not None else []
+
+        if return_updates:
+            final_results=list(matching_results)
+        else:
+            final_results=[]
+            for incident_id, in matching_results:
+                final_results.append(incident_id)
+                
+        return final_results if matching_results is not None else []
     
     
     def get_sorted_incidents(self, incident_ids: List[str], ksort_list: List[tuple], update_id: Optional[str] = None) -> List[str]:
@@ -2786,6 +2785,7 @@ class IncidentManager:
         interactive: bool = None,
     ):
         """Initialize manager with database and project config."""
+        print (f"LOCATION: {explicit_location}")
         if explicit_location:
             self.db_root = Path(explicit_location).resolve()
         else:
@@ -2892,6 +2892,8 @@ class IncidentManager:
         self,
         kv_list: List[str],
         description: Optional[str] = None,
+        use_stdin: bool = False,
+        use_editor: bool = False,
     ) -> str:
         """
         Create new incident from KV list.
@@ -2899,6 +2901,7 @@ class IncidentManager:
         Args:
             kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
             description: Optional incident description
+            use_stdin: Read description from STDIN
         
         Example:
             manager.create_incident(
@@ -2915,6 +2918,21 @@ class IncidentManager:
         incident_id = IDGenerator.generate_incident_id()
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
+        # Determine description source
+        final_description = None
+        if description:
+            final_description = description
+        elif use_stdin and StdinHandler.has_stdin_data():
+            final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+        elif use_editor:
+            final_description = EditorConfig.launch_editor(
+                initial_content=(
+                    "# Add your update below\n"
+                    "# Lines starting with # are ignored\n"
+                    "\n"
+                ),
+            )
+        
         # Initialize empty incident
         incident = Incident(id=incident_id)
         
@@ -2930,8 +2948,8 @@ class IncidentManager:
         self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, user_config["user"]["handle"], incident)
         self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
         
-        if description:
-            self._validate_and_store_kv('description', KVParser.TYPE_STRING, description, incident)
+        if final_description:
+            self._validate_and_store_kv('description', KVParser.TYPE_STRING, final_description, incident)
         
         # Save to file
         self.storage.save_incident(incident, self.project_config)
@@ -2942,8 +2960,9 @@ class IncidentManager:
         
         # Create initial update
         initial_message = self._format_initial_update(incident)
+        update_id = IDGenerator.generate_update_id()
         initial_update = IncidentUpdate(
-            id="auto",
+            id=update_id,
             incident_id=incident_id,
             timestamp=now,
             author=user_config["user"]["handle"],
@@ -2954,7 +2973,7 @@ class IncidentManager:
         self.index_db.index_update(initial_update)
         
         return incident_id
-    
+     
     def _format_initial_update(self, incident: Incident) -> str:
         """Format initial update message from all KV data."""
         lines = ["## Incident Created"]
@@ -3046,8 +3065,9 @@ class IncidentManager:
         
         # Log update
         update_msg = f"Updated: {', '.join(updated_fields)}"
+        update_id = IDGenerator.generate_update_id()
         incident_update = IncidentUpdate(
-            id="auto",
+            id=update_id,
             incident_id=incident_id,
             timestamp=now,
             author=user_config["user"]["handle"],
@@ -3205,15 +3225,20 @@ class IncidentManager:
         ksearch_list: Optional[List[str]] = None,
         ksort_list: Optional[List[str]] = None,
         limit: int = 100,
-    ) -> List[Incident]:
+        ids_only: bool = False,
+    ) -> Union[List[Incident], List[str]]:
         """
         List incidents with optional KV search and sort.
-        
+    
         Args:
             ksearch_list: List of search expressions like ["status=open", "severity>low"]
             ksort_list: List of sort expressions like ["severity", "created_at-"]
             limit: Max results
-        
+            ids_only: If True, return only incident IDs as strings
+     
+        Returns:
+            List of Incident objects or list of incident ID strings if ids_only=True
+    
         Raises:
             RuntimeError: If search/sort expressions are invalid
         """
@@ -3224,12 +3249,12 @@ class IncidentManager:
                 parsed_ksearch = [KVSearchParser.parse_ksearch(expr) for expr in ksearch_list]
             except ValueError as e:
                 raise RuntimeError(f"Invalid ksearch expression: {e}")
-        
+    
         incident_ids = self.index_db.search_kv(parsed_ksearch, return_updates=False)
-        
+    
         if not incident_ids:
             return []
-        
+    
         # Sort if requested
         if ksort_list:
             try:
@@ -3237,81 +3262,71 @@ class IncidentManager:
                 incident_ids = self.index_db.get_sorted_incidents(incident_ids, parsed_ksort)
             except ValueError as e:
                 raise RuntimeError(f"Invalid ksort expression: {e}")
-        
+    
+        # Apply limit
+        incident_ids = incident_ids[:limit]
+    
+        # Return IDs only if requested
+        if ids_only:
+            return incident_ids
+    
         # Load incident objects from file storage
         incidents = []
-        for incident_id in incident_ids[:limit]:
-            incident = self.storage.load_incident(incident_id, self.project_config)
-            if incident:
-                incidents.append(incident)
-        
+        for incident_id in incident_ids:
+             incident = self.storage.load_incident(incident_id, self.project_config)
+             if incident:
+                 incidents.append(incident)
+    
         return incidents
     
     def search_updates(
         self,
         ksearch: Optional[List[str]] = None,
         limit: int = 50,
-    ) -> List[tuple]:
+        ids_only: bool = False,
+    ) -> Union[List[tuple], List[str]]:
         """
         Search updates by key-value filters.
-        
+    
         Args:
             ksearch: List of key-value search expressions for update KV
             limit: Maximum results
-        
+            ids_only: If True, return only "incident_id:update_id" strings
+    
         Returns:
-            List of (update, incident_id, incident_title) tuples
-        
+            List of (update, incident_id, incident_title) tuples, or
+            list of "incident_id:update_id" strings if ids_only=True
+    
         Raises:
             RuntimeError: If ksearch expressions are invalid
         """
         if not ksearch:
             return []
-        
+    
         try:
             ksearch_parsed = [KVSearchParser.parse_ksearch(expr) for expr in ksearch]
         except ValueError as e:
             raise RuntimeError(f"Invalid ksearch expression: {e}")
-        
+    
         # Search for updates with KV data
-        matching_update_ids = self.index_db.search_kv(
+        matching_ids = self.index_db.search_kv(
             ksearch_parsed,
-            return_updates=True
+            return_updates=True,
+            search_updates=True,
         )
-        
-        if not matching_update_ids:
+    
+        if not matching_ids:
             return []
-        
-        # Load updates and their parent incidents
-        results = []
-        seen_updates = set()
-        
-        for update_id in matching_update_ids[:limit * 2]:
-            if update_id in seen_updates:
-                continue
-            
-            # Find which incident this update belongs to
-            # (need to search incident KV index for incident_id references)
-            for incident_id in self.index_db.list_all_incident_ids_with_update(update_id):
-                updates = self.storage.load_updates(incident_id)
-                matching_update = next(
-                    (u for u in updates if u.id == update_id),
-                    None
-                )
-                
-                if matching_update:
-                    incident = self.get_incident(incident_id)
-                    if incident:
-                        incident_title = (
-                            incident.kv_strings.get('title', ['Unknown'])[0]
-                            if incident.kv_strings else 'Unknown'
-                        )
-                        results.append((matching_update, incident_id, incident_title))
-                        seen_updates.add(update_id)
-                        break
-        
-        return results[:limit]
-
+    
+        matching_ids = matching_ids[:limit]
+    
+        # Return IDs only if requested
+        if ids_only:
+            # matching_ids should be tuples of (update, incident_id, incident_title)
+            # Extract and format as "incident_id:update_id"
+            return [f"{incident_id}:{update.id}" for update, incident_id, _ in matching_ids]
+    
+        return matching_ids
 
 # ============================================================================
 # CLI
@@ -3595,11 +3610,14 @@ class IncidentCLI:
         )
         self._add_common_args(record_new_parser)
         self._add_kv_options(record_new_parser)
+
         record_new_parser.add_argument(
             "--description",
             help="Detailed description",
         )
         record_new_parser._special_fields_parser = True
+        
+        self.record_new_parser = record_new_parser
         
         # record view
         record_view_parser = record_subparsers.add_parser(
@@ -3633,7 +3651,12 @@ class IncidentCLI:
             default=50,
             help="Maximum records to show",
         )
-        
+        record_list_parser.add_argument(
+            "--ids-only",
+            action="store_true",
+            help="Show only IDs in simple list format",
+        )
+
         # record update
         record_update_parser = record_subparsers.add_parser(
             "update",
@@ -3643,6 +3666,7 @@ class IncidentCLI:
         record_update_parser.add_argument("record_id", help="Record ID")
         self._add_kv_options(record_update_parser)
         record_update_parser._special_fields_parser = True
+
         
         # ====================================================================
         # NOTE COMMANDS
@@ -3697,11 +3721,17 @@ class IncidentCLI:
             help="Search by note KV: 'key=value' (required, can use multiple times)",
         )
         note_search_parser.add_argument(
+            "--ids-only",
+            action="store_true",
+            help="Show only incident_id:update_id pairs",
+        )
+        note_search_parser.add_argument(
             "--limit",
             type=int,
             default=50,
-            help="Maximum results",
+            help="Maximum records to show",
         )
+
         
         # ====================================================================
         # ADMIN COMMANDS
@@ -3790,12 +3820,19 @@ class IncidentCLI:
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
+                    manager = self._get_manager(parsed)  # Fix: use parsed, not args
+                    self._add_special_field_args(self.record_new_parser, manager)
+                    parsed = self.parser.parse_args(args)
+                    print (f"NEWPARSED: {parsed}")
                     self._cmd_create(parsed)
                 elif parsed.record_command == "view":
                     self._cmd_view(parsed)
                 elif parsed.record_command == "list":
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
+                    manager = self._get_manager(args)
+                    self._add_special_field_args(self.parser, manager)
+                    parsed = self.parser.parse_args(args)
                     self._cmd_update(parsed)
                     
             elif parsed.command == "note":
@@ -3822,6 +3859,129 @@ class IncidentCLI:
         except KeyboardInterrupt:
             print("\nCancelled", file=sys.stderr)
             sys.exit(130)
+
+    # ====================================================================
+    # DEFAULT TEMPLATES
+    # ====================================================================
+    
+    TEMPLATE_VIEW = Template("""\
+────────────────────────────────────────────────────────────────────────────────
+Record: $id
+────────────────────────────────────────────────────────────────────────────────
+
+$incident_content
+
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+$kv_all
+================================================================================
+""")
+
+    TEMPLATE_LIST_ITEM = Template("""\
+$id | $title | $updated_at
+""")
+
+    TEMPLATE_LIST_UPDATES_ITEM = Template("""\
+────────────────────────────────────────────────────────────────────────────────
+Note $note_number: [$timestamp] by $author
+────────────────────────────────────────────────────────────────────────────────
+$message
+
+$kv_all
+""")
+
+    TEMPLATE_SEARCH_UPDATES_HEADER = Template("""\
+Found $count matching notes:
+
+""")
+
+    TEMPLATE_SEARCH_UPDATES_ITEM = Template("""\
+################################################################################
+Record: $incident_id
+################################################################################
+$incident_content
+
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+$incident_kv
+────────────────────────────────────────────────────────────────────────────────
+Note: $update_id
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+$update_content
+
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+$update_kv
+""")
+
+        # ====================================================================
+        # Command Helpers
+        # ====================================================================
+
+    def _flatten_kv_data(self, kv_strings: dict, kv_integers: dict, kv_floats: dict) -> dict:
+        """
+        Flatten kv_strings, kv_integers, and kv_floats into a single dictionary.
+        
+        Multi-value fields are joined with commas. Single-value fields are unwrapped.
+        
+        Args:
+            kv_strings: Dictionary of string key-value pairs
+            kv_integers: Dictionary of integer key-value pairs
+            kv_floats: Dictionary of float key-value pairs
+        
+        Returns:
+            Flattened dictionary safe for Template.safe_substitute()
+        """
+        kv_all = {}
+        
+        # Process strings
+        if kv_strings:
+            for key, values in kv_strings.items():
+                if isinstance(values, list):
+                    kv_all[key] = ', '.join(str(v) for v in values)
+                else:
+                    kv_all[key] = str(values)
+        
+        # Process integers
+        if kv_integers:
+            for key, values in kv_integers.items():
+                if isinstance(values, list):
+                    kv_all[key] = ', '.join(str(v) for v in values)
+                else:
+                    kv_all[key] = str(values)
+        
+        # Process floats
+        if kv_floats:
+            for key, values in kv_floats.items():
+                if isinstance(values, list):
+                    kv_all[key] = ', '.join(str(v) for v in values)
+                else:
+                    kv_all[key] = str(values)
+        
+        return kv_all
+
+    def _format_kv_section(self, kv_all: dict) -> str:
+        """
+        Format flattened KV data into a readable section.
+        
+        Args:
+            kv_all: Flattened KV dictionary
+        
+        Returns:
+            Formatted string with key-value pairs
+        """
+        if not kv_all:
+            return ""
+        
+        lines = []
+        for key, value in sorted(kv_all.items()):
+            lines.append(f"  {key}: {value}")
+        
+        return "Fields:\n" + "\n".join(lines)
+
+
+
+        # ====================================================================
+        # Command Functions
+        # ====================================================================
+
 
     def _cmd_init(self, args):
         """Initialize database."""
@@ -3894,17 +4054,19 @@ class IncidentCLI:
     def _cmd_create(self, args):
         """Create record."""
         manager = self._get_manager(args)
-        
-        # Dynamically add special field arguments
-        self._add_special_field_args(args._parser, manager)
+        print(f"CREATE: ARGS: {args}")
         
         # Build KV list from special fields and generic KV arguments
         kv_list = self._build_kv_list(manager, args)
-        
+        has_description = args.description is not None
+        has_stdin = StdinHandler.has_stdin_data()
+
         # Create record
         record_id = manager.create_incident(
             kv_list=kv_list,
             description=args.description,
+            use_stdin=has_stdin and not has_description,
+            use_editor=not (has_description or has_stdin),
         )
 
         print(f"✓ Created record: {record_id}")
@@ -3928,65 +4090,65 @@ class IncidentCLI:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        print(f"\n{'='*70}")
-        print(f"Record: {record.id}")
-        print(f"{'='*70}\n")
+        kv_all = self._flatten_kv_data(record.kv_strings, record.kv_integers, record.kv_floats)
+        kv_section = self._format_kv_section(kv_all)
         
-        if record.kv_strings:
-            print("String Fields:")
-            for key, values in record.kv_strings.items():
-                values_str = ', '.join(str(v) for v in values)
-                print(f"  {key}: {values_str}")
+        output = self.TEMPLATE_VIEW.safe_substitute(
+            id=record.id,
+            kv_all=kv_section,
+            incident_content=record.content,
+        )
         
-        if record.kv_integers:
-            print("\nInteger Fields:")
-            for key, values in record.kv_integers.items():
-                values_str = ', '.join(str(v) for v in values)
-                print(f"  {key}: {values_str}")
-        
-        if record.kv_floats:
-            print("\nFloat Fields:")
-            for key, values in record.kv_floats.items():
-                values_str = ', '.join(str(v) for v in values)
-                print(f"  {key}: {values_str}")
-        
-        print(f"\n{'='*70}\n")
+        print(output)
 
     def _cmd_list(self, args):
         """List records with KV search and sort."""
         manager = self._get_manager(args)
-        
+    
         try:
-            records = manager.list_incidents(
+            results = manager.list_incidents(
                 ksearch_list=getattr(args, 'ksearch', None),
                 ksort_list=getattr(args, 'ksort', None),
                 limit=args.limit,
+                ids_only=args.ids_only,
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
-        if not records:
+        if not results:
             print("No records found")
             return
 
-        print(f"\n{'ID':<15} {'Title':<40} {'Updated':<20}")
+        # Handle IDs-only output
+        if args.ids_only:
+            for record_id in results:
+                print(record_id)
+            return
+
+        # Handle full output
+        print(f"\n{'ID':<20} {'Title':<40} {'Updated':<20}")
         print("─" * 80)
 
-        for rec in records:
-            title = rec.kv_strings.get('title', ['Unknown'])[0] if rec.kv_strings else 'Unknown'
-            title = title[:37] if len(title) > 37 else title
-            updated = rec.kv_strings.get('updated_at', ['Unknown'])[0] if rec.kv_strings else 'Unknown'
-            print(f"{rec.id:<15} {title:<40} {updated:<20}")
-        
+        for rec in results:
+            kv_all = self._flatten_kv_data(rec.kv_strings, rec.kv_integers, rec.kv_floats)
+            
+            output = self.TEMPLATE_LIST_ITEM.safe_substitute(
+                id=rec.id,
+                title=kv_all.get('title', 'Unknown')[:37],
+                updated_at=kv_all.get('updated_at', 'Unknown'),
+            )
+            print(output)
+        print("─" * 80)
         print()
-
+        
     def _cmd_update(self, args):
         """Update record metadata."""
         manager = self._get_manager(args)
         
         # Dynamically add special field arguments
-        self._add_special_field_args(args._parser, manager)
+        #self._add_special_field_args(args.parser, manager)
+        #self._add_special_field_args(args, manager)
         
         # Build KV list from special fields and generic KV arguments
         kv_list = self._build_kv_list(manager, args)
@@ -4044,33 +4206,27 @@ class IncidentCLI:
             return
 
         for i, note in enumerate(notes, 1):
-            print("─" * 70)
-            print(f"Note {i}: [{note.timestamp}] by {note.author}")
-            print("─" * 70)
-            print(note.message)
+            kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats)
+            kv_section = self._format_kv_section(kv_all)
             
-            if note.kv_strings or note.kv_integers or note.kv_floats:
-                print("\nNote KV Data:")
-                if note.kv_strings:
-                    for key, values in note.kv_strings.items():
-                        print(f"  {key}: {', '.join(str(v) for v in values)}")
-                if note.kv_integers:
-                    for key, values in note.kv_integers.items():
-                        print(f"  {key}: {', '.join(str(v) for v in values)}")
-                if note.kv_floats:
-                    for key, values in note.kv_floats.items():
-                        print(f"  {key}: {', '.join(str(v) for v in values)}")
+            output = self.TEMPLATE_LIST_UPDATES_ITEM.safe_substitute(
+                note_number=i,
+                timestamp=note.timestamp,
+                author=note.author,
+                message=note.message,
+                kv_all=kv_section,
+            )
+            print(output)
             
-            print()
-
     def _cmd_search_updates(self, args):
         """Search notes by KV data."""
         manager = self._get_manager(args)
-        
+    
         try:
             results = manager.search_updates(
                 ksearch=args.ksearch,
                 limit=args.limit,
+                ids_only=args.ids_only,
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -4080,16 +4236,51 @@ class IncidentCLI:
             print("No matching notes found")
             return
 
-        print(f"\nFound {len(results)} matching notes:\n")
+        # Handle IDs-only output
+        if args.ids_only:
+            for result_id in results:
+                print(result_id)
+            return
 
-        for note, record_id, record_title in results:
-            print("─" * 70)
-            print(f"Record: {record_id} - {record_title}")
-            print(f"Note: {note.id} [{note.timestamp}] by {note.author}")
-            print("─" * 70)
-            print(note.message[:200] + ("..." if len(note.message) > 200 else ""))
-            print()
+        # Handle full output
+        header = self.TEMPLATE_SEARCH_UPDATES_HEADER.safe_substitute(
+            count=len(results),
+        )
+        print(header)
 
+        manager = self._get_manager(args)
+        db_root = manager.db_root
+        filestore = IncidentFileStorage(db_root)
+        
+        for incident_id, update_id in results:
+            incident_path = filestore._get_incident_path(incident_id)
+            update_path = f"{filestore._get_updates_dir(incident_id)}/{update_id}.md"
+            
+            try:
+                with open(incident_path, "r") as f:
+                    incident_content = f.read()
+            except Exception as e:
+                print(f"Warning: Failed to load incident {incident_id}: {e}", file=sys.stderr)
+                continue
+                
+            try:
+                with open(update_path, "r") as f:
+                    update_content = f.read()
+            except Exception as e:
+                print(f"Warning: Failed to load update {update_id}: {e}", file=sys.stderr)
+                continue
+
+            incident_info = Incident.from_markdown(incident_content, incident_id, manager.project_config)
+            
+            output = self.TEMPLATE_SEARCH_UPDATES_ITEM.safe_substitute(
+                incident_id=incident_id,
+                update_id=update_id,
+                incident_content=incident_content,
+                update_content=update_content,
+                incident_info=str(incident_info),
+            )
+            print(output)
+            
     def _cmd_reindex(self, args):
         """Rebuild search index."""
         try:

@@ -1,4 +1,4 @@
-# aver: A Verified Knowledge Tracking Tool
+# aver: A Versioned Knowledge Tracking Tool
 
 aver is a file-native system for keeping structured records with full history and fast search — built on plain text and Git.
 
@@ -26,6 +26,36 @@ You can use aver for:
 - Campaign or worldbuilding logs
 
 aver is not tied to any one field. It is a general system for structured records that evolve over time.
+
+---
+
+## Design Invariants
+
+The following design invariants define what aver is and, just as importantly, what it is not. They describe boundaries that shape all features, extensions, and contributions to the project. aver is designed to preserve recorded history and make it navigable over time, not to judge correctness, enforce meaning, or automate workflows. These invariants are intentional constraints: they limit scope, prevent feature creep, and ensure that aver remains a durable, file-native tool whose behavior can always be understood by inspecting its records.
+
+#### 1. Plain-text files are the source of truth
+
+- All authoritative data exists as human-readable files on disk. Tools and indexes derive from files, not the other way around.
+
+#### 2. Versioning is guaranteed; correctness is not
+
+- aver preserves the history of changes but does not attempt to validate or verify the truth of recorded information.
+
+#### 3. The index is a rebuildable performance layer
+
+- The SQLite index is non-authoritative and disposable. All information in the index must be derivable from plain-text files.
+
+#### 4. aver provides structure, not semantics
+
+- Field names and values carry no intrinsic meaning to aver beyond type and comparability. Semantic meaning is defined by repository convention.
+
+#### 5. Records summarize the present; notes preserve the past
+
+- Records may change to reflect current understanding. Notes exist to preserve historical context.
+
+#### 6. aver operates without required services
+
+- aver does not require a server, daemon, or background process. All operations are explicit and user-initiated.
 
 ---
 
@@ -98,7 +128,7 @@ aver combines freeform text with structured fields, allowing you to:
 - Sort by numeric or textual fields
 - Perform full-text search across descriptions and notes
 
-Structure enables verification — you can ask precise questions of your records and receive reliable answers. The system verifies relationships, states, and temporal order without requiring manual cross-referencing.
+Structure enables traceability of important information — you can ask precise questions of your records and receive consistent, reproducible answers based on recorded history.
 
 ### No Server Required
 
@@ -110,7 +140,7 @@ You can work:
 - In restricted environments
 - Across distributed teams via Git
 
-This independence is not a convenience feature—it is a core design principle. Your ability to verify and access your records should never depend on a third party's availability, business model, or infrastructure decisions.
+This independence is not a convenience feature—it is a core design principle. Your ability to access your records should never depend on a third party's availability, business model, or infrastructure decisions.
 
 ### Rebuildable Index
 
@@ -155,7 +185,7 @@ aver is intentionally simple and file-based. It may not be a good fit when you n
 - Large-scale reporting and business intelligence tools
 - A polished, full-featured web UI out of the box
 
-aver focuses on durable records and traceable history, not enterprise workflow management. It is optimized for verification and longevity, not for orchestration and real-time operations.
+aver focuses on durable records and traceable history, not enterprise workflow management. It is optimized for version tracking and longevity, not for orchestration and real-time operations.
 
 ---
 
@@ -181,7 +211,7 @@ Plain-text files are the source of truth. The index is a performance layer.
 
 aver is built on a principle that has outlasted every technology trend: **important knowledge should be recorded in a form that is human-readable, versioned, searchable, and independent of any single platform.**
 
-The underlying belief is simple but radical: your records belong to you, not to a vendor. They should be verifiable by anyone, readable without special tools, and preserved regardless of business decisions or platform failures.
+The underlying belief is simple but radical: your records belong to you, not to a vendor. They should be accessible, readable without special tools, and preserved regardless of business decisions or platform failures.
 
 ### What aver Favors
 
@@ -197,9 +227,9 @@ You can open any record file in any text editor. You can examine the exact struc
 
 Your records are not locked in a database or a SaaS service. They live in your repository, under your control. You can move them, fork them, merge them, or process them with other tools. The format is yours to extend and modify.
 
-**Verification over convenience**
+**Traceability over convenience**
 
-Convenience often comes at a cost: vendor lock-in, data fragility, or loss of control. aver prioritizes the ability to verify your records—to confirm they are complete, authentic, and unchanged. This sometimes requires more deliberate interaction, but it ensures your knowledge is trustworthy.
+Convenience often comes at a cost: vendor lock-in, data fragility, or loss of control. aver prioritizes the ability to trace how records change over time—to reconstruct history, review evolution, and understand when and how information was recorded.
 
 **Structure over noise**
 
@@ -210,7 +240,7 @@ Freeform notes are easy to create but hard to query. Rigid databases are queryab
 aver is for people and teams who:
 
 - Work with knowledge that matters beyond the current quarter
-- Need to verify facts and trace decisions to their source
+- Need to trace decisions and recorded facts to their source
 - Operate in environments where external services are unavailable or undesirable
 - Want their records to remain usable years from now with nothing more than a text editor and a copy of their repository
 - Trust their own infrastructure and version control systems more than third-party platforms

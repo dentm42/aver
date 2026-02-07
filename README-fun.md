@@ -1,4 +1,4 @@
-# aver: A Verified Knowledge Tracking Tool
+# aver: A Versioned Knowledge Tracking Tool
 ## A Quest for the Perfect Record
 
 In an age of crumbling servers, forgotten spreadsheets, and SaaS subscriptions that devoured kingdoms… a fellowship arose in search of a better way.
@@ -24,7 +24,7 @@ Thus began the quest.
 
 Each hero came from a different discipline, seeking the same tool:
 
-A system to verify and track evolving knowledge over time — safely, portably, and without dark magic.
+A system to track evolving knowledge over time — safely, portably, and without dark magic.
 
 ---
 
@@ -176,7 +176,7 @@ At journey's end, the fellowship uncovered not a cloud platform, nor a SaaS thro
 
 But something older. Simpler. Stronger.
 
-✨ **aver: A Verified Knowledge Tracking Tool**
+✨ **aver: A Versioned Knowledge Tracking Tool**
 
 A tool that provides:
 
@@ -189,7 +189,26 @@ A tool that provides:
 
 It does not replace your craft.
 
-It simply verifies and remembers everything for you.
+It simply remembers everything for you.
+
+---
+
+## The Laws of the Artifact
+
+The fellowship soon learned that the artifact was powerful —
+but not without limits.
+
+It obeyed certain laws, older than any kingdom:
+
+- It remembered every change, but judged no truth
+- It spoke only in plain text, readable by any who could read
+- It hid nothing behind servers, daemons, or glowing altars
+- It imposed no meanings of its own — only structure
+- It preserved the present in Records, and the past in Notes
+- It could lose its index and suffer no lasting harm
+
+These laws were not flaws.
+They were the reason the artifact endured.
 
 ---
 
@@ -204,7 +223,7 @@ Used for:
 - Engineering deviations
 - Editorial tracking
 - Campaign lore
-- And any evolving body of knowledge that deserves to be verified and remembered
+- And any evolving body of knowledge that deserves to be recorded and recalled
 
 ---
 
