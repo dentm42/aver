@@ -2933,29 +2933,37 @@ class IncidentManager:
         self,
         incident_id: str,
         kv_list: List[str],
+        description: Optional[str] = None,
+        use_stdin: bool = False,
+        use_editor: bool = False,
     ) -> bool:
         """
-        Update incident fields from KV list.
-        
+        Update incident fields from KV list and/or description.
+    
         Args:
             incident_id: Incident ID
             kv_list: List of KV strings to update/remove
-        
+            description: Optional new description
+            use_stdin: Read description from STDIN
+            use_editor: Launch editor for description
+    
         Example:
             manager.update_incident_info(
                 incident_id,
-                ["status$resolved", "assignees$alice"]
+                ["status$resolved", "assignees$alice"],
+                description="Fixed the issue"
             )
         """
         incident = self.storage.load_incident(incident_id, self.project_config)
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
-        
+    
         user_config = DatabaseDiscovery.get_user_config()
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-        
+    
         updated_fields = []
-        
+        previous_content = None
+    
         # Parse KV updates
         parsed_kv = KVParser.parse_kv_list(kv_list)
         for key, kvtype, op, value in parsed_kv:
@@ -2972,17 +2980,45 @@ class IncidentManager:
                 # Update
                 self._validate_and_store_kv(key, kvtype, value, incident)
                 updated_fields.append(key)
+    
+        # Handle description updates
+        if description or use_stdin or use_editor:
+            # Save previous content before updating
+            if incident.content:
+                previous_content = incident.content
         
+            # Determine new description source
+            final_description = None
+            if description:
+                final_description = description
+            elif use_stdin and StdinHandler.has_stdin_data():
+                final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+            elif use_editor:
+                final_description = EditorConfig.launch_editor(
+                    initial_content=(
+                        previous_content
+                    ),
+                )
+        
+            if final_description:
+                incident.content = final_description
+                updated_fields.append("description")
+    
         # Update timestamp
         incident.kv_strings['updated_at'] = [now]
-        
+    
         # Save and reindex
         self.storage.save_incident(incident, self.project_config)
         self.index_db.index_incident(incident, self.project_config)
         self.index_db.index_kv_data(incident)
-        
+    
         # Log update
         update_msg = f"Updated: {', '.join(updated_fields)}"
+    
+        # Append previous content to update message if it was changed
+        if previous_content:
+            update_msg += f"\n\n## PREVIOUS RECORD TEXT\n{previous_content}"
+    
         update_id = IDGenerator.generate_update_id()
         incident_update = IncidentUpdate(
             id=update_id,
@@ -2993,8 +3029,9 @@ class IncidentManager:
         )
         self.storage.save_update(incident_id, incident_update)
         self.index_db.index_update(incident_update)
-        
+    
         return True
+
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
@@ -3740,9 +3777,7 @@ class IncidentCLI:
                 if parsed.record_command == "new":
                     manager = self._get_manager(parsed)  # Fix: use parsed, not args
                     self._add_special_field_args(self.record_new_parser, manager)
-                    print (f"PREPARSED: {parsed}")
                     parsed = self.parser.parse_args(args)
-                    print (f"NEWPARSED: {parsed}")
                     self._cmd_create(parsed)
                 elif parsed.record_command == "view":
                     self._cmd_view(parsed)
@@ -3751,9 +3786,7 @@ class IncidentCLI:
                 elif parsed.record_command == "update":
                     manager = self._get_manager(args)
                     self._add_special_field_args(self.record_update_parser, manager)
-                    print (f"PREPARSED: {parsed}")
                     parsed = self.parser.parse_args(args)
-                    print (f"NEWPARSED: {parsed}")
                     self._cmd_update(parsed)
                     
             elif parsed.command == "note":
@@ -4064,25 +4097,28 @@ $update_kv
         print()
         
     def _cmd_update(self, args):
-        """Update record metadata."""
+        """Update record metadata and/or description."""
         manager = self._get_manager(args)
-        
-        # Dynamically add special field arguments
-        #self._add_special_field_args(args.parser, manager)
-        #self._add_special_field_args(args, manager)
-        
+    
         # Build KV list from special fields and generic KV arguments
         kv_list = self._build_kv_list(manager, args)
-        
-        if not kv_list:
+    
+        has_description = True if (hasattr(args, 'description') and args.description is not None) else False
+        has_stdin = StdinHandler.has_stdin_data()
+        use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
+    
+        if not kv_list and not (has_description or has_stdin or use_editor):
             print("Error: No fields to update", file=sys.stderr)
             sys.exit(1)
-        
+    
         manager.update_incident_info(
             args.record_id,
             kv_list=kv_list,
+            description=args.description if (has_description) else None,
+            use_stdin=has_stdin and not has_description,
+            use_editor=use_editor,
         )
-        
+    
         print(f"✓ Updated record: {args.record_id}")
 
     def _cmd_add_update(self, args):
