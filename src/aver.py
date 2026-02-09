@@ -1770,7 +1770,7 @@ class KVSearchParser:
         Parse key-value search expression.
         
         Format: {key} {operator} {value}
-        Operators: <, >, =, <=, >=
+        Operators: <, >, =, <=, >=, <>, !=
         
         Examples:
         - "cost > 12.49"
@@ -1787,9 +1787,11 @@ class KVSearchParser:
             ValueError: If format is invalid
         """
         search_expr = search_expr.strip()
-        
+
         # Try to find operators (check longer ones first)
-        for op in ['<=', '>=', '<', '>', '=']:
+        # NOTE: If you add more, make sure none of the PREVIOUS
+        #       items in the list will match.
+        for op in ['<=', '>=', '!=', '<>', '=', '<', '>']:
             if op in search_expr:
                 parts = search_expr.split(op, 1)
                 if len(parts) == 2:
@@ -1804,7 +1806,7 @@ class KVSearchParser:
         raise ValueError(
             f"Invalid ksearch format: '{search_expr}'\n"
             f"Expected: '{{key}} {{operator}} {{value}}'\n"
-            f"Operators: <, >, =, <=, >="
+            f"Operators: <, >, =, <=, >=, <>, !="
         )
     
     @staticmethod
@@ -2460,19 +2462,20 @@ class IncidentIndexDatabase:
         conn.close()
 
     def search_kv(
-    self, 
-    ksearch_list: List[tuple], 
-    incident_ids: Optional[List[str]] = None,
-    update_ids: Optional[List[str]] = None,
-    return_updates: bool = False,
-    search_updates: bool = False
-) -> List[str]:
+        self, 
+        ksearch_list: List[tuple], 
+        incident_ids: Optional[List[str]] = None,
+        update_ids: Optional[List[str]] = None,
+        return_updates: bool = False,
+        search_updates: bool = False
+    ) -> List[str]:
         """
         Search by key-value criteria with AND logic (all criteria must match).
-    
+
         Args:
             ksearch_list: List of (key, operator, value) tuples - ALL must match
                 operator must be one of: '=', '<', '>', '<=', '>='
+                If empty, returns all incident_ids/update_ids matching other filters
             incident_ids: If provided, search only within these incidents (None = search all)
             update_ids: If provided, search only within these updates
             return_updates: If True, return update IDs; if False, return incident IDs
@@ -2484,52 +2487,60 @@ class IncidentIndexDatabase:
         Raises:
             ValueError: If operator is not in the allowed set
         """
-        #if not ksearch_list:
-        #    return []
-        
         # Whitelist of allowed operators
-        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>='}
+        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>=', "<>", "!="}
         
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         
-        # Build base query
-        query_parts = ["SELECT DISTINCT incident_id FROM kv_store WHERE 1=1"]
+        # Start with base table
+        select_clause = "SELECT DISTINCT base.incident_id, base.update_id"
+        from_clause = "FROM kv_store base"
+        joins = []
+        where_parts = ["1=1"]
         params = []
+        join_counter = 0
         
-        # Add update_id filter
+        # Add update_id filter based on search_updates
         if search_updates:
-            query_parts.append("AND update_id IS NOT NULL")
+            where_parts.append("base.update_id IS NOT NULL")
         else:
-            query_parts.append("AND update_id IS NULL")
+            where_parts.append("base.update_id IS NULL")
         
         # Add incident_ids filter
         if incident_ids:
             placeholders = ",".join("?" * len(incident_ids))
-            query_parts.append(f"AND incident_id IN ({placeholders})")
+            where_parts.append(f"base.incident_id IN ({placeholders})")
             params.extend(incident_ids)
         
         # Add update_ids filter
         if update_ids:
             placeholders = ",".join("?" * len(update_ids))
-            query_parts.append(f"AND update_id IN ({placeholders})")
+            where_parts.append(f"base.update_id IN ({placeholders})")
             params.extend(update_ids)
         
-        # Add each search criterion with AND logic
+        # Add each search criterion as an INNER JOIN
         for key, operator, value in ksearch_list:
             # Validate operator
             if operator not in ALLOWED_OPERATORS:
                 raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
             
-            # Build OR condition for the three value types
-            or_condition = f"""AND (
-                (key = ? AND value_float {operator} ?)
-                OR (key = ? AND value_integer {operator} ?)
-                OR (key = ? AND value_string {operator} ?)
-            )"""
-            query_parts.append(or_condition)
+            # Create alias for this join
+            alias = f"kv{join_counter}"
+            join_counter += 1
             
-            # Add parameters for each type attempt
+            # Build JOIN condition for this criterion
+            join = f"""INNER JOIN kv_store {alias} ON 
+                base.incident_id = {alias}.incident_id 
+                AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
+                AND (
+                    ({alias}.key = ? AND {alias}.value_float {operator} ?)
+                    OR ({alias}.key = ? AND {alias}.value_integer {operator} ?)
+                    OR ({alias}.key = ? AND {alias}.value_string {operator} ?)
+                )"""
+            joins.append(join)
+            
+            # Add parameters for type attempts
             try:
                 float_val = float(value)
             except (ValueError, TypeError):
@@ -2542,19 +2553,27 @@ class IncidentIndexDatabase:
             
             str_val = str(value)
             
-            # Add key and values for each type
+            # Add parameters: key and values for each type
             params.extend([
                 key, float_val,
                 key, int_val,
                 key, str_val
             ])
         
-        query = " ".join(query_parts)
-        cursor.execute(query, params)
-        results = [row[0] for row in cursor.fetchall()]
+        # Build final query: SELECT FROM JOINs WHERE
+        query_with_joins = select_clause + " " + from_clause
+        for join in joins:
+            query_with_joins += " " + join
+        query_with_joins += " WHERE " + " AND ".join(where_parts)
+
+        cursor.execute(query_with_joins, params)
+        
+        # Extract the appropriate column based on return_updates
+        results = [row[1] if return_updates else row[0] for row in cursor.fetchall()]
         
         conn.close()
         return results
+
     
     
     def get_sorted_incidents(self, incident_ids: List[str], ksort_list: List[tuple], update_id: Optional[str] = None) -> List[str]:
