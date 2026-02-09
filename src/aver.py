@@ -1107,6 +1107,21 @@ class DatabaseDiscovery:
         return dict_to_configdict(config)
 
     @staticmethod
+    def _to_plain_dict(d):
+        """
+        Recursively convert ConfigDict (or any dict subclass) back to plain dict.
+        
+        Ensures the config is safe for tomli_w serialization, which may not
+        handle dict subclasses properly.
+        """
+        if isinstance(d, dict):
+            return {k: DatabaseDiscovery._to_plain_dict(v) for k, v in d.items()}
+        elif isinstance(d, list):
+            return [DatabaseDiscovery._to_plain_dict(item) for item in d]
+        else:
+            return d
+
+    @staticmethod
     def set_user_config(config: dict):
         """Save the global user configuration."""
         if not tomli_w:
@@ -1116,8 +1131,12 @@ class DatabaseDiscovery:
             )
         config_path = DatabaseDiscovery.get_user_config_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Deep-convert to plain dict to ensure clean serialization
+        plain_config = DatabaseDiscovery._to_plain_dict(config)
+        
         with open(config_path, "wb") as f:
-            tomli_w.dump(config, f)
+            tomli_w.dump(plain_config, f)
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
@@ -4565,15 +4584,10 @@ $update_kv
         target_library = getattr(args, 'set_user_library', None)
         config = DatabaseDiscovery.get_user_config()
         
-        # Ensure config is a plain dict for writing (ConfigDict -> dict)
-        config = dict(config)
-        
         if target_library:
             # Per-library identity
             if "libraries" not in config:
                 config["libraries"] = {}
-            else:
-                config["libraries"] = dict(config["libraries"])
             
             if target_library not in config["libraries"]:
                 print(
@@ -4584,22 +4598,17 @@ $update_kv
                 sys.exit(1)
             
             # Update the library entry (preserve existing path and other fields)
-            lib_entry = dict(config["libraries"][target_library])
-            lib_entry["handle"] = args.handle
-            lib_entry["email"] = args.email
-            config["libraries"][target_library] = lib_entry
+            config["libraries"][target_library]["handle"] = args.handle
+            config["libraries"][target_library]["email"] = args.email
             
             DatabaseDiscovery.set_user_config(config)
             print(f"✓ User configured for library '{target_library}': {args.handle} <{args.email}>")
         else:
             # Global identity — preserve existing [user] fields (e.g. prefer_git_identity)
-            if "user" in config:
-                user_section = dict(config["user"])
-            else:
-                user_section = {}
-            user_section["handle"] = args.handle
-            user_section["email"] = args.email
-            config["user"] = user_section
+            if "user" not in config:
+                config["user"] = {}
+            config["user"]["handle"] = args.handle
+            config["user"]["email"] = args.email
             
             DatabaseDiscovery.set_user_config(config)
             print(f"✓ Global user configured: {args.handle} <{args.email}>")
@@ -4630,20 +4639,15 @@ $update_kv
             sys.exit(1)
         
         config = DatabaseDiscovery.get_user_config()
-        config = dict(config)
         
         if "libraries" not in config:
             config["libraries"] = {}
-        else:
-            config["libraries"] = dict(config["libraries"])
         
         is_update = alias in config["libraries"]
         
         if is_update:
             # Preserve existing per-library identity fields
-            existing = dict(config["libraries"][alias])
-            existing["path"] = str(resolved_path)
-            config["libraries"][alias] = existing
+            config["libraries"][alias]["path"] = str(resolved_path)
         else:
             config["libraries"][alias] = {
                 "path": str(resolved_path),
