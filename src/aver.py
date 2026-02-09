@@ -1184,7 +1184,7 @@ class DatabaseDiscovery:
     
         if len(candidates) == 1:
             selected = list(candidates.values())[0]
-            print(f"Using: {selected['source']}")
+            #print(f"Using: {selected['source']}")
             return selected['path']
     
         # Organize by category
@@ -1254,19 +1254,19 @@ class DatabaseDiscovery:
         for key in priority:
             if key in candidates:
                 selected = candidates[key]
-                print(f"Using: {selected['source']}")
+                #print(f"Using: {selected['source']}")
                 return selected['path']
         
         # Fallback: use first available [locations] entry
         for key, info in candidates.items():
             if info.get('category') == 'available':
-                print(f"Using: {info['source']}")
+                #print(f"Using: {info['source']}")
                 return info['path']
         
         # Last resort: use any remaining candidate
         if candidates:
             selected = list(candidates.values())[0]
-            print(f"Using: {selected['source']}")
+            #print(f"Using: {selected['source']}")
             return selected['path']
         
         raise RuntimeError("No suitable incident database found")
@@ -1987,19 +1987,6 @@ class IncidentIndexDatabase:
             """
         )
     
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS incident_tags (
-                incident_id TEXT NOT NULL,
-                tag TEXT NOT NULL,
-                PRIMARY KEY (incident_id, tag)
-            )
-        """)
-    
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_incident_tags_tag
-            ON incident_tags(tag)
-        """)
-    
         # Unified Key-Value table
         # No type column needed - searches attempt all types naturally
         cursor.execute("""
@@ -2024,17 +2011,6 @@ class IncidentIndexDatabase:
             CREATE INDEX IF NOT EXISTS idx_kv_update_key 
             ON kv_store(update_id, key)
         """)    
-
-        # Composite indexes for common query patterns
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_kv_incident_key
-            ON kv_store(incident_id, key)
-        """)
-
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_kv_update_key
-            ON kv_store(update_id, key)
-        """)
 
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_kv_key
@@ -2716,7 +2692,7 @@ class IncidentManager:
         interactive: bool = None,
     ):
         """Initialize manager with database and project config."""
-        print (f"LOCATION: {explicit_location}")
+        #print (f"LOCATION: {explicit_location}")
         if explicit_location:
             self.db_root = Path(explicit_location).resolve()
         else:
@@ -3313,6 +3289,7 @@ class IncidentCLI:
             description="aver: record tracking and management",
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
+        self._add_common_args(self.parser)
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
 
     def _add_common_args(self, parser):
@@ -3582,7 +3559,7 @@ class IncidentCLI:
             "new",
             help="Create a new record",
         )
-        self._add_common_args(record_new_parser)
+
         self._add_kv_options(record_new_parser)
 
         record_new_parser.add_argument(
@@ -3598,7 +3575,7 @@ class IncidentCLI:
             "view",
             help="View a specific record's details",
         )
-        self._add_common_args(record_view_parser)
+
         record_view_parser.add_argument("record_id", help="Record ID")
         
         # record list
@@ -3606,7 +3583,7 @@ class IncidentCLI:
             "list",
             help="List/search records with filters",
         )
-        self._add_common_args(record_list_parser)
+
         record_list_parser.add_argument(
             "--ksearch",
             action="append",
@@ -3636,7 +3613,7 @@ class IncidentCLI:
             "update",
             help="Update record status and metadata",
         )
-        self._add_common_args(record_update_parser)
+
         record_update_parser.add_argument("record_id", help="Record ID")
         self._add_kv_options(record_update_parser)
         self.record_update_parser = record_update_parser
@@ -3665,7 +3642,7 @@ class IncidentCLI:
                 "  3. Editor (if STDIN unavailable)"
             ),
         )
-        self._add_common_args(note_add_parser)
+
         note_add_parser.add_argument("record_id", help="Record ID")
         note_add_parser.add_argument(
             "--message",
@@ -3678,7 +3655,7 @@ class IncidentCLI:
             "list",
             help="View all notes for a specific record",
         )
-        self._add_common_args(note_list_parser)
+
         note_list_parser.add_argument("record_id", help="Record ID")
         
         # note search
@@ -3686,7 +3663,7 @@ class IncidentCLI:
             "search",
             help="Search notes by KV data",
         )
-        self._add_common_args(note_search_parser)
+
         note_search_parser.add_argument(
             "--ksearch",
             action="append",
@@ -3772,7 +3749,7 @@ class IncidentCLI:
             "reindex",
             help="Rebuild search index",
         )
-        self._add_common_args(admin_reindex_parser)
+
         admin_reindex_parser.add_argument(
             "--verbose",
             "-v",
