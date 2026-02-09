@@ -1,10 +1,10 @@
 +++
 created_at__string = "2026-02-08T03:11:47.261172Z"
 created_by__string = "mattd"
-updated_at__string = "2026-02-08T03:11:47.261172Z"
+updated_at__string = "2026-02-09T02:39:18.142450Z"
 title = "Clean up cruft after search_kv updates"
 type = "bug"
-status = "new"
+status = "closed"
 severity = ""
 tag = []
 +++
