@@ -932,7 +932,7 @@ class DatabaseDiscovery:
         if isinstance(d, dict):
             return SimpleNamespace(**{k: DatabaseDiscovery.dict_to_namespace(v) for k, v in d.items()})
         elif isinstance(d, list):
-            return [dict_to_namespace(item) for item in d]
+            return [DatabaseDiscovery.dict_to_namespace(item) for item in d]
         else:
             return d
 
@@ -942,8 +942,14 @@ class DatabaseDiscovery:
         Load the global user configuration from ~/.config/aver/user.toml.
         
         Required fields (if file exists):
-        - handle: User identifier/name
-        - email_address: User email
+        - user.handle: User identifier/name
+        - user.email: User email
+        
+        Optional sections:
+        - [libraries.<alias>]: Library aliases with optional per-library identity
+          - path (required): Filesystem path to the .aver database
+          - handle (optional): Override user handle for this library
+          - email (optional): Override user email for this library
         
         Returns:
             Configuration dictionary with validated required fields, or empty dict if file missing
@@ -965,7 +971,7 @@ class DatabaseDiscovery:
             raise ValueError(
                 f"Invalid TOML syntax in {config_path}: {e}\n"
                 f"To reset your configuration, run:\n\n"
-                f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+                f"  aver admin config set-user --handle <your-handle> --email <your-email>"
             )
         except PermissionError as e:
             raise PermissionError(
@@ -976,51 +982,119 @@ class DatabaseDiscovery:
                 f"Failed to read user config from {config_path}: {e}"
             )
         
-        
-        # Validate required fields exist
-        required_user_fields = ["handle", "email"]
-        missing_user_fields = [field for field in required_user_fields if field not in config["user"]]
-        
-        if missing_user_fields:
-            raise ValueError(
-                f"User configuration at {config_path} is missing required fields: "
-                f"{', '.join(missing_user_fields)}\n\n"
-                f"Please configure your user identity:\n\n"
-                f"  aver config set-user-global --handle <your-handle> --email <your-email>\n\n"
-            )
-        
-        # Validate required fields are not empty
-        for field in required_user_fields:
-            value = config["user"][field]
-            if not isinstance(value, str):
+        # Validate required [user] fields exist
+        if "user" in config:
+            required_user_fields = ["handle", "email"]
+            missing_user_fields = [field for field in required_user_fields if field not in config["user"]]
+            
+            if missing_user_fields:
                 raise ValueError(
-                    f"Field '{field}' in {config_path} must be a string, "
-                    f"got {type(value).__name__}\n\n"
-                    f"To fix this, run:\n\n"
-                    f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+                    f"User configuration at {config_path} is missing required fields: "
+                    f"{', '.join(missing_user_fields)}\n\n"
+                    f"Please configure your user identity:\n\n"
+                    f"  aver admin config set-user --handle <your-handle> --email <your-email>\n\n"
                 )
-            if not value.strip():
+            
+            # Validate required fields are not empty
+            for field in required_user_fields:
+                value = config["user"][field]
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"Field '{field}' in {config_path} must be a string, "
+                        f"got {type(value).__name__}\n\n"
+                        f"To fix this, run:\n\n"
+                        f"  aver admin config set-user --handle <your-handle> --email <your-email>"
+                    )
+                if not value.strip():
+                    raise ValueError(
+                        f"Field '{field}' in {config_path} cannot be empty\n\n"
+                        f"To fix this, run:\n\n"
+                        f"  aver admin config set-user --handle <your-handle> --email <your-email>"
+                    )
+            
+            # Validate email format (basic check)
+            email = config["user"]["email"].strip()
+            if "@" not in email or "." not in email.split("@")[-1]:
                 raise ValueError(
-                    f"Field '{field}' in {config_path} cannot be empty\n\n"
+                    f"Field 'email' in {config_path} appears invalid: '{email}'\n"
+                    f"Expected format: user@example.com\n\n"
                     f"To fix this, run:\n\n"
-                    f"  aver config set-user-global --handle <your-handle> --email <your-email>"
+                    f"  aver admin config set-user --handle <your-handle> --email <your-email>\n\n"
+                    f"Example:\n"
+                    f"  aver admin config set-user --handle mattd --email dentm42@gmail.com"
                 )
+            
+            # Store trimmed versions to remove accidental whitespace
+            config["user"]["handle"] = config["user"]["handle"].strip()
+            config["user"]["email"] = email
         
-        # Validate email_address format (basic check)
-        email = config["user"]["email"].strip()
-        if "@" not in email or "." not in email.split("@")[-1]:
-            raise ValueError(
-                f"Field 'email_address' in {config_path} appears invalid: '{email}'\n"
-                f"Expected format: user@example.com\n\n"
-                f"To fix this, run:\n\n"
-                f"  aver config set-user-global --handle <your-handle> --email <your-email>\n\n"
-                f"Example:\n"
-                f"  aver config set-user-global --handle mattd --email dentm42@gmail.com"
-            )
+        # Validate [libraries] section if present
+        if "libraries" in config:
+            if not isinstance(config["libraries"], dict):
+                raise ValueError(
+                    f"[libraries] section in {config_path} must be a table of aliases.\n\n"
+                    f"Expected format:\n"
+                    f"  [libraries.myalias]\n"
+                    f"  path = \"/path/to/.aver\"\n"
+                )
+            
+            for alias, lib_config in config["libraries"].items():
+                if not isinstance(lib_config, dict):
+                    raise ValueError(
+                        f"Library alias '{alias}' in {config_path} must be a table.\n\n"
+                        f"Expected format:\n"
+                        f"  [libraries.{alias}]\n"
+                        f"  path = \"/path/to/.aver\"\n"
+                    )
+                
+                if "path" not in lib_config:
+                    raise ValueError(
+                        f"Library alias '{alias}' in {config_path} is missing required 'path' field.\n\n"
+                        f"Expected format:\n"
+                        f"  [libraries.{alias}]\n"
+                        f"  path = \"/path/to/.aver\"\n"
+                    )
+                
+                # Validate per-library email if present
+                if "email" in lib_config:
+                    lib_email = lib_config["email"].strip()
+                    if "@" not in lib_email or "." not in lib_email.split("@")[-1]:
+                        raise ValueError(
+                            f"Library '{alias}' email appears invalid: '{lib_email}'\n"
+                            f"Expected format: user@example.com"
+                        )
+                    config["libraries"][alias]["email"] = lib_email
+                
+                if "handle" in lib_config:
+                    config["libraries"][alias]["handle"] = lib_config["handle"].strip()
         
-        # Store trimmed versions to remove accidental whitespace
-        config["user"]["handle"] = config["user"]["handle"].strip()
-        config["user"]["email"] = email
+        # Validate [locations] values if present
+        if "locations" in config:
+            if not isinstance(config["locations"], dict):
+                raise ValueError(
+                    f"[locations] section in {config_path} must be a table.\n\n"
+                    f"Expected format:\n"
+                    f"  [locations]\n"
+                    f'  "/some/path" = "/path/to/.aver"\n'
+                    f'  "/other/path" = "myalias"'
+                )
+            
+            for loc_key, loc_value in config["locations"].items():
+                if not isinstance(loc_value, str):
+                    raise ValueError(
+                        f"[locations] value for '{loc_key}' must be a string, "
+                        f"got {type(loc_value).__name__}"
+                    )
+                # Validate format: absolute path or bare alias (no relative paths)
+                if not loc_value.startswith('/') and '/' in loc_value:
+                    raise ValueError(
+                        f"[locations] value for '{loc_key}' is invalid: '{loc_value}'\n"
+                        f"Values must be either an absolute path (starting with '/') "
+                        f"or a library alias name (no slashes).\n\n"
+                        f"Examples:\n"
+                        f'  "/my/path" = "/path/to/.aver"   # absolute path\n'
+                        f'  "/my/path" = "myalias"          # library alias'
+                    )
         
         def dict_to_configdict(d):
             if isinstance(d, dict):
@@ -1030,8 +1104,8 @@ class DatabaseDiscovery:
             else:
                 return d
         
-        # return DatabaseDiscovery.dict_to_namespace(config)
         return dict_to_configdict(config)
+
     @staticmethod
     def set_user_config(config: dict):
         """Save the global user configuration."""
@@ -1071,6 +1145,243 @@ class DatabaseDiscovery:
             tomli_w.dump(config, f)
 
     # =========================================================================
+    # Git Identity
+    # =========================================================================
+
+    @staticmethod
+    def get_git_identity() -> Optional[dict]:
+        """
+        Read the current git user identity (user.name and user.email).
+        
+        Returns:
+            Dict with 'handle' and 'email' keys, or None if not in a git repo
+            or git identity is not configured.
+        """
+        try:
+            name_result = subprocess.run(
+                ["git", "config", "user.name"],
+                capture_output=True, text=True, check=True,
+            )
+            email_result = subprocess.run(
+                ["git", "config", "user.email"],
+                capture_output=True, text=True, check=True,
+            )
+            name = name_result.stdout.strip()
+            email = email_result.stdout.strip()
+            
+            if name and email:
+                return {"handle": name, "email": email}
+            return None
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+
+    @staticmethod
+    def get_prefer_git_identity(db_path: Optional[Path] = None) -> Optional[bool]:
+        """
+        Check if prefer_git_identity is set for the given database path.
+        
+        Checks (in priority order):
+        1. Matching [libraries.<alias>] entry for prefer_git_identity
+        2. Global [user] prefer_git_identity
+        
+        Args:
+            db_path: Path to the .aver database directory.
+        
+        Returns:
+            True if prefer_git_identity is enabled (use git identity silently).
+            False if prefer_git_identity is explicitly disabled (use config identity silently).
+            None if prefer_git_identity is not set at any level (fall through to flags/error).
+        """
+        config = DatabaseDiscovery.get_user_config()
+        
+        # Check library-level setting first
+        if db_path is not None:
+            db_path_resolved = Path(db_path).resolve()
+            libraries = config.get("libraries", {})
+            
+            for alias, lib_config in libraries.items():
+                lib_path = Path(lib_config.get("path", ""))
+                try:
+                    lib_path = lib_path.resolve()
+                except Exception:
+                    continue
+                if lib_path == db_path_resolved:
+                    if "prefer_git_identity" in lib_config:
+                        return bool(lib_config["prefer_git_identity"])
+                    break
+        
+        # Check global-level setting
+        global_user = config.get("user", {})
+        if "prefer_git_identity" in global_user:
+            return bool(global_user["prefer_git_identity"])
+        
+        return None
+
+    # =========================================================================
+    # Library Alias Resolution
+    # =========================================================================
+
+    @staticmethod
+    def _resolve_location_value(value: str, config: Optional[dict] = None) -> Path:
+        """
+        Resolve a [locations] value to a filesystem path.
+        
+        Rules:
+        - Starts with '/': literal absolute path, returned as-is
+        - Does not start with '/' but contains '/': invalid format, raise error
+        - Otherwise: treated as a library alias handle, resolved via [libraries.<handle>].path
+        
+        Args:
+            value: The raw value string from [locations]
+            config: Optional pre-loaded config dict (avoids re-reading). If None, loads config.
+        
+        Returns:
+            Resolved Path
+        
+        Raises:
+            ValueError: If format is invalid or alias doesn't exist
+        """
+        if value.startswith('/'):
+            return Path(value).resolve()
+        
+        if '/' in value:
+            raise ValueError(
+                f"Invalid [locations] value: '{value}'\n"
+                f"Values must be either an absolute path (starting with '/') "
+                f"or a library alias name (no slashes)."
+            )
+        
+        # It's a library alias handle
+        if config is None:
+            config = DatabaseDiscovery.get_user_config()
+        
+        libraries = config.get("libraries", {})
+        if value not in libraries:
+            raise ValueError(
+                f"[locations] references unknown library alias: '{value}'\n"
+                f"Add it first with: aver admin config add-alias --alias {value} --path /path/to/.aver"
+            )
+        
+        lib_path = libraries[value].get("path")
+        if not lib_path:
+            raise ValueError(
+                f"Library alias '{value}' has no 'path' defined."
+            )
+        
+        return Path(lib_path).resolve()
+
+    @staticmethod
+    def resolve_alias(alias: str) -> Path:
+        """
+        Resolve a library alias to its filesystem path.
+        
+        Looks up the alias in [libraries.<alias>] of user config.
+        
+        Args:
+            alias: Library alias name (e.g. "myproject")
+        
+        Returns:
+            Resolved Path to the .aver database directory
+        
+        Raises:
+            RuntimeError: If alias not found or path doesn't exist
+        """
+        config = DatabaseDiscovery.get_user_config()
+        libraries = config.get("libraries", {})
+        
+        if not libraries:
+            raise RuntimeError(
+                f"No library aliases configured.\n"
+                f"Add one with: aver admin config add-alias --alias {alias} --path /path/to/.aver"
+            )
+        
+        if alias not in libraries:
+            available = ', '.join(sorted(libraries.keys()))
+            raise RuntimeError(
+                f"Unknown library alias: '{alias}'\n"
+                f"Available aliases: {available}\n\n"
+                f"Add it with: aver admin config add-alias --alias {alias} --path /path/to/.aver"
+            )
+        
+        lib_config = libraries[alias]
+        db_path = Path(lib_config["path"]).resolve()
+        
+        if not db_path.exists():
+            raise RuntimeError(
+                f"Library alias '{alias}' points to non-existent path: {db_path}\n"
+                f"Update it with: aver admin config add-alias --alias {alias} --path /correct/path"
+            )
+        
+        return db_path
+
+    @staticmethod
+    def get_effective_user(db_path: Optional[Path] = None) -> dict:
+        """
+        Get the effective user identity for a given database path.
+        
+        Resolution order:
+        1. If db_path matches a library alias with handle/email overrides, use those
+        2. Fall back to global [user] config
+        
+        For partial overrides (e.g. library defines handle but not email),
+        the missing fields fall back to global.
+        
+        Args:
+            db_path: Path to the .aver database directory. If None, returns global user.
+        
+        Returns:
+            Dict with 'handle' and 'email' keys
+        
+        Raises:
+            RuntimeError: If no user identity is configured (neither global nor per-library)
+        """
+        config = DatabaseDiscovery.get_user_config()
+        
+        # Start with global defaults
+        global_user = config.get("user", {})
+        effective = {
+            "handle": global_user.get("handle"),
+            "email": global_user.get("email"),
+        }
+        
+        # Check library overrides if we have a db_path
+        if db_path is not None:
+            db_path_resolved = Path(db_path).resolve()
+            libraries = config.get("libraries", {})
+            
+            for alias, lib_config in libraries.items():
+                lib_path = Path(lib_config["path"]).resolve()
+                if lib_path == db_path_resolved:
+                    # Found matching library — apply overrides
+                    if "handle" in lib_config:
+                        effective["handle"] = lib_config["handle"]
+                    if "email" in lib_config:
+                        effective["email"] = lib_config["email"]
+                    break
+        
+        # Validate we have both required fields
+        if not effective.get("handle") or not effective.get("email"):
+            missing = [k for k in ("handle", "email") if not effective.get(k)]
+            raise RuntimeError(
+                f"User identity incomplete (missing: {', '.join(missing)}).\n"
+                f"Set global identity: aver admin config set-user --handle <handle> --email <email>\n"
+                f"Or per-library:      aver admin config set-user --library <alias> --handle <handle> --email <email>"
+            )
+        
+        return effective
+
+    @staticmethod
+    def get_all_aliases() -> dict:
+        """
+        Get all configured library aliases.
+        
+        Returns:
+            Dict mapping alias -> {path, handle (optional), email (optional)}
+        """
+        config = DatabaseDiscovery.get_user_config()
+        return dict(config.get("libraries", {}))
+
+    # =========================================================================
     # Database Discovery
     # =========================================================================
 
@@ -1085,6 +1396,7 @@ class DatabaseDiscovery:
         3. User config [locations] matching CWD (contextually relevant)
         4. Parent directories above CWD with .aver
         5. All other user config [locations] entries (secondary options)
+        6. Library aliases (secondary options)
     
         Returns:
             Dict mapping source_name -> {path, source_description, category}
@@ -1150,8 +1462,15 @@ class DatabaseDiscovery:
         # 5) All other user config [locations] entries (secondary options)
         user_config = DatabaseDiscovery.get_user_config()
         if 'locations' in user_config:
-            for path_prefix, db_path in user_config['locations'].items():
-                db_path_obj = Path(db_path).resolve()
+            for path_prefix, db_path_raw in user_config['locations'].items():
+                try:
+                    db_path_obj = DatabaseDiscovery._resolve_location_value(
+                        db_path_raw, config=user_config
+                    )
+                except ValueError as e:
+                    # Skip invalid entries with a warning (don't crash discovery)
+                    print(f"Warning: Skipping [locations] entry '{path_prefix}': {e}", file=sys.stderr)
+                    continue
                 
                 # Skip if already added (matched location or parent)
                 if db_path_obj == matched_location or any(
@@ -1164,9 +1483,26 @@ class DatabaseDiscovery:
                     key = f"user_locations_{path_prefix.replace('/', '_')}"
                     candidates[key] = {
                         'path': db_path_obj,
-                        'source': f'User config [locations]: {path_prefix} → {db_path}',
+                        'source': f'User config [locations]: {path_prefix} → {db_path_raw}',
                         'category': 'available',
                     }
+    
+        # 6) Library aliases (secondary options, skip duplicates)
+        libraries = user_config.get("libraries", {})
+        for alias, lib_config in libraries.items():
+            lib_path = Path(lib_config["path"]).resolve()
+            
+            # Skip if already present from another discovery method
+            if any(c['path'] == lib_path for c in candidates.values()):
+                continue
+            
+            if lib_path.exists():
+                key = f"library_alias_{alias}"
+                candidates[key] = {
+                    'path': lib_path,
+                    'source': f'Library alias: {alias} → {lib_config["path"]}',
+                    'category': 'available',
+                }
     
         return candidates
 
@@ -1184,7 +1520,6 @@ class DatabaseDiscovery:
     
         if len(candidates) == 1:
             selected = list(candidates.values())[0]
-            #print(f"Using: {selected['source']}")
             return selected['path']
     
         # Organize by category
@@ -1254,19 +1589,16 @@ class DatabaseDiscovery:
         for key in priority:
             if key in candidates:
                 selected = candidates[key]
-                #print(f"Using: {selected['source']}")
                 return selected['path']
         
         # Fallback: use first available [locations] entry
         for key, info in candidates.items():
             if info.get('category') == 'available':
-                #print(f"Using: {info['source']}")
                 return info['path']
         
         # Last resort: use any remaining candidate
         if candidates:
             selected = list(candidates.values())[0]
-            #print(f"Using: {selected['source']}")
             return selected['path']
         
         raise RuntimeError("No suitable incident database found")
@@ -1280,10 +1612,14 @@ class DatabaseDiscovery:
         Longest matching parent key is used.
         Returns the mapped path if found, else None.
 
+        Location values can be:
+        - Absolute paths: "/path/to/.aver"
+        - Library alias handles: "myproject" (resolved via [libraries.myproject].path)
+
         Example user.toml:
         [locations]
         "/root/path" = "/path/to/data"
-        "/root/path/longer" = "/other/path/to/data"
+        "/root/path/longer" = "myproject"
         """
         config = DatabaseDiscovery.get_user_config()
         locations = config.get('locations', {})
@@ -1291,11 +1627,15 @@ class DatabaseDiscovery:
             return None
         cwd_resolved = cwd.resolve()
 
-        matches = [
-            (Path(key).resolve(), Path(value).resolve())
-            for key, value in locations.items()
-            if cwd_resolved.is_relative_to(Path(key).resolve())  # Python 3.9+
-        ]
+        matches = []
+        for key, value in locations.items():
+            if cwd_resolved.is_relative_to(Path(key).resolve()):  # Python 3.9+
+                try:
+                    resolved = DatabaseDiscovery._resolve_location_value(value, config=config)
+                    matches.append((Path(key).resolve(), resolved))
+                except ValueError as e:
+                    print(f"Warning: Skipping [locations] entry '{key}': {e}", file=sys.stderr)
+                    continue
 
         if not matches:
             return None
@@ -1380,8 +1720,8 @@ class DatabaseDiscovery:
         if not db:
             raise RuntimeError(
                 "No incident database found.\n"
-                "Initialize with: incident init\n"
-                "Or: incident init --location /path/to/db"
+                "Initialize with: aver admin init\n"
+                "Or: aver admin init --location /path/to/db"
             )
         return db
 
@@ -2692,7 +3032,6 @@ class IncidentManager:
         interactive: bool = None,
     ):
         """Initialize manager with database and project config."""
-        #print (f"LOCATION: {explicit_location}")
         if explicit_location:
             self.db_root = Path(explicit_location).resolve()
         else:
@@ -2720,6 +3059,22 @@ class IncidentManager:
         self.storage = IncidentFileStorage(self.db_root)
         self.index_db = IncidentIndexDatabase(self.db_root / "aver.db")
         self.project_config = ProjectConfig(self.db_root)
+        
+        # Resolve effective user identity (per-library override → global fallback)
+        self.effective_user = DatabaseDiscovery.get_effective_user(self.db_root)
+
+    def set_user_override(self, handle: str, email: str):
+        """
+        Override the effective user identity for this manager instance.
+        
+        Used by the CLI to inject a resolved identity (e.g. git identity)
+        after construction. This is ephemeral — it does not persist to config.
+        
+        Args:
+            handle: User handle to use for authoring
+            email: User email to use for authoring
+        """
+        self.effective_user = {"handle": handle, "email": email}
     
     def _validate_and_store_kv(
         self,
@@ -2821,7 +3176,7 @@ class IncidentManager:
                 ]
             )
         """
-        user_config = DatabaseDiscovery.get_user_config()
+        author = self.effective_user["handle"]
         incident_id = IDGenerator.generate_incident_id()
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
@@ -2850,14 +3205,13 @@ class IncidentManager:
                 raise ValueError(f"Cannot use removal operator '-' when creating incident")
             self._validate_and_store_kv(key, kvtype, value, incident)
         
-        # Add system fields (no type hints, will validate if special)
+        # Add system fields
         self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
-        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, user_config["user"]["handle"], incident)
+        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, author, incident)
         self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
         
         if final_description:
-            #self._validate_and_store_kv('description', KVParser.TYPE_STRING, final_description, incident)
-            incident.content=final_description
+            incident.content = final_description
 
         # Save to file
         self.storage.save_incident(incident, self.project_config)
@@ -2873,7 +3227,7 @@ class IncidentManager:
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
-            author=user_config["user"]["handle"],
+            author=author,
             message=initial_message,
         )
         
@@ -2899,7 +3253,6 @@ class IncidentManager:
             lines.append("")
         
         # System fields to skip
-        # skip_fields = {'title', 'created_at', 'created_by', 'updated_at', 'description'}
         skip_fields = {}
         
         # Format all string KV that isn't in skip list
@@ -2953,7 +3306,7 @@ class IncidentManager:
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
     
-        user_config = DatabaseDiscovery.get_user_config()
+        author = self.effective_user["handle"]
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     
         updated_fields = []
@@ -3019,7 +3372,7 @@ class IncidentManager:
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
-            author=user_config["user"]["handle"],
+            author=author,
             message=update_msg,
         )
         self.storage.save_update(incident_id, incident_update)
@@ -3071,7 +3424,7 @@ class IncidentManager:
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
         
-        user_config = DatabaseDiscovery.get_user_config()
+        author = self.effective_user["handle"]
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
         # Determine message source
@@ -3099,9 +3452,9 @@ class IncidentManager:
             raise RuntimeError(
                 "No update provided.\n"
                 "\nUsage:\n"
-                "  incident add-update <id> --message \"text\"\n"
-                "  echo \"text\" | incident add-update <id>\n"
-                "  incident add-update <id>  # opens editor"
+                "  aver note add <id> --message \"text\"\n"
+                "  echo \"text\" | aver note add <id>\n"
+                "  aver note add <id>  # opens editor"
             )
         
         # Parse KV data for the UPDATE ONLY
@@ -3144,7 +3497,7 @@ class IncidentManager:
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
-            author=user_config["user"]["handle"],
+            author=author,
             message=final_message,
             kv_strings=update_kv_strings if update_kv_strings else None,
             kv_integers=update_kv_integers if update_kv_integers else None,
@@ -3272,8 +3625,6 @@ class IncidentManager:
     
         # Return IDs only if requested
         if ids_only:
-            # matching_ids should be tuples of (update, incident_id, incident_title)
-            # Extract and format as "incident_id:update_id"
             return [f"{incident_id}:{update.id}" for update, incident_id, _ in matching_ids]
     
         return matching_ids
@@ -3294,14 +3645,40 @@ class IncidentCLI:
 
     def _add_common_args(self, parser):
         """Add common database selection arguments."""
-        parser.add_argument(
+        db_group = parser.add_mutually_exclusive_group()
+        db_group.add_argument(
             "--location",
             help="Explicit database path (overrides all detection)",
         )
-        parser.add_argument(
+        db_group.add_argument(
+            "--use",
+            dest="use_alias",
+            metavar="ALIAS",
+            help="Select database by library alias (defined in user config)",
+        )
+        db_group.add_argument(
             "--choose",
             action="store_true",
             help="Prompt to choose database if multiple available",
+        )
+        
+        # Git identity resolution flags
+        git_id_group = parser.add_mutually_exclusive_group()
+        git_id_group.add_argument(
+            "--use-git-id",
+            action="store_const",
+            const=True,
+            dest="use_git_id",
+            default=None,
+            help="Use git user identity instead of aver config identity",
+        )
+        git_id_group.add_argument(
+            "--no-use-git-id",
+            action="store_const",
+            const=True,
+            dest="no_use_git_id",
+            default=None,
+            help="Use aver config identity even if it differs from git",
         )
 
     def _add_kv_options(self, parser, include_old_style=True):
@@ -3366,12 +3743,151 @@ class IncidentCLI:
             )
 
     def _get_manager(self, args) -> IncidentManager:
-        """Handle database selection and return manager."""
+        """
+        Handle database selection and return manager.
+        
+        Resolves --use alias to an explicit location before constructing the manager.
+        """
         interactive = getattr(args, 'choose', False)
+        explicit_location = getattr(args, 'location', None)
+        use_alias = getattr(args, 'use_alias', None)
+        
+        # Resolve alias to explicit path
+        if use_alias:
+            explicit_location = str(DatabaseDiscovery.resolve_alias(use_alias))
         
         return IncidentManager(
-            explicit_location=getattr(args, 'location', None),
+            explicit_location=explicit_location,
             interactive=interactive,
+        )
+
+    def _check_git_identity(self, args, manager: IncidentManager):
+        """
+        Verify that the aver user identity matches the git identity for write operations.
+        
+        Called before write operations (record new, record update, note add).
+        
+        If inside a git repo and identities differ:
+        - If prefer_git_identity = true (config): return git identity
+        - If prefer_git_identity = false (config): return None (use aver config)
+        - If --use-git-id flag: return git identity, print notice about prefer_git_identity
+        - If --no-use-git-id flag: return None (use aver config)
+        - Otherwise: raise RuntimeError with instructions
+        
+        The caller is responsible for applying the returned identity via
+        manager.set_user_override() if non-None.
+        
+        Returns:
+            Dict with 'handle' and 'email' if git identity should be used,
+            or None if aver config identity should be used.
+        
+        Raises:
+            RuntimeError: If identities differ and no resolution is provided
+        """
+        use_git_id = getattr(args, 'use_git_id', None)
+        no_use_git_id = getattr(args, 'no_use_git_id', None)
+        
+        # Get git identity — if not in a git repo, nothing to check
+        git_identity = DatabaseDiscovery.get_git_identity()
+        if git_identity is None:
+            if use_git_id:
+                print(
+                    "Warning: --use-git-id specified but not in a git repo "
+                    "or git identity not configured. Using aver config identity.",
+                    file=sys.stderr,
+                )
+            return None
+        
+        # Get effective aver identity
+        db_path = getattr(manager, 'db_root', None)
+        try:
+            aver_identity = DatabaseDiscovery.get_effective_user(db_path)
+        except RuntimeError:
+            # No aver identity configured at all — can't compare
+            if use_git_id:
+                return git_identity
+            return None
+        
+        # Compare identities
+        handle_match = aver_identity["handle"] == git_identity["handle"]
+        email_match = aver_identity["email"] == git_identity["email"]
+        
+        if handle_match and email_match:
+            return None
+        
+        # Identities differ — determine resolution
+        
+        # Check for persistent prefer_git_identity setting
+        prefer_git = DatabaseDiscovery.get_prefer_git_identity(db_path)
+        if prefer_git is True:
+            return git_identity
+        if prefer_git is False:
+            return None
+        
+        # Check for explicit flags
+        if use_git_id:
+            # Determine the best config hint for the notice
+            config = DatabaseDiscovery.get_user_config()
+            libraries = config.get("libraries", {})
+            matched_alias = None
+            if db_path:
+                db_path_resolved = Path(db_path).resolve()
+                for alias, lib_config in libraries.items():
+                    try:
+                        if Path(lib_config["path"]).resolve() == db_path_resolved:
+                            matched_alias = alias
+                            break
+                    except Exception:
+                        continue
+            
+            print(
+                f"\nNotice: Using git identity: {git_identity['handle']} <{git_identity['email']}>",
+                file=sys.stderr,
+            )
+            print(
+                f"  To avoid this flag in the future, add 'prefer_git_identity = true' to your config:",
+                file=sys.stderr,
+            )
+            if matched_alias:
+                print(
+                    f"\n  Per-library (in ~/.config/aver/user.toml):\n"
+                    f"    [libraries.{matched_alias}]\n"
+                    f"    prefer_git_identity = true\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"\n  Global (in ~/.config/aver/user.toml):\n"
+                    f"    [user]\n"
+                    f"    prefer_git_identity = true\n",
+                    file=sys.stderr,
+                )
+            return git_identity
+        
+        if no_use_git_id:
+            return None
+        
+        # No flag, no config setting — error out
+        mismatch_details = []
+        if not handle_match:
+            mismatch_details.append(
+                f"  handle: aver='{aver_identity['handle']}' vs git='{git_identity['handle']}'"
+            )
+        if not email_match:
+            mismatch_details.append(
+                f"  email:  aver='{aver_identity['email']}' vs git='{git_identity['email']}'"
+            )
+        
+        raise RuntimeError(
+            f"Identity mismatch between aver config and git:\n"
+            + "\n".join(mismatch_details) + "\n\n"
+            f"Resolve with one of:\n"
+            f"  --use-git-id       Use git identity for this operation\n"
+            f"  --no-use-git-id    Use aver config identity for this operation\n\n"
+            f"To always resolve this automatically, add to ~/.config/aver/user.toml:\n"
+            f"  prefer_git_identity = true    # always use git identity\n"
+            f"  prefer_git_identity = false   # always use aver config identity\n"
+            f"(under the appropriate [libraries.<alias>] or [user] section)"
         )
 
     def _parse_and_convert_kv(self, raw_values: List[str], type_marker: str) -> List[str]:
@@ -3721,12 +4237,52 @@ class IncidentCLI:
             required=True,
         )
         
+        # admin config set-user
         set_user_parser = config_subparsers.add_parser(
             "set-user",
-            help="Set global user identity",
+            help="Set user identity (global or per-library)",
+            description=(
+                "Set user identity. Without --library, sets the global fallback identity.\n"
+                "With --library <alias>, sets identity for a specific library.\n\n"
+                "Examples:\n"
+                "  aver admin config set-user --handle alice --email alice@example.com\n"
+                "  aver admin config set-user --library myproject --handle alice-work --email alice@work.com"
+            ),
         )
         set_user_parser.add_argument("--handle", required=True, help="User handle")
         set_user_parser.add_argument("--email", required=True, help="User email")
+        set_user_parser.add_argument(
+            "--library",
+            dest="set_user_library",
+            metavar="ALIAS",
+            help="Set identity for a specific library alias (omit for global)",
+        )
+        
+        # admin config add-alias
+        add_alias_parser = config_subparsers.add_parser(
+            "add-alias",
+            help="Add or update a library alias",
+            description=(
+                "Register a library alias for convenient access.\n\n"
+                "Examples:\n"
+                "  aver admin config add-alias --alias myproject --path /home/alice/projects/myproject/.aver\n"
+                "  aver admin config add-alias --alias myproject --path .  # uses current directory"
+            ),
+        )
+        add_alias_parser.add_argument(
+            "--alias", required=True,
+            help="Short alias name for the library",
+        )
+        add_alias_parser.add_argument(
+            "--path", required=True,
+            help="Filesystem path to the .aver database directory",
+        )
+        
+        # admin config list-aliases
+        list_aliases_parser = config_subparsers.add_parser(
+            "list-aliases",
+            help="Show all configured library aliases",
+        )
         
         set_editor_parser = config_subparsers.add_parser(
             "set-editor",
@@ -3771,7 +4327,7 @@ class IncidentCLI:
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
-                    manager = self._get_manager(parsed)  # Fix: use parsed, not args
+                    manager = self._get_manager(parsed)
                     self._add_special_field_args(self.record_new_parser, manager)
                     parsed = self.parser.parse_args(args)
                     self._cmd_create(parsed)
@@ -3975,14 +4531,11 @@ $update_kv
     def _cmd_config(self, args):
         """Handle config commands."""
         if args.config_command == "set-user":
-            config = DatabaseDiscovery.get_user_config()
-            config["user"] = {
-                "handle": args.handle,
-                "email": args.email,
-            }
-            DatabaseDiscovery.set_user_config(config)
-            print(f"✓ User configured: {args.handle} <{args.email}>")
-
+            self._cmd_config_set_user(args)
+        elif args.config_command == "add-alias":
+            self._cmd_config_add_alias(args)
+        elif args.config_command == "list-aliases":
+            self._cmd_config_list_aliases(args)
         elif args.config_command == "set-editor":
             if not EditorConfig._editor_exists(args.editor):
                 print(f"Error: Editor '{args.editor}' not found in PATH", file=sys.stderr)
@@ -4001,9 +4554,151 @@ $update_kv
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
 
+    def _cmd_config_set_user(self, args):
+        """
+        Set user identity — global or per-library.
+        
+        Without --library: sets/updates [user] section (global fallback).
+        With --library <alias>: sets/updates handle and email within [libraries.<alias>].
+        The alias must already exist (use add-alias first).
+        """
+        target_library = getattr(args, 'set_user_library', None)
+        config = DatabaseDiscovery.get_user_config()
+        
+        # Ensure config is a plain dict for writing (ConfigDict -> dict)
+        config = dict(config)
+        
+        if target_library:
+            # Per-library identity
+            if "libraries" not in config:
+                config["libraries"] = {}
+            else:
+                config["libraries"] = dict(config["libraries"])
+            
+            if target_library not in config["libraries"]:
+                print(
+                    f"Error: Library alias '{target_library}' not found.\n"
+                    f"Add it first with: aver admin config add-alias --alias {target_library} --path /path/to/.aver",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            
+            # Update the library entry (preserve existing path and other fields)
+            lib_entry = dict(config["libraries"][target_library])
+            lib_entry["handle"] = args.handle
+            lib_entry["email"] = args.email
+            config["libraries"][target_library] = lib_entry
+            
+            DatabaseDiscovery.set_user_config(config)
+            print(f"✓ User configured for library '{target_library}': {args.handle} <{args.email}>")
+        else:
+            # Global identity — preserve existing [user] fields (e.g. prefer_git_identity)
+            if "user" in config:
+                user_section = dict(config["user"])
+            else:
+                user_section = {}
+            user_section["handle"] = args.handle
+            user_section["email"] = args.email
+            config["user"] = user_section
+            
+            DatabaseDiscovery.set_user_config(config)
+            print(f"✓ Global user configured: {args.handle} <{args.email}>")
+
+    def _cmd_config_add_alias(self, args):
+        """
+        Add or update a library alias.
+        
+        Resolves the path to an absolute path. If path is "." or a relative path,
+        it's resolved relative to CWD. Validates the path exists and looks like
+        an aver database (or at least a directory).
+        """
+        alias = args.alias
+        raw_path = args.path
+        
+        # Resolve the path
+        resolved_path = Path(raw_path).resolve()
+        
+        # Basic validation
+        if not resolved_path.exists():
+            print(
+                f"Warning: Path does not exist yet: {resolved_path}\n"
+                f"The alias will be saved, but it won't be usable until the path exists.",
+                file=sys.stderr,
+            )
+        elif not resolved_path.is_dir():
+            print(f"Error: Path is not a directory: {resolved_path}", file=sys.stderr)
+            sys.exit(1)
+        
+        config = DatabaseDiscovery.get_user_config()
+        config = dict(config)
+        
+        if "libraries" not in config:
+            config["libraries"] = {}
+        else:
+            config["libraries"] = dict(config["libraries"])
+        
+        is_update = alias in config["libraries"]
+        
+        if is_update:
+            # Preserve existing per-library identity fields
+            existing = dict(config["libraries"][alias])
+            existing["path"] = str(resolved_path)
+            config["libraries"][alias] = existing
+        else:
+            config["libraries"][alias] = {
+                "path": str(resolved_path),
+            }
+        
+        DatabaseDiscovery.set_user_config(config)
+        
+        action = "Updated" if is_update else "Added"
+        print(f"✓ {action} library alias: {alias} → {resolved_path}")
+
+    def _cmd_config_list_aliases(self, args):
+        """Show all configured library aliases with their details."""
+        aliases = DatabaseDiscovery.get_all_aliases()
+        
+        if not aliases:
+            print("No library aliases configured.")
+            print(f"\nAdd one with: aver admin config add-alias --alias <name> --path /path/to/.aver")
+            return
+        
+        print("\n" + "=" * 70)
+        print("Library Aliases")
+        print("=" * 70)
+        
+        for alias, lib_config in sorted(aliases.items()):
+            lib_path = Path(lib_config["path"])
+            exists = lib_path.exists()
+            status = "✓" if exists else "✗ (missing)"
+            
+            print(f"\n  {alias}")
+            print(f"    Path:   {lib_config['path']}  {status}")
+            
+            if "handle" in lib_config or "email" in lib_config:
+                handle = lib_config.get("handle", "(global fallback)")
+                email = lib_config.get("email", "(global fallback)")
+                print(f"    User:   {handle} <{email}>")
+            else:
+                print(f"    User:   (uses global fallback)")
+            
+            if "prefer_git_identity" in lib_config:
+                pref = lib_config["prefer_git_identity"]
+                print(f"    Git ID: {'preferred' if pref else 'not preferred'}")
+        
+        print("\n" + "=" * 70)
+        print(f"  {len(aliases)} alias(es) configured")
+        print("=" * 70 + "\n")
+
     def _cmd_create(self, args):
         """Create record."""
         manager = self._get_manager(args)
+        
+        # Check git identity before write operation and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
+        
         print(f"CREATE: ARGS: {args}")
         
         # Build KV list from special fields and generic KV arguments
@@ -4096,6 +4791,11 @@ $update_kv
         """Update record metadata and/or description."""
         manager = self._get_manager(args)
     
+        # Check git identity before write operation and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
+    
         # Build KV list from special fields and generic KV arguments
         kv_list = self._build_kv_list(manager, args)
     
@@ -4121,6 +4821,11 @@ $update_kv
         """Add note to record."""
         manager = self._get_manager(args)
 
+        # Check git identity before write operation and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
+
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
 
@@ -4133,7 +4838,7 @@ $update_kv
                 message=args.message if has_message else None,
                 use_stdin=has_stdin and not has_message,
                 use_editor=not (has_message or has_stdin),
-                kv_single=kv_list,  # Pass as single list since we've already converted
+                kv_single=kv_list,
                 kv_multi=None,
             )
             print(f"✓ Added note: {note_id}")
@@ -4273,7 +4978,8 @@ $update_kv
                 print(f"    {info['path']}")
     
         print("\n" + "="*70)
-        print("Use: --choose to select interactively")
+        print("Use: --use ALIAS to select by library alias")
+        print("     --choose to select interactively")
         print("     --location PATH to specify explicitly")
         print("="*70 + "\n")
 
