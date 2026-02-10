@@ -405,27 +405,6 @@ class Incident:
         
         return values[0] if field.field_type == "single" else values
     
-    def set_value(
-        self,
-        field_name: str,
-        value: Any,
-        project_config: ProjectConfig,
-    ) -> None:
-        """Set field value, respecting config type."""
-        field = project_config.get_special_field(field_name)
-        if not field:
-            raise ValueError(f"Unknown field: {field_name}")
-        
-        if not field.editable:
-            raise ValueError(f"Field '{field_name}' is not editable")
-        
-        if field.value_type == "string":
-            self.kv_strings[field_name] = [value] if field.field_type == "single" else value
-        elif field.value_type == "integer":
-            self.kv_integers[field_name] = [int(value)] if field.field_type == "single" else [int(v) for v in value]
-        elif field.value_type == "float":
-            self.kv_floats[field_name] = [float(value)] if field.field_type == "single" else [float(v) for v in value]
-    
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with TOML frontmatter."""
         # Build frontmatter from special fields
