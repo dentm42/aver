@@ -2809,7 +2809,7 @@ class IncidentIndexDatabase:
 
         Args:
             ksearch_list: List of (key, operator, value) tuples - ALL must match
-                operator must be one of: '=', '<', '>', '<=', '>='
+                operator must be one of: '=', '<', '>', '<=', '>=', "!=", "<>"
                 If empty, returns all incident_ids/update_ids matching other filters
             incident_ids: If provided, search only within these incidents (None = search all)
             update_ids: If provided, search only within these updates
@@ -2856,6 +2856,7 @@ class IncidentIndexDatabase:
         
         # Add each search criterion as an INNER JOIN
         for key, operator, value in ksearch_list:
+            
             # Validate operator
             if operator not in ALLOWED_OPERATORS:
                 raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
@@ -3565,6 +3566,7 @@ class IncidentManager:
             RuntimeError: If search/sort expressions are invalid
         """
         # Search (returns all if ksearch_list is None/empty)
+        
         parsed_ksearch = []
         if ksearch_list:
             try:
@@ -4753,7 +4755,7 @@ $update_kv
     def _cmd_list(self, args):
         """List records with KV search and sort."""
         manager = self._get_manager(args)
-    
+        
         try:
             results = manager.list_incidents(
                 ksearch_list=getattr(args, 'ksearch', None),
