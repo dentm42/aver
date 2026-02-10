@@ -2439,30 +2439,6 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
-    def get_incident_from_index(self, incident_id: str) -> Optional[Dict[str, Any]]:
-        """Get incident data from index."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM incidents_index WHERE id = ?", (incident_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        return {
-            "id": row[0],
-            "title": row[1],
-            "created_at": row[2],
-            "created_by": row[3],
-            "severity": row[4],
-            "status": row[5],
-            "tags": json.loads(row[6]),
-            "assignees": json.loads(row[7]),
-            "updated_at": row[8],
-        }
-
     def list_incidents_from_index(
         self,
         project_config: ProjectConfig,
