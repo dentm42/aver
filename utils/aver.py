@@ -420,10 +420,16 @@ class Incident:
             if field.field_type == "single":
                 if field.value_type == "string":
                     value = self.kv_strings.get(field_name, [''])[0]
+                    if value == "":
+                        continue
                 elif field.value_type == "integer":
                     value = self.kv_integers.get(field_name, [0])[0]
+                    if value == 0:
+                        continue
                 elif field.value_type == "float":
                     value = self.kv_floats.get(field_name, [0.0])[0]
+                    if value == 0.0:
+                        continue
             else:  # multi
                 if field.value_type == "string":
                     value = self.kv_strings.get(field_name, [])
@@ -432,11 +438,15 @@ class Incident:
                 elif field.value_type == "float":
                     value = self.kv_floats.get(field_name, [])
             
+            if value == []:
+                continue
+                
             frontmatter[field_name] = value
         
         # Build custom fields section (non-special fields with type hints)
         other_kv = self._get_other_kv(project_config)
-        custom_fields = None
+        custom_fields = {}
+        print (f"OTHER_KV: {other_kv}")
         if other_kv:
             custom_fields = {}
             for key, val in other_kv.items():
@@ -449,6 +459,7 @@ class Incident:
                 else:
                     hinted_key = key
                 custom_fields[hinted_key] = val
+                print (f"{hinted_key} = {val}")
         
         # Use MarkdownDocument for serialization
         #sections = {"Custom Fields": custom_fields} if custom_fields else None
@@ -596,8 +607,8 @@ class IncidentUpdate:
         return d
         
     def to_markdown(self) -> str:
-        """Convert update to Markdown with TOML header."""
-        # Build frontmatter with escaped values
+        """Convert update to Markdown with TOML header including KV data."""
+        # System fields
         frontmatter = {
             "id": self.id,
             "incident_id": self.incident_id,
@@ -605,7 +616,27 @@ class IncidentUpdate:
             "author": self.author,
         }
         
-        return MarkdownDocument.serialize( frontmatter, body = self.message )
+        # Add KV data with type hints
+        custom_fields = {}
+        
+        if self.kv_strings:
+            for key, values in self.kv_strings.items():
+                hinted_key = TOMLSerializer.add_type_hint(key, "string")
+                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+        
+        if self.kv_integers:
+            for key, values in self.kv_integers.items():
+                hinted_key = TOMLSerializer.add_type_hint(key, "integer")
+                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+        
+        if self.kv_floats:
+            for key, values in self.kv_floats.items():
+                hinted_key = TOMLSerializer.add_type_hint(key, "float")
+                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+        
+        # Merge and serialize
+        all_frontmatter = frontmatter | custom_fields
+        return MarkdownDocument.serialize(all_frontmatter, body=self.message)
 
     @classmethod
     def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
@@ -3053,6 +3084,25 @@ class IncidentManager:
         # Resolve effective user identity (per-library override → global fallback)
         self.effective_user = DatabaseDiscovery.get_effective_user(self.db_root)
 
+    def _strip_type_suffix(self, key: str) -> str:
+        """
+        Strip type suffix from key name.
+        
+        Keys may have suffixes like __string, __integer, __float appended.
+        This strips them to get the base field name for comparison with
+        special_fields configuration.
+        
+        Args:
+            key: Key name, possibly with suffix
+            
+        Returns:
+            Base key name without suffix
+        """
+        for suffix in ['__string', '__integer', '__float']:
+            if key.endswith(suffix):
+                return key[:-len(suffix)]
+        return key
+    
     def set_user_override(self, handle: str, email: str):
         """
         Override the effective user identity for this manager instance.
@@ -3139,23 +3189,137 @@ class IncidentManager:
                     incident.kv_floats[key] = [float(v) for v in value]
                 else:
                     incident.kv_floats[key] = [float(value)] if value is not None else []
-    
+
+    def _create_incident_with_toml(
+        self,
+        initial_incident: Incident,
+    ) -> Optional[Incident]:
+        """
+        Launch editor with incident template in TOML frontmatter format.
+        
+        Used when creating new records. Similar to _edit_incident_with_toml but
+        for new records that don't exist yet.
+        
+        Flow:
+        1. Filter out non-editable special fields
+        2. Write template to temp file using to_markdown()
+        3. Launch editor
+        4. Read back using from_markdown()
+        5. Handle parsing errors with retry logic
+        6. Return new incident or None if cancelled
+        
+        Args:
+            initial_incident: Template incident with CLI args applied
+            
+        Returns:
+            Edited incident ready to save, or None if cancelled
+        """
+        import tempfile
+        import os
+        
+        while True:
+            # Prepare incident for editing (filter non-editable fields)
+            editable_incident = self._prepare_incident_for_editing(initial_incident)
+            
+            # Generate markdown with TOML frontmatter
+            markdown_content = editable_incident.to_markdown(self.project_config)
+            
+            # Create temp file
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.md',
+                delete=False,
+                encoding='utf-8',
+            ) as tmp_file:
+                tmp_file.write(markdown_content)
+                tmp_path = tmp_file.name
+            
+            try:
+                # Launch editor
+                editor_result = EditorConfig.launch_editor(
+                    initial_content=markdown_content,
+                )
+                
+                # User cancelled in editor
+                if editor_result is None or editor_result.strip() == markdown_content.strip():
+                    os.unlink(tmp_path)
+                    return None
+                
+                # Try to parse the edited content
+                try:
+                    edited_incident = Incident.from_markdown(
+                        editor_result,
+                        initial_incident.id,
+                        self.project_config,
+                    )
+                    
+                    # Success!
+                    os.unlink(tmp_path)
+                    return edited_incident
+                    
+                except Exception as parse_error:
+                    # Parsing failed - ask user what to do
+                    print(f"\n{'='*70}", file=sys.stderr)
+                    print(f"ERROR: Failed to parse edited markdown", file=sys.stderr)
+                    print(f"{'='*70}", file=sys.stderr)
+                    print(f"{str(parse_error)}", file=sys.stderr)
+                    print(f"{'='*70}\n", file=sys.stderr)
+                    
+                    print("Options:", file=sys.stderr)
+                    print("  [r] Retry - reopen editor with your changes", file=sys.stderr)
+                    print("  [f] Fresh - restart with template", file=sys.stderr)
+                    print("  [c] Cancel - abort creation", file=sys.stderr)
+                    
+                    choice = input("\nChoice (r/f/c): ").strip().lower()
+                    
+                    if choice == 'c':
+                        # Cancel
+                        os.unlink(tmp_path)
+                        return None
+                    elif choice == 'f':
+                        # Start fresh - reset to initial template
+                        continue
+                    else:
+                        # Retry with user's edits (default)
+                        # Try to preserve at least the content
+                        try:
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
+                                if len(parts) >= 3:
+                                    initial_incident.content = parts[2].strip()
+                        except:
+                            pass
+                        continue
+                        
+            except Exception as e:
+                # Editor launch failed or other unexpected error
+                print(f"Error during editing: {e}", file=sys.stderr)
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                return None
+      
     def create_incident(
         self,
         kv_list: List[str],
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
+        use_toml_editor: bool = True,  # NEW parameter
         custom_id: Optional[str] = None,
     ) -> str:
         """
         Create new incident from KV list.
         
+        When use_editor=True and use_toml_editor=True (default), presents a 
+        template with TOML frontmatter for editing.
+        
         Args:
             kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
             description: Optional incident description
             use_stdin: Read description from STDIN
-            custom_id: Optional custom incident ID (must be unique and contain only A-Z, a-z, 0-9, _, -)
+            use_editor: Launch editor
+            use_toml_editor: If True with use_editor, edit full record with TOML (default)
+            custom_id: Optional custom incident ID
         
         Example:
             manager.create_incident(
@@ -3163,24 +3327,21 @@ class IncidentManager:
                     "title$Database error",
                     "severity$high",
                     "status$open",
-                    "tags$backend",
-                    "tags$database",
                 ],
-                custom_id="My_Custom_Id"
+                use_editor=True,
+                use_toml_editor=True,
             )
         """
         author = self.effective_user["handle"]
 
-        # ADD THIS BLOCK - Validate and use custom ID or generate new one
+        # Validate and use custom ID or generate new one
         if custom_id:
-            # Validate custom ID format
             if not IncidentFileStorage.validate_custom_id(custom_id):
                 raise ValueError(
                     f"Invalid custom ID '{custom_id}'. "
                     "Only A-Z, a-z, 0-9, underscore (_), and hyphen (-) are allowed."
                 )
         
-            # Check for collision
             incident_path = self.storage._get_incident_path(custom_id)
             if incident_path.exists():
                 raise ValueError(
@@ -3193,25 +3354,10 @@ class IncidentManager:
 
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
-        # Determine description source
-        final_description = None
-        if description:
-            final_description = description
-        elif use_stdin and StdinHandler.has_stdin_data():
-            final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
-        elif use_editor:
-            final_description = EditorConfig.launch_editor(
-                initial_content=(
-                    "# Add your update below\n"
-                    "# Lines starting with # are ignored\n"
-                    "\n"
-                ),
-            )
-        
         # Initialize empty incident
         incident = Incident(id=incident_id)
         
-        # Parse and apply all KV updates
+        # Parse and apply all KV updates from CLI
         parsed_kv = KVParser.parse_kv_list(kv_list)
         for key, kvtype, op, value in parsed_kv:
             if op == '-':
@@ -3222,6 +3368,39 @@ class IncidentManager:
         self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
         self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, author, incident)
         self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
+        
+        # Determine description source
+        final_description = None
+        final_incident = None
+        
+        if use_editor and use_toml_editor:
+            # NEW BEHAVIOR: Edit full record with TOML
+            final_incident = self._create_incident_with_toml(incident)
+            
+            if not final_incident:
+                # User cancelled
+                raise RuntimeError("Record creation cancelled")
+            
+            # Restore system fields (in case user tried to modify them)
+            final_incident.kv_strings['created_at'] = [now]
+            final_incident.kv_strings['created_by'] = [author]
+            final_incident.kv_strings['updated_at'] = [now]
+            
+            incident = final_incident
+            
+        elif description:
+            final_description = description
+        elif use_stdin and StdinHandler.has_stdin_data():
+            final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+        elif use_editor:
+            # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
+            final_description = EditorConfig.launch_editor(
+                initial_content=(
+                    "# Add your description below\n"
+                    "# Lines starting with # are ignored\n"
+                    "\n"
+                ),
+            )
         
         if final_description:
             incident.content = final_description
@@ -3289,7 +3468,94 @@ class IncidentManager:
         lines.append("\n\n")
 
         return "\n".join(lines)
-    
+
+    def _prepare_incident_for_editing(
+        self,
+        incident: Incident,
+    ) -> Incident:
+        """
+        Prepare incident for TOML editing by filtering out non-editable special fields.
+        
+        Creates a copy of the incident with only editable fields in the KV stores.
+        Non-editable special fields will be preserved from the original and restored
+        after editing.
+        
+        Args:
+            incident: Original incident to prepare
+            
+        Returns:
+            New incident object with non-editable fields removed
+        """
+        # Create a copy of the incident
+        editable_incident = Incident(id=incident.id)
+        editable_incident.content = incident.content
+        
+        # Get special fields configuration
+        special_fields = self.project_config.get_special_fields()
+        non_editable_fields = {
+            name for name, field_def in special_fields.items()
+            if not field_def.editable
+        }
+
+        # Copy only editable string fields
+        for key, values in incident.kv_strings.items():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key not in non_editable_fields:
+                editable_incident.kv_strings[key] = values.copy()
+        
+        # Copy only editable integer fields
+        for key, values in incident.kv_integers.items():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key not in non_editable_fields:
+                editable_incident.kv_integers[key] = values.copy()
+        
+        # Copy only editable float fields
+        for key, values in incident.kv_floats.items():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key not in non_editable_fields:
+                editable_incident.kv_floats[key] = values.copy()
+        
+        return editable_incident
+        
+    def _restore_non_editable_fields(
+        self,
+        original_incident: Incident,
+        edited_incident: Incident,
+    ) -> None:
+        """
+        Restore non-editable special fields from original incident to edited incident.
+        
+        Modifies edited_incident in-place by copying non-editable fields from
+        original_incident.
+        
+        Args:
+            original_incident: Original incident with all fields
+            edited_incident: Edited incident to restore fields to
+        """
+        special_fields = self.project_config.get_special_fields()
+        non_editable_fields = {
+            name for name, field_def in special_fields.items()
+            if not field_def.editable
+        }
+        
+        # Restore non-editable string fields
+        for key in original_incident.kv_strings.keys():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key in non_editable_fields:
+                edited_incident.kv_strings[key] = original_incident.kv_strings[key].copy()
+        
+        # Restore non-editable integer fields
+        for key in original_incident.kv_integers.keys():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key in non_editable_fields:
+                edited_incident.kv_integers[key] = original_incident.kv_integers[key].copy()
+        
+        # Restore non-editable float fields
+        for key in original_incident.kv_floats.keys():
+            base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
+            if base_key in non_editable_fields:
+                edited_incident.kv_floats[key] = original_incident.kv_floats[key].copy()
+       
     def update_incident_info(
         self,
         incident_id: str,
@@ -3297,9 +3563,14 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
+        use_toml_editor: bool = True,
     ) -> bool:
         """
         Update incident fields from KV list and/or description.
+        
+        When use_editor=True and use_toml_editor=True (default), presents the full
+        incident with TOML frontmatter for editing. Non-editable special fields are
+        filtered out during editing and restored afterwards.
     
         Args:
             incident_id: Incident ID
@@ -3307,6 +3578,7 @@ class IncidentManager:
             description: Optional new description
             use_stdin: Read description from STDIN
             use_editor: Launch editor for description
+            use_toml_editor: If True with use_editor, edit full record with TOML (default)
     
         Example:
             manager.update_incident_info(
@@ -3325,7 +3597,7 @@ class IncidentManager:
         updated_fields = []
         previous_content = None
     
-        # Parse KV updates
+        # Parse and apply KV updates from command line
         parsed_kv = KVParser.parse_kv_list(kv_list)
         for key, kvtype, op, value in parsed_kv:
             if op == '-':
@@ -3342,26 +3614,38 @@ class IncidentManager:
                 self._validate_and_store_kv(key, kvtype, value, incident)
                 updated_fields.append(key)
     
-        # Handle description updates
+        # Handle description/full record updates
         if description or use_stdin or use_editor:
             # Save previous content before updating
             if incident.content:
                 previous_content = incident.content
-        
-            # Determine new description source
+            
+            # Determine how to get new content
             final_description = None
-            if description:
+            
+            if use_editor and use_toml_editor:
+                # NEW BEHAVIOR: Edit full record with TOML frontmatter
+                final_incident = self._edit_incident_with_toml(incident)
+                
+                if final_incident:
+                    # Replace incident with edited version
+                    incident = final_incident
+                    updated_fields.append("full record (TOML edit)")
+                else:
+                    # User cancelled or error occurred
+                    return False
+                    
+            elif description:
                 final_description = description
             elif use_stdin and StdinHandler.has_stdin_data():
                 final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
             elif use_editor:
+                # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
                 final_description = EditorConfig.launch_editor(
-                    initial_content=(
-                        previous_content
-                    ),
+                    initial_content=previous_content or "",
                 )
-        
-            if final_description:
+            
+            if final_description is not None:
                 incident.content = final_description
                 updated_fields.append("description")
     
@@ -3377,7 +3661,7 @@ class IncidentManager:
         update_msg = f"Updated: {', '.join(updated_fields)}"
     
         # Append previous content to update message if it was changed
-        if previous_content:
+        if previous_content and incident.content != previous_content:
             update_msg += f"\n\n## PREVIOUS RECORD TEXT\n{previous_content}"
     
         update_id = IDGenerator.generate_update_id()
@@ -3392,7 +3676,6 @@ class IncidentManager:
         self.index_db.index_update(incident_update)
     
         return True
-
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
@@ -3409,132 +3692,251 @@ class IncidentManager:
             List of updates in chronological order
         """
         return self.storage.load_updates(incident_id)
-    
-    def add_update(
+                
+    def _edit_incident_with_toml(
         self,
-        incident_id: str,
-        message: Optional[str] = None,
-        use_stdin: bool = False,
-        use_editor: bool = False,
-        kv_single: Optional[List[str]] = None,
-        kv_multi: Optional[List[str]] = None,
-    ) -> str:
+        incident: Incident,
+    ) -> Optional[Incident]:
         """
-        Add update with optional independent KV data.
+        Launch editor with full incident in TOML frontmatter format.
+        
+        Flow:
+        1. Filter out non-editable special fields
+        2. Write to temp file using to_markdown()
+        3. Launch editor
+        4. Read back using from_markdown()
+        5. Handle parsing errors with retry logic
+        6. Restore non-editable fields from original
+        7. Return edited incident or None if cancelled
         
         Args:
-            incident_id: Incident ID
-            message: Update message
-            use_stdin: Read from STDIN
-            use_editor: Open editor
-            kv_single: Single-value KV for UPDATE only (replaces keys)
-            kv_multi: Multi-value KV for UPDATE only (adds values)
-        
+            incident: Incident to edit (with CLI updates already applied)
+            
         Returns:
-            Update ID
+            Edited incident with non-editable fields restored, or None if cancelled
         """
-        incident = self.get_incident(incident_id)
-        if not incident:
-            raise RuntimeError(f"Incident {incident_id} not found")
+        import tempfile
+        import os
         
+        # Keep original for field restoration
+        original_incident = self.storage.load_incident(incident.id, self.project_config)
+        
+        while True:
+            # Prepare incident for editing (filter non-editable fields)
+            editable_incident = self._prepare_incident_for_editing(incident)
+            
+            # Generate markdown with TOML frontmatter
+            markdown_content = editable_incident.to_markdown(self.project_config)
+            
+            # Create temp file
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.md',
+                delete=False,
+                encoding='utf-8',
+            ) as tmp_file:
+                tmp_file.write(markdown_content)
+                tmp_path = tmp_file.name
+            
+            try:
+                # Launch editor
+                editor_result = EditorConfig.launch_editor(
+                    initial_content=markdown_content,
+                )
+                
+                # User cancelled in editor
+                if editor_result is None or editor_result.strip() == markdown_content.strip():
+                    os.unlink(tmp_path)
+                    return None
+                
+                # Try to parse the edited content
+                try:
+                    edited_incident = Incident.from_markdown(
+                        editor_result,
+                        incident.id,
+                        self.project_config,
+                    )
+                    
+                    # Restore non-editable fields
+                    self._restore_non_editable_fields(original_incident, edited_incident)
+                    
+                    # Success!
+                    os.unlink(tmp_path)
+                    return edited_incident
+                    
+                except Exception as parse_error:
+                    # Parsing failed - ask user what to do
+                    print(f"\n{'='*70}", file=sys.stderr)
+                    print(f"ERROR: Failed to parse edited markdown", file=sys.stderr)
+                    print(f"{'='*70}", file=sys.stderr)
+                    print(f"{str(parse_error)}", file=sys.stderr)
+                    print(f"{'='*70}\n", file=sys.stderr)
+                    
+                    print("Options:", file=sys.stderr)
+                    print("  [r] Retry - reopen editor with your changes", file=sys.stderr)
+                    print("  [f] Fresh - restart with original content", file=sys.stderr)
+                    print("  [c] Cancel - abort this update", file=sys.stderr)
+                    
+                    choice = input("\nChoice (r/f/c): ").strip().lower()
+                    
+                    if choice == 'c':
+                        # Cancel
+                        os.unlink(tmp_path)
+                        return None
+                    elif choice == 'f':
+                        # Start fresh with original
+                        incident = original_incident
+                        continue
+                    else:
+                        # Retry with user's edits (default)
+                        # Update incident with the corrupted content so it shows in next iteration
+                        # We need to at least preserve the content part even if KV is broken
+                        try:
+                            # Try to extract just the content portion
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
+                                if len(parts) >= 3:
+                                    incident.content = parts[2].strip()
+                        except:
+                            pass
+                        continue
+                        
+            except Exception as e:
+                # Editor launch failed or other unexpected error
+                print(f"Error during editing: {e}", file=sys.stderr)
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                return None
+                
+    def create_incident(
+        self,
+        kv_list: List[str],
+        description: Optional[str] = None,
+        use_stdin: bool = False,
+        use_editor: bool = False,
+        use_toml_editor: bool = True,  # NEW parameter
+        custom_id: Optional[str] = None,
+    ) -> str:
+        """
+        Create new incident from KV list.
+        
+        When use_editor=True and use_toml_editor=True (default), presents a 
+        template with TOML frontmatter for editing.
+        
+        Args:
+            kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
+            description: Optional incident description
+            use_stdin: Read description from STDIN
+            use_editor: Launch editor
+            use_toml_editor: If True with use_editor, edit full record with TOML (default)
+            custom_id: Optional custom incident ID
+        
+        Example:
+            manager.create_incident(
+                kv_list=[
+                    "title$Database error",
+                    "severity$high",
+                    "status$open",
+                ],
+                use_editor=True,
+                use_toml_editor=True,
+            )
+        """
         author = self.effective_user["handle"]
+
+        # Validate and use custom ID or generate new one
+        if custom_id:
+            if not IncidentFileStorage.validate_custom_id(custom_id):
+                raise ValueError(
+                    f"Invalid custom ID '{custom_id}'. "
+                    "Only A-Z, a-z, 0-9, underscore (_), and hyphen (-) are allowed."
+                )
+        
+            incident_path = self.storage._get_incident_path(custom_id)
+            if incident_path.exists():
+                raise ValueError(
+                    f"Record with ID '{custom_id}' already exists at {incident_path}"
+                )
+        
+            incident_id = custom_id
+        else:
+            incident_id = IDGenerator.generate_incident_id()
+
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
-        # Determine message source
-        final_message = None
+        # Initialize empty incident
+        incident = Incident(id=incident_id)
         
-        if message:
-            final_message = message
+        # Parse and apply all KV updates from CLI
+        parsed_kv = KVParser.parse_kv_list(kv_list)
+        for key, kvtype, op, value in parsed_kv:
+            if op == '-':
+                raise ValueError(f"Cannot use removal operator '-' when creating incident")
+            self._validate_and_store_kv(key, kvtype, value, incident)
+        
+        # Add system fields
+        self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
+        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, author, incident)
+        self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
+        
+        # Determine description source
+        final_description = None
+        final_incident = None
+        
+        if use_editor and use_toml_editor:
+            # NEW BEHAVIOR: Edit full record with TOML
+            final_incident = self._create_incident_with_toml(incident)
+            
+            if not final_incident:
+                # User cancelled
+                raise RuntimeError("Record creation cancelled")
+            
+            # Restore system fields (in case user tried to modify them)
+            final_incident.kv_strings['created_at'] = [now]
+            final_incident.kv_strings['created_by'] = [author]
+            final_incident.kv_strings['updated_at'] = [now]
+            
+            incident = final_incident
+            
+        elif description:
+            final_description = description
         elif use_stdin and StdinHandler.has_stdin_data():
-            final_message = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+            final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
         elif use_editor:
-            final_message = EditorConfig.launch_editor(
+            # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
+            final_description = EditorConfig.launch_editor(
                 initial_content=(
-                    "# Add your update below\n"
+                    "# Add your description below\n"
                     "# Lines starting with # are ignored\n"
                     "\n"
                 ),
             )
-            final_message = "\n".join(
-                line
-                for line in final_message.split("\n")
-                if not line.strip().startswith("#")
-            ).strip()
         
-        if not final_message:
-            raise RuntimeError(
-                "No update provided.\n"
-                "\nUsage:\n"
-                "  aver note add <id> --message \"text\"\n"
-                "  echo \"text\" | aver note add <id>\n"
-                "  aver note add <id>  # opens editor"
-            )
+        if final_description:
+            incident.content = final_description
+
+        # Save to file
+        self.storage.save_incident(incident, self.project_config)
         
-        # Parse KV data for the UPDATE ONLY
-        update_kv_strings = {}
-        update_kv_integers = {}
-        update_kv_floats = {}
+        # Update index
+        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_kv_data(incident)
         
-        if kv_single:
-            parsed_kv = KVParser.parse_kv_list(kv_single)
-            for key, kvtype, op, value in parsed_kv:
-                if op != '-':
-                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
-                        update_kv_strings[key] = [str(value)]
-                    elif kvtype == KVParser.TYPE_INTEGER:
-                        update_kv_integers[key] = [int(value)]
-                    elif kvtype == KVParser.TYPE_FLOAT:
-                        update_kv_floats[key] = [float(value)]
-        
-        if kv_multi:
-            parsed_kv = KVParser.parse_kv_list(kv_multi)
-            for key, kvtype, op, value in parsed_kv:
-                if op != '-':
-                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
-                        if key not in update_kv_strings:
-                            update_kv_strings[key] = []
-                        update_kv_strings[key].append(str(value))
-                    elif kvtype == KVParser.TYPE_INTEGER:
-                        if key not in update_kv_integers:
-                            update_kv_integers[key] = []
-                        update_kv_integers[key].append(int(value))
-                    elif kvtype == KVParser.TYPE_FLOAT:
-                        if key not in update_kv_floats:
-                            update_kv_floats[key] = []
-                        update_kv_floats[key].append(float(value))
-        
-        # Generate update ID
+        # Create initial update
+        initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
-        
-        update = IncidentUpdate(
+        initial_update = IncidentUpdate(
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
             author=author,
-            message=final_message,
-            kv_strings=update_kv_strings if update_kv_strings else None,
-            kv_integers=update_kv_integers if update_kv_integers else None,
-            kv_floats=update_kv_floats if update_kv_floats else None,
+            message=initial_message,
         )
         
-        # Save update
-        self.storage.save_update(incident_id, update)
-        self.index_db.index_update(update)
+        self.storage.save_update(incident_id, initial_update)
+        self.index_db.index_update(initial_update)
         
-        # Index update KV data (completely independent from incident KV)
-        self.index_db.index_update_kv_data(
-            incident_id,
-            update_id,
-            kv_strings=update_kv_strings or None,
-            kv_integers=update_kv_integers or None,
-            kv_floats=update_kv_floats or None,
-        )
-        
-        # Update incident's updated_at
-        incident.kv_strings['updated_at'] = [now]
-        self.storage.save_incident(incident, self.project_config)
-        
-        return update_id
+        return incident_id
     
     def list_incidents(
         self,
@@ -3595,6 +3997,283 @@ class IncidentManager:
                  incidents.append(incident)
     
         return incidents
+
+    def _create_update_with_toml(
+        self,
+        incident_id: str,
+        initial_message: str,
+        initial_kv_strings: dict,
+        initial_kv_integers: dict,
+        initial_kv_floats: dict,
+    ) -> Optional[tuple]:
+        """
+        Launch editor with note template including TOML frontmatter for KV data.
+        
+        Used when adding notes with KV data. The note can have its own independent
+        KV data that doesn't affect the incident.
+        
+        Flow:
+        1. Create a temporary incident-like structure with the KV data
+        2. Generate markdown with TOML frontmatter
+        3. Launch editor
+        4. Parse back
+        5. Handle errors with retry
+        6. Return (message, kv_strings, kv_integers, kv_floats) or None if cancelled
+        
+        Args:
+            incident_id: Parent incident ID (for context)
+            initial_message: Initial note message
+            initial_kv_strings: Initial string KV data
+            initial_kv_integers: Initial integer KV data
+            initial_kv_floats: Initial float KV data
+            
+        Returns:
+            Tuple of (message, kv_strings, kv_integers, kv_floats) or None if cancelled
+        """
+        import tempfile
+        import os
+        
+        while True:
+            # Create a temporary incident to use the to_markdown/from_markdown infrastructure
+            temp_incident = Incident(id="temp")
+            temp_incident.content = initial_message
+            temp_incident.kv_strings = initial_kv_strings.copy()
+            temp_incident.kv_integers = initial_kv_integers.copy()
+            temp_incident.kv_floats = initial_kv_floats.copy()
+            
+            # Generate markdown with TOML frontmatter
+            markdown_content = temp_incident.to_markdown(self.project_config)
+            
+            # Create temp file
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.md',
+                delete=False,
+                encoding='utf-8',
+            ) as tmp_file:
+                tmp_file.write(markdown_content)
+                tmp_path = tmp_file.name
+            
+            try:
+                # Launch editor
+                editor_result = EditorConfig.launch_editor(
+                    initial_content=markdown_content,
+                )
+                
+                # User cancelled in editor
+                if editor_result is None or editor_result.strip() == markdown_content.strip():
+                    os.unlink(tmp_path)
+                    return None
+                
+                # Try to parse the edited content
+                try:
+                    edited_incident = Incident.from_markdown(
+                        editor_result,
+                        "temp",
+                        self.project_config,
+                    )
+                    
+                    # Extract results
+                    message = edited_incident.content
+                    kv_strings = edited_incident.kv_strings
+                    kv_integers = edited_incident.kv_integers
+                    kv_floats = edited_incident.kv_floats
+                    
+                    # Success!
+                    os.unlink(tmp_path)
+                    return (message, kv_strings, kv_integers, kv_floats)
+                    
+                except Exception as parse_error:
+                    # Parsing failed - ask user what to do
+                    print(f"\n{'='*70}", file=sys.stderr)
+                    print(f"ERROR: Failed to parse edited markdown", file=sys.stderr)
+                    print(f"{'='*70}", file=sys.stderr)
+                    print(f"{str(parse_error)}", file=sys.stderr)
+                    print(f"{'='*70}\n", file=sys.stderr)
+                    
+                    print("Options:", file=sys.stderr)
+                    print("  [r] Retry - reopen editor with your changes", file=sys.stderr)
+                    print("  [f] Fresh - restart with template", file=sys.stderr)
+                    print("  [c] Cancel - abort note creation", file=sys.stderr)
+                    
+                    choice = input("\nChoice (r/f/c): ").strip().lower()
+                    
+                    if choice == 'c':
+                        # Cancel
+                        os.unlink(tmp_path)
+                        return None
+                    elif choice == 'f':
+                        # Start fresh
+                        continue
+                    else:
+                        # Retry with user's edits
+                        try:
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
+                                if len(parts) >= 3:
+                                    initial_message = parts[2].strip()
+                        except:
+                            pass
+                        continue
+                        
+            except Exception as e:
+                # Editor launch failed or other unexpected error
+                print(f"Error during editing: {e}", file=sys.stderr)
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                return None
+
+    def add_update(
+        self,
+        incident_id: str,
+        message: Optional[str] = None,
+        use_stdin: bool = False,
+        use_editor: bool = False,
+        use_toml_editor: bool = True,  # NEW parameter
+        kv_single: Optional[List[str]] = None,
+        kv_multi: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Add update with optional independent KV data.
+        
+        When use_editor=True and use_toml_editor=True (default), presents the
+        note with TOML frontmatter for editing KV data.
+        
+        Args:
+            incident_id: Incident ID
+            message: Update message
+            use_stdin: Read from STDIN
+            use_editor: Open editor
+            use_toml_editor: If True with use_editor, edit note with TOML (default)
+            kv_single: Single-value KV for UPDATE only (replaces keys)
+            kv_multi: Multi-value KV for UPDATE only (adds values)
+        
+        Returns:
+            Update ID
+        """
+        incident = self.get_incident(incident_id)
+        if not incident:
+            raise RuntimeError(f"Incident {incident_id} not found")
+        
+        author = self.effective_user["handle"]
+        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        
+        # Parse KV data for the UPDATE ONLY
+        update_kv_strings = {}
+        update_kv_integers = {}
+        update_kv_floats = {}
+        
+        if kv_single:
+            parsed_kv = KVParser.parse_kv_list(kv_single)
+            for key, kvtype, op, value in parsed_kv:
+                if op != '-':
+                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                        update_kv_strings[key] = [str(value)]
+                    elif kvtype == KVParser.TYPE_INTEGER:
+                        update_kv_integers[key] = [int(value)]
+                    elif kvtype == KVParser.TYPE_FLOAT:
+                        update_kv_floats[key] = [float(value)]
+        
+        if kv_multi:
+            parsed_kv = KVParser.parse_kv_list(kv_multi)
+            for key, kvtype, op, value in parsed_kv:
+                if op != '-':
+                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                        if key not in update_kv_strings:
+                            update_kv_strings[key] = []
+                        update_kv_strings[key].append(str(value))
+                    elif kvtype == KVParser.TYPE_INTEGER:
+                        if key not in update_kv_integers:
+                            update_kv_integers[key] = []
+                        update_kv_integers[key].append(int(value))
+                    elif kvtype == KVParser.TYPE_FLOAT:
+                        if key not in update_kv_floats:
+                            update_kv_floats[key] = []
+                        update_kv_floats[key].append(float(value))
+        
+        # Determine message source
+        final_message = None
+        
+        if use_editor and use_toml_editor:
+            # NEW BEHAVIOR: Edit note with TOML frontmatter
+            initial_message = message or "# Add your note below\n# Lines starting with # are ignored\n\n"
+            
+            result = self._create_update_with_toml(
+                incident_id,
+                initial_message,
+                update_kv_strings,
+                update_kv_integers,
+                update_kv_floats,
+            )
+            
+            if not result:
+                # User cancelled
+                raise RuntimeError("Note creation cancelled")
+            
+            final_message, update_kv_strings, update_kv_integers, update_kv_floats = result
+            
+        elif message:
+            final_message = message
+        elif use_stdin and StdinHandler.has_stdin_data():
+            final_message = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+        elif use_editor:
+            # OLD BEHAVIOR (when use_toml_editor=False): Edit message only
+            final_message = EditorConfig.launch_editor(
+                initial_content=(
+                    "# Add your update below\n"
+                    "# Lines starting with # are ignored\n"
+                    "\n"
+                ),
+            )
+            final_message = "\n".join(
+                line
+                for line in final_message.split("\n")
+                if not line.strip().startswith("#")
+            ).strip()
+        
+        if not final_message:
+            raise RuntimeError(
+                "No update provided.\n"
+                "\nUsage:\n"
+                "  aver note add <id> --message \"text\"\n"
+                "  echo \"text\" | aver note add <id>\n"
+                "  aver note add <id>  # opens editor"
+            )
+        
+        # Generate update ID
+        update_id = IDGenerator.generate_update_id()
+        
+        update = IncidentUpdate(
+            id=update_id,
+            incident_id=incident_id,
+            timestamp=now,
+            author=author,
+            message=final_message,
+            kv_strings=update_kv_strings if update_kv_strings else None,
+            kv_integers=update_kv_integers if update_kv_integers else None,
+            kv_floats=update_kv_floats if update_kv_floats else None,
+        )
+        
+        # Save update
+        self.storage.save_update(incident_id, update)
+        self.index_db.index_update(update)
+        
+        # Index update KV data (completely independent from incident KV)
+        self.index_db.index_update_kv_data(
+            incident_id,
+            update_id,
+            kv_strings=update_kv_strings or None,
+            kv_integers=update_kv_integers or None,
+            kv_floats=update_kv_floats or None,
+        )
+        
+        # Update incident's updated_at
+        incident.kv_strings['updated_at'] = [now]
+        self.storage.save_incident(incident, self.project_config)
+        
+        return update_id
+
+
     
     def search_updates(
         self,
@@ -4104,6 +4783,12 @@ class IncidentCLI:
             help="Use custom record ID (A-Z, a-z, 0-9, _, - only). Must be unique.",
         )
 
+        record_new_parser.add_argument(
+            "--no-toml",
+            action="store_true",
+            help="Edit description only (without TOML frontmatter)",
+        )
+        
         self.record_new_parser = record_new_parser
         
         # record view
@@ -4152,6 +4837,14 @@ class IncidentCLI:
 
         record_update_parser.add_argument("record_id", help="Record ID")
         self._add_kv_options(record_update_parser)
+        
+        # NEW: Add --no-toml flag
+        record_update_parser.add_argument(
+            "--no-toml",
+            action="store_true",
+            help="Edit description only (without TOML frontmatter)",
+        )
+        
         self.record_update_parser = record_update_parser
 
         
@@ -4184,6 +4877,13 @@ class IncidentCLI:
             "--message",
             help="Note message text",
         )
+        
+        note_add_parser.add_argument(
+            "--no-toml",
+            action="store_true",
+            help="Edit message only (without TOML frontmatter)",
+        )
+        
         self._add_kv_options(note_add_parser, include_old_style=True)
         
         # note list
@@ -4704,23 +5404,30 @@ $update_kv
         if identity_override:
             manager.set_user_override(identity_override["handle"], identity_override["email"])
         
-        print(f"CREATE: ARGS: {args}")
-        
         # Build KV list from special fields and generic KV arguments
         kv_list = self._build_kv_list(manager, args)
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
+        use_editor = not (has_description or has_stdin)
+        
+        # NEW: Check if TOML editing is disabled
+        use_toml_editor = not getattr(args, 'no_toml', False)
 
         try:
             record_id = manager.create_incident(
                 kv_list=kv_list,
                 description=args.description,
                 use_stdin=has_stdin and not has_description,
-                use_editor=not (has_description or has_stdin),
-                custom_id=getattr(args, 'custom_id', None),  # ADD THIS LINE
+                use_editor=use_editor,
+                use_toml_editor=use_toml_editor,  # NEW parameter
+                custom_id=getattr(args, 'custom_id', None),
             )
-        except ValueError as e:  # ADD THIS EXCEPTION HANDLING
+        except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except RuntimeError as e:
+            # User cancelled
+            print(f"{e}", file=sys.stderr)
             sys.exit(1)
 
         print(f"✓ Created record: {record_id}")
@@ -4811,21 +5518,29 @@ $update_kv
         has_description = True if (hasattr(args, 'description') and args.description is not None) else False
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
+        
+        # NEW: Check if TOML editing is disabled
+        use_toml_editor = not getattr(args, 'no_toml', False)
     
         if not kv_list and not (has_description or has_stdin or use_editor):
             print("Error: No fields to update", file=sys.stderr)
             sys.exit(1)
     
-        manager.update_incident_info(
+        result = manager.update_incident_info(
             args.record_id,
             kv_list=kv_list,
-            description=args.description if (has_description) else None,
+            description=args.description if has_description else None,
             use_stdin=has_stdin and not has_description,
             use_editor=use_editor,
+            use_toml_editor=use_toml_editor,  # NEW parameter
         )
-    
-        print(f"✓ Updated record: {args.record_id}")
-
+        
+        if result:
+            print(f"✓ Updated record: {args.record_id}")
+        else:
+            print(f"Update cancelled", file=sys.stderr)
+            sys.exit(1)
+            
     def _cmd_add_update(self, args):
         """Add note to record."""
         manager = self._get_manager(args)
@@ -4837,6 +5552,10 @@ $update_kv
 
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
+        use_editor = not (has_message or has_stdin)
+        
+        # NEW: Check if TOML editing is disabled
+        use_toml_editor = not getattr(args, 'no_toml', False)
 
         try:
             # Build KV list for note (uses new-style options)
@@ -4846,7 +5565,8 @@ $update_kv
                 args.record_id,
                 message=args.message if has_message else None,
                 use_stdin=has_stdin and not has_message,
-                use_editor=not (has_message or has_stdin),
+                use_editor=use_editor,
+                use_toml_editor=use_toml_editor,  # NEW parameter
                 kv_single=kv_list,
                 kv_multi=None,
             )
