@@ -1,20 +1,18 @@
 +++
-created_at__string = "2026-02-09T02:13:42.504534Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-11T04:24:52.571533Z"
-title = "Allow using previous records as templates for new"
-type = "feature"
-status = "closed"
+id = "NT-ADBEFB"
+incident_id = "REC-KSBIUBF"
+timestamp = "2026-02-11T04:23:21.977540Z"
+author = "mattd"
 +++
 
+Updated: full record (TOML edit)
+
+## PREVIOUS RECORD TEXT
 Allow "importing" existing record body (and variable designations) as a "template" for new records OR updates.
 
 This avoids weirdnesses like putting them in config.toml.  Admins can just create records with custom names
 and have users use them as templates for bug reports, feature requests, or other stuff.
 
 Also helpful for making sure updates have all required information.
-
-
-DONE - 2026/02/10
 
 
