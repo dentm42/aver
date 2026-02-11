@@ -405,27 +405,6 @@ class Incident:
         
         return values[0] if field.field_type == "single" else values
     
-    def set_value(
-        self,
-        field_name: str,
-        value: Any,
-        project_config: ProjectConfig,
-    ) -> None:
-        """Set field value, respecting config type."""
-        field = project_config.get_special_field(field_name)
-        if not field:
-            raise ValueError(f"Unknown field: {field_name}")
-        
-        if not field.editable:
-            raise ValueError(f"Field '{field_name}' is not editable")
-        
-        if field.value_type == "string":
-            self.kv_strings[field_name] = [value] if field.field_type == "single" else value
-        elif field.value_type == "integer":
-            self.kv_integers[field_name] = [int(value)] if field.field_type == "single" else [int(v) for v in value]
-        elif field.value_type == "float":
-            self.kv_floats[field_name] = [float(value)] if field.field_type == "single" else [float(v) for v in value]
-    
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with TOML frontmatter."""
         # Build frontmatter from special fields
@@ -2312,6 +2291,21 @@ class IncidentFileStorage:
                 print(f"Warning: Failed to load update {update_file}: {e}", file=sys.stderr)
     
         return updates
+        
+    def validate_custom_id(custom_id: str) -> bool:
+        """
+        Validate custom record ID contains only allowed characters.
+    
+        Allowed: A-Z, a-z, 0-9, underscore (_), hyphen (-)
+    
+        Args:
+            custom_id: The custom ID to validate
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        pattern = r'^[A-Za-z0-9_-]+$'
+        return bool(re.match(pattern, custom_id))
  
 # ============================================================================
 # Index Database (OPTIMIZED - Single KV Table, Flat Keyspace)
@@ -2438,30 +2432,6 @@ class IncidentIndexDatabase:
         cursor.execute("DELETE FROM kv_store WHERE incident_id = ?", (incident_id,))
         conn.commit()
         conn.close()
-
-    def get_incident_from_index(self, incident_id: str) -> Optional[Dict[str, Any]]:
-        """Get incident data from index."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM incidents_index WHERE id = ?", (incident_id,))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        return {
-            "id": row[0],
-            "title": row[1],
-            "created_at": row[2],
-            "created_by": row[3],
-            "severity": row[4],
-            "status": row[5],
-            "tags": json.loads(row[6]),
-            "assignees": json.loads(row[7]),
-            "updated_at": row[8],
-        }
 
     def list_incidents_from_index(
         self,
@@ -3176,6 +3146,7 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
+        custom_id: Optional[str] = None,
     ) -> str:
         """
         Create new incident from KV list.
@@ -3184,6 +3155,7 @@ class IncidentManager:
             kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
             description: Optional incident description
             use_stdin: Read description from STDIN
+            custom_id: Optional custom incident ID (must be unique and contain only A-Z, a-z, 0-9, _, -)
         
         Example:
             manager.create_incident(
@@ -3193,11 +3165,32 @@ class IncidentManager:
                     "status$open",
                     "tags$backend",
                     "tags$database",
-                ]
+                ],
+                custom_id="My_Custom_Id"
             )
         """
         author = self.effective_user["handle"]
-        incident_id = IDGenerator.generate_incident_id()
+
+        # ADD THIS BLOCK - Validate and use custom ID or generate new one
+        if custom_id:
+            # Validate custom ID format
+            if not IncidentFileStorage.validate_custom_id(custom_id):
+                raise ValueError(
+                    f"Invalid custom ID '{custom_id}'. "
+                    "Only A-Z, a-z, 0-9, underscore (_), and hyphen (-) are allowed."
+                )
+        
+            # Check for collision
+            incident_path = self.storage._get_incident_path(custom_id)
+            if incident_path.exists():
+                raise ValueError(
+                    f"Record with ID '{custom_id}' already exists at {incident_path}"
+                )
+        
+            incident_id = custom_id
+        else:
+            incident_id = IDGenerator.generate_incident_id()
+
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
         # Determine description source
@@ -4105,6 +4098,12 @@ class IncidentCLI:
         )
         record_new_parser._special_fields_parser = True
         
+        record_new_parser.add_argument(
+            "--use-id",
+            dest="custom_id",
+            help="Use custom record ID (A-Z, a-z, 0-9, _, - only). Must be unique.",
+        )
+
         self.record_new_parser = record_new_parser
         
         # record view
@@ -4712,13 +4711,17 @@ $update_kv
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
 
-        # Create record
-        record_id = manager.create_incident(
-            kv_list=kv_list,
-            description=args.description,
-            use_stdin=has_stdin and not has_description,
-            use_editor=not (has_description or has_stdin),
-        )
+        try:
+            record_id = manager.create_incident(
+                kv_list=kv_list,
+                description=args.description,
+                use_stdin=has_stdin and not has_description,
+                use_editor=not (has_description or has_stdin),
+                custom_id=getattr(args, 'custom_id', None),  # ADD THIS LINE
+            )
+        except ValueError as e:  # ADD THIS EXCEPTION HANDLING
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
         print(f"✓ Created record: {record_id}")
         

@@ -2291,6 +2291,21 @@ class IncidentFileStorage:
                 print(f"Warning: Failed to load update {update_file}: {e}", file=sys.stderr)
     
         return updates
+        
+    def validate_custom_id(custom_id: str) -> bool:
+        """
+        Validate custom record ID contains only allowed characters.
+    
+        Allowed: A-Z, a-z, 0-9, underscore (_), hyphen (-)
+    
+        Args:
+            custom_id: The custom ID to validate
+        
+        Returns:
+            True if valid, False otherwise
+        """
+        pattern = r'^[A-Za-z0-9_-]+$'
+        return bool(re.match(pattern, custom_id))
  
 # ============================================================================
 # Index Database (OPTIMIZED - Single KV Table, Flat Keyspace)
@@ -3131,6 +3146,7 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
+        custom_id: Optional[str] = None,
     ) -> str:
         """
         Create new incident from KV list.
@@ -3139,6 +3155,7 @@ class IncidentManager:
             kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
             description: Optional incident description
             use_stdin: Read description from STDIN
+            custom_id: Optional custom incident ID (must be unique and contain only A-Z, a-z, 0-9, _, -)
         
         Example:
             manager.create_incident(
@@ -3148,11 +3165,32 @@ class IncidentManager:
                     "status$open",
                     "tags$backend",
                     "tags$database",
-                ]
+                ],
+                custom_id="My_Custom_Id"
             )
         """
         author = self.effective_user["handle"]
-        incident_id = IDGenerator.generate_incident_id()
+
+        # ADD THIS BLOCK - Validate and use custom ID or generate new one
+        if custom_id:
+            # Validate custom ID format
+            if not IncidentFileStorage.validate_custom_id(custom_id):
+                raise ValueError(
+                    f"Invalid custom ID '{custom_id}'. "
+                    "Only A-Z, a-z, 0-9, underscore (_), and hyphen (-) are allowed."
+                )
+        
+            # Check for collision
+            incident_path = self.storage._get_incident_path(custom_id)
+            if incident_path.exists():
+                raise ValueError(
+                    f"Record with ID '{custom_id}' already exists at {incident_path}"
+                )
+        
+            incident_id = custom_id
+        else:
+            incident_id = IDGenerator.generate_incident_id()
+
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
         # Determine description source
@@ -4060,6 +4098,12 @@ class IncidentCLI:
         )
         record_new_parser._special_fields_parser = True
         
+        record_new_parser.add_argument(
+            "--use-id",
+            dest="custom_id",
+            help="Use custom record ID (A-Z, a-z, 0-9, _, - only). Must be unique.",
+        )
+
         self.record_new_parser = record_new_parser
         
         # record view
@@ -4667,13 +4711,17 @@ $update_kv
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
 
-        # Create record
-        record_id = manager.create_incident(
-            kv_list=kv_list,
-            description=args.description,
-            use_stdin=has_stdin and not has_description,
-            use_editor=not (has_description or has_stdin),
-        )
+        try:
+            record_id = manager.create_incident(
+                kv_list=kv_list,
+                description=args.description,
+                use_stdin=has_stdin and not has_description,
+                use_editor=not (has_description or has_stdin),
+                custom_id=getattr(args, 'custom_id', None),  # ADD THIS LINE
+            )
+        except ValueError as e:  # ADD THIS EXCEPTION HANDLING
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
         print(f"✓ Created record: {record_id}")
         
