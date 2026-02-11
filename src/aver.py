@@ -3297,136 +3297,6 @@ class IncidentManager:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
                 return None
-      
-    def create_incident(
-        self,
-        kv_list: List[str],
-        description: Optional[str] = None,
-        use_stdin: bool = False,
-        use_editor: bool = False,
-        use_toml_editor: bool = True,  # NEW parameter
-        custom_id: Optional[str] = None,
-    ) -> str:
-        """
-        Create new incident from KV list.
-        
-        When use_editor=True and use_toml_editor=True (default), presents a 
-        template with TOML frontmatter for editing.
-        
-        Args:
-            kv_list: List of KV strings in format "key${value}", "key#{value}", "key%{value}"
-            description: Optional incident description
-            use_stdin: Read description from STDIN
-            use_editor: Launch editor
-            use_toml_editor: If True with use_editor, edit full record with TOML (default)
-            custom_id: Optional custom incident ID
-        
-        Example:
-            manager.create_incident(
-                kv_list=[
-                    "title$Database error",
-                    "severity$high",
-                    "status$open",
-                ],
-                use_editor=True,
-                use_toml_editor=True,
-            )
-        """
-        author = self.effective_user["handle"]
-
-        # Validate and use custom ID or generate new one
-        if custom_id:
-            if not IncidentFileStorage.validate_custom_id(custom_id):
-                raise ValueError(
-                    f"Invalid custom ID '{custom_id}'. "
-                    "Only A-Z, a-z, 0-9, underscore (_), and hyphen (-) are allowed."
-                )
-        
-            incident_path = self.storage._get_incident_path(custom_id)
-            if incident_path.exists():
-                raise ValueError(
-                    f"Record with ID '{custom_id}' already exists at {incident_path}"
-                )
-        
-            incident_id = custom_id
-        else:
-            incident_id = IDGenerator.generate_incident_id()
-
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-        
-        # Initialize empty incident
-        incident = Incident(id=incident_id)
-        
-        # Parse and apply all KV updates from CLI
-        parsed_kv = KVParser.parse_kv_list(kv_list)
-        for key, kvtype, op, value in parsed_kv:
-            if op == '-':
-                raise ValueError(f"Cannot use removal operator '-' when creating incident")
-            self._validate_and_store_kv(key, kvtype, value, incident)
-        
-        # Add system fields
-        self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
-        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, author, incident)
-        self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
-        
-        # Determine description source
-        final_description = None
-        final_incident = None
-        
-        if use_editor and use_toml_editor:
-            # NEW BEHAVIOR: Edit full record with TOML
-            final_incident = self._create_incident_with_toml(incident)
-            
-            if not final_incident:
-                # User cancelled
-                raise RuntimeError("Record creation cancelled")
-            
-            # Restore system fields (in case user tried to modify them)
-            final_incident.kv_strings['created_at'] = [now]
-            final_incident.kv_strings['created_by'] = [author]
-            final_incident.kv_strings['updated_at'] = [now]
-            
-            incident = final_incident
-            
-        elif description:
-            final_description = description
-        elif use_stdin and StdinHandler.has_stdin_data():
-            final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
-        elif use_editor:
-            # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
-            final_description = EditorConfig.launch_editor(
-                initial_content=(
-                    "# Add your description below\n"
-                    "# Lines starting with # are ignored\n"
-                    "\n"
-                ),
-            )
-        
-        if final_description:
-            incident.content = final_description
-
-        # Save to file
-        self.storage.save_incident(incident, self.project_config)
-        
-        # Update index
-        self.index_db.index_incident(incident, self.project_config)
-        self.index_db.index_kv_data(incident)
-        
-        # Create initial update
-        initial_message = self._format_incident_update(incident.id)
-        update_id = IDGenerator.generate_update_id()
-        initial_update = IncidentUpdate(
-            id=update_id,
-            incident_id=incident_id,
-            timestamp=now,
-            author=author,
-            message=initial_message,
-        )
-        
-        self.storage.save_update(incident_id, initial_update)
-        self.index_db.index_update(initial_update)
-        
-        return incident_id
      
     def _format_incident_update(self, id: str) -> str:
         """Format initial update message from all KV data."""
@@ -3814,8 +3684,9 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
-        use_toml_editor: bool = True,  # NEW parameter
+        use_toml_editor: bool = True,
         custom_id: Optional[str] = None,
+        template_id: Optional[str] = None,  # ← ADD THIS
     ) -> str:
         """
         Create new incident from KV list.
@@ -3864,11 +3735,26 @@ class IncidentManager:
 
         now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         
-        # Initialize empty incident
-        incident = Incident(id=incident_id)
+        # Load template if specified
+        if template_id:
+            template = self.storage.load_incident(template_id, self.project_config)
+            if not template:
+                raise RuntimeError(f"Template record {template_id} not found")
+            
+            # Start with template's editable data
+            incident = Incident(id=incident_id)
+            editable_template = self._prepare_incident_for_editing(template)
+            incident.kv_strings = editable_template.kv_strings.copy()
+            incident.kv_integers = editable_template.kv_integers.copy()
+            incident.kv_floats = editable_template.kv_floats.copy()
+            incident.content = editable_template.content
+        else:
+            # Initialize empty incident
+            incident = Incident(id=incident_id)
         
-        # Parse and apply all KV updates from CLI
+        # Parse and apply all KV updates from CLI (override template)
         parsed_kv = KVParser.parse_kv_list(kv_list)
+
         for key, kvtype, op, value in parsed_kv:
             if op == '-':
                 raise ValueError(f"Cannot use removal operator '-' when creating incident")
@@ -4129,9 +4015,10 @@ class IncidentManager:
         message: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
-        use_toml_editor: bool = True,  # NEW parameter
+        use_toml_editor: bool = True,
         kv_single: Optional[List[str]] = None,
         kv_multi: Optional[List[str]] = None,
+        template_id: Optional[str] = None,
     ) -> str:
         """
         Add update with optional independent KV data.
@@ -4190,10 +4077,35 @@ class IncidentManager:
                         if key not in update_kv_floats:
                             update_kv_floats[key] = []
                         update_kv_floats[key].append(float(value))
+ 
+        # Load template if specified
+        if template_id:
+            template = self.storage.load_incident(template_id, self.project_config)
+            if not template:
+                raise RuntimeError(f"Template record {template_id} not found")
+            
+            # Start with template's editable KV data (CLI KV overrides)
+            editable_template = self._prepare_incident_for_editing(template)
+            
+            # Merge template KV with CLI KV (CLI takes precedence)
+            for key, values in editable_template.kv_strings.items():
+                if key not in update_kv_strings:
+                    update_kv_strings[key] = values.copy()
+            
+            for key, values in editable_template.kv_integers.items():
+                if key not in update_kv_integers:
+                    update_kv_integers[key] = values.copy()
+            
+            for key, values in editable_template.kv_floats.items():
+                if key not in update_kv_floats:
+                    update_kv_floats[key] = values.copy()
+            
+            # Use template content if no message provided
+            if not message and editable_template.content:
+                message = editable_template.content
         
         # Determine message source
-        final_message = None
-        
+        final_message = None        
         if use_editor and use_toml_editor:
             # NEW BEHAVIOR: Edit note with TOML frontmatter
             initial_message = message or "# Add your note below\n# Lines starting with # are ignored\n\n"
@@ -4789,6 +4701,12 @@ class IncidentCLI:
             help="Edit description only (without TOML frontmatter)",
         )
         
+        record_new_parser.add_argument(
+            "--template",
+            metavar="RECORD_ID",
+            help="Use existing record as template (editor mode only)",
+        )
+
         self.record_new_parser = record_new_parser
         
         # record view
@@ -4883,7 +4801,11 @@ class IncidentCLI:
             action="store_true",
             help="Edit message only (without TOML frontmatter)",
         )
-        
+        note_add_parser.add_argument(
+            "--template",
+            metavar="RECORD_ID",
+            help="Use existing record as template (editor mode only)",
+        )        
         self._add_kv_options(note_add_parser, include_old_style=True)
         
         # note list
@@ -5399,19 +5321,27 @@ $update_kv
         """Create record."""
         manager = self._get_manager(args)
         
-        # Check git identity before write operation and apply override if needed
+        # Check git identity
         identity_override = self._check_git_identity(args, manager)
         if identity_override:
             manager.set_user_override(identity_override["handle"], identity_override["email"])
         
-        # Build KV list from special fields and generic KV arguments
+        # Build KV list
         kv_list = self._build_kv_list(manager, args)
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_description or has_stdin)
-        
-        # NEW: Check if TOML editing is disabled
         use_toml_editor = not getattr(args, 'no_toml', False)
+        template_id = getattr(args, 'template', None)  # ← ADD THIS
+        
+        # Validate template usage
+        if template_id and not use_editor:  # ← ADD THIS BLOCK
+            print(
+                "Error: --template can only be used in editor mode\n"
+                "Remove --description flag or stdin input to use editor",
+                file=sys.stderr
+            )
+            sys.exit(1)
 
         try:
             record_id = manager.create_incident(
@@ -5419,8 +5349,9 @@ $update_kv
                 description=args.description,
                 use_stdin=has_stdin and not has_description,
                 use_editor=use_editor,
-                use_toml_editor=use_toml_editor,  # NEW parameter
+                use_toml_editor=use_toml_editor,
                 custom_id=getattr(args, 'custom_id', None),
+                template_id=template_id,
             )
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -5545,7 +5476,7 @@ $update_kv
         """Add note to record."""
         manager = self._get_manager(args)
 
-        # Check git identity before write operation and apply override if needed
+        # Check git identity
         identity_override = self._check_git_identity(args, manager)
         if identity_override:
             manager.set_user_override(identity_override["handle"], identity_override["email"])
@@ -5553,9 +5484,17 @@ $update_kv
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_message or has_stdin)
-        
-        # NEW: Check if TOML editing is disabled
         use_toml_editor = not getattr(args, 'no_toml', False)
+        template_id = getattr(args, 'template', None)  # ← ADD THIS
+        
+        # Validate template usage
+        if template_id and not use_editor:  # ← ADD THIS BLOCK
+            print(
+                "Error: --template can only be used in editor mode\n"
+                "Remove --message flag or stdin input to use editor",
+                file=sys.stderr
+            )
+            sys.exit(1)
 
         try:
             # Build KV list for note (uses new-style options)
@@ -5566,10 +5505,12 @@ $update_kv
                 message=args.message if has_message else None,
                 use_stdin=has_stdin and not has_message,
                 use_editor=use_editor,
-                use_toml_editor=use_toml_editor,  # NEW parameter
+                use_toml_editor=use_toml_editor,
                 kv_single=kv_list,
                 kv_multi=None,
+                template_id=template_id,
             )
+            
             print(f"✓ Added note: {note_id}")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
