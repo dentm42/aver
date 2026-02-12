@@ -1,13 +1,13 @@
 +++
 created_at__string = "2026-02-11T04:21:20.588102Z"
 created_by__string = "mattd"
-updated_at__string = "2026-02-11T04:21:20.588102Z"
-title = "Add --only-vals to record update"
+updated_at__string = "2026-02-12T00:44:06.660253Z"
+title = "Add --metadata-only to record update"
 type = "feature"
-status = "new"
+status = "closed"
 +++
 
---only-vals will only update values 
+--metadata-only will only update values 
    - no "description" processed
    - will not dump to editor
    - will not accept STDIN
