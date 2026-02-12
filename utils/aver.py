@@ -2829,7 +2829,21 @@ class IncidentIndexDatabase:
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
         
-        # Start with base table
+        # Separate equality and inequality conditions
+        equality_conditions = []
+        inequality_conditions = []
+        
+        for key, operator, value in ksearch_list:
+            # Validate operator
+            if operator not in ALLOWED_OPERATORS:
+                raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
+            
+            if operator in ('!=', '<>'):
+                inequality_conditions.append((key, operator, value))
+            else:
+                equality_conditions.append((key, operator, value))
+        
+        # Start with base table for equality conditions
         select_clause = "SELECT DISTINCT base.incident_id, base.update_id"
         from_clause = "FROM kv_store base"
         joins = []
@@ -2855,13 +2869,8 @@ class IncidentIndexDatabase:
             where_parts.append(f"base.update_id IN ({placeholders})")
             params.extend(update_ids)
         
-        # Add each search criterion as an INNER JOIN
-        for key, operator, value in ksearch_list:
-            
-            # Validate operator
-            if operator not in ALLOWED_OPERATORS:
-                raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
-            
+        # Add each EQUALITY/COMPARISON search criterion as an INNER JOIN
+        for key, operator, value in equality_conditions:
             # Create alias for this join
             alias = f"kv{join_counter}"
             join_counter += 1
@@ -2897,20 +2906,98 @@ class IncidentIndexDatabase:
                 key, str_val
             ])
         
-        # Build final query: SELECT FROM JOINs WHERE
+        # Build query for equality conditions
         query_with_joins = select_clause + " " + from_clause
         for join in joins:
             query_with_joins += " " + join
         query_with_joins += " WHERE " + " AND ".join(where_parts)
 
         cursor.execute(query_with_joins, params)
+        results = cursor.fetchall()
         
-        # Extract the appropriate column based on return_updates
-        results = [row[1] if return_updates else row[0] for row in cursor.fetchall()]
+        # If no inequality conditions, we're done
+        if not inequality_conditions:
+            conn.close()
+            return [row[1] if return_updates else row[0] for row in results]
+        
+        # Handle inequality conditions by EXCLUSION
+        # Start with the results from equality conditions (or all records if no equality conditions)
+        if equality_conditions:
+            # Use results from equality search as starting set
+            candidate_set = set((row[0], row[1]) for row in results)
+        else:
+            # No equality conditions - start with all records matching base filters
+            cursor.execute(query_with_joins, params)
+            candidate_set = set((row[0], row[1]) for row in cursor.fetchall())
+        
+        # For each inequality condition, exclude records that match the EQUALITY
+        for key, operator, value in inequality_conditions:
+            # Find records where key = value (these should be excluded)
+            exclude_query = """
+                SELECT DISTINCT incident_id, update_id
+                FROM kv_store
+                WHERE (
+                    (key = ? AND value_float = ?)
+                    OR (key = ? AND value_integer = ?)
+                    OR (key = ? AND value_string = ?)
+                )
+            """
+            
+            # Add search_updates filter
+            if search_updates:
+                exclude_query += " AND update_id IS NOT NULL"
+            else:
+                exclude_query += " AND update_id IS NULL"
+            
+            # Add incident_ids filter if provided
+            if incident_ids:
+                placeholders = ",".join("?" * len(incident_ids))
+                exclude_query += f" AND incident_id IN ({placeholders})"
+            
+            # Add update_ids filter if provided
+            if update_ids:
+                placeholders = ",".join("?" * len(update_ids))
+                exclude_query += f" AND update_id IN ({placeholders})"
+            
+            exclude_params = []
+            
+            # Add parameters for type attempts
+            try:
+                float_val = float(value)
+            except (ValueError, TypeError):
+                float_val = None
+            
+            try:
+                int_val = int(value)
+            except (ValueError, TypeError):
+                int_val = None
+            
+            str_val = str(value)
+            
+            exclude_params.extend([
+                key, float_val,
+                key, int_val,
+                key, str_val
+            ])
+            
+            # Add incident_ids to params if needed
+            if incident_ids:
+                exclude_params.extend(incident_ids)
+            
+            # Add update_ids to params if needed
+            if update_ids:
+                exclude_params.extend(update_ids)
+            
+            cursor.execute(exclude_query, exclude_params)
+            exclude_set = set((row[0], row[1]) for row in cursor.fetchall())
+            
+            # Remove excluded records from candidate set
+            candidate_set -= exclude_set
         
         conn.close()
-        return results
-
+        
+        # Extract the appropriate column based on return_updates
+        return [row[1] if return_updates else row[0] for row in sorted(candidate_set)]
     
     
     def get_sorted_incidents(self, incident_ids: List[str], ksort_list: List[tuple], update_id: Optional[str] = None) -> List[str]:
