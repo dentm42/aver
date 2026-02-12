@@ -3434,6 +3434,7 @@ class IncidentManager:
         use_stdin: bool = False,
         use_editor: bool = False,
         use_toml_editor: bool = True,
+        metadata_only: bool = False,
     ) -> bool:
         """
         Update incident fields from KV list and/or description.
@@ -3485,7 +3486,7 @@ class IncidentManager:
                 updated_fields.append(key)
     
         # Handle description/full record updates
-        if description or use_stdin or use_editor:
+        if (not metadata_only) and (description or use_stdin or use_editor):
             # Save previous content before updating
             if incident.content:
                 previous_content = incident.content
@@ -4763,6 +4764,12 @@ class IncidentCLI:
             help="Edit description only (without TOML frontmatter)",
         )
         
+        record_update_parser.add_argument(
+            "--metadata-only",
+            action="store_true",
+            help="Update only metadata fields, skip content changes",
+        )
+
         self.record_update_parser = record_update_parser
 
         
@@ -5450,20 +5457,30 @@ $update_kv
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
         
-        # NEW: Check if TOML editing is disabled
         use_toml_editor = not getattr(args, 'no_toml', False)
-    
+        metadata_only = getattr(args, 'metadata_only', False)  # ← ADD THIS
+        
+        # Validate metadata_only usage
+        if metadata_only:  # ← ADD THIS BLOCK
+            if not kv_list:
+                print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
+                sys.exit(1)
+            if has_description:
+                print("Error: --metadata-only cannot be used with --description", file=sys.stderr)
+                sys.exit(1)
+
         if not kv_list and not (has_description or has_stdin or use_editor):
             print("Error: No fields to update", file=sys.stderr)
             sys.exit(1)
-    
+            
         result = manager.update_incident_info(
             args.record_id,
             kv_list=kv_list,
             description=args.description if has_description else None,
             use_stdin=has_stdin and not has_description,
             use_editor=use_editor,
-            use_toml_editor=use_toml_editor,  # NEW parameter
+            use_toml_editor=use_toml_editor,
+            metadata_only=metadata_only,
         )
         
         if result:
