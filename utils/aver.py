@@ -3522,6 +3522,7 @@ class IncidentManager:
         use_editor: bool = False,
         use_toml_editor: bool = True,
         metadata_only: bool = False,
+        allow_validation_editor: bool = True,
     ) -> bool:
         """
         Update incident fields from KV list and/or description.
@@ -3557,21 +3558,50 @@ class IncidentManager:
     
         # Parse and apply KV updates from command line
         parsed_kv = KVParser.parse_kv_list(kv_list)
-        for key, kvtype, op, value in parsed_kv:
-            if op == '-':
-                # Removal
-                if key in incident.kv_strings:
-                    del incident.kv_strings[key]
-                if key in incident.kv_integers:
-                    del incident.kv_integers[key]
-                if key in incident.kv_floats:
-                    del incident.kv_floats[key]
-                updated_fields.append(f"removed {key}")
-            else:
-                # Update
-                self._validate_and_store_kv(key, kvtype, value, incident)
-                updated_fields.append(key)
-    
+        while True:  # NEW: Validation retry loop
+            try:
+                for key, kvtype, op, value in parsed_kv:
+                    if op == '-':
+                        # Removal
+                        if key in incident.kv_strings:
+                            del incident.kv_strings[key]
+                        if key in incident.kv_integers:
+                            del incident.kv_integers[key]
+                        if key in incident.kv_floats:
+                            del incident.kv_floats[key]
+                        updated_fields.append(f"removed {key}")
+                    else:
+                        # Update
+                        self._validate_and_store_kv(key, kvtype, value, incident)
+                        updated_fields.append(key)
+                
+                # Validation succeeded - break out of retry loop
+                break
+                
+            except ValueError as e:
+                # Validation failed - offer to edit
+                corrected = self._handle_validation_error(incident, e, allow_validation_editor)
+                
+                if corrected:
+                    # User edited - validate the edited incident
+                    incident = corrected
+                    
+                    try:
+                        # Validate all fields in edited incident
+                        self._validate_incident_fields(incident)
+                        # Validation passed - break
+                        updated_fields = ["full record (edited to fix validation)"]
+                        break
+                        
+                    except ValueError as e2:
+                        # Editor result still invalid - show error and loop
+                        print(f"\nValidation error in edited record: {e2}", file=sys.stderr)
+                        # Loop back - offer edit again
+                        continue
+                else:
+                    # User abandoned
+                    return False
+                
         # Handle description/full record updates
         if (not metadata_only) and (description or use_stdin or use_editor):
             # Save previous content before updating
@@ -3583,16 +3613,42 @@ class IncidentManager:
             
             if use_editor and use_toml_editor:
                 # NEW BEHAVIOR: Edit full record with TOML frontmatter
-                final_incident = self._edit_incident_with_toml(incident)
-                
-                if final_incident:
-                    # Replace incident with edited version
-                    incident = final_incident
-                    updated_fields.append("full record (TOML edit)")
-                else:
-                    # User cancelled or error occurred
-                    return False
+                while True:  # ← NEW: Validation loop
+                    final_incident = self._edit_incident_with_toml(incident)
                     
+                    if not final_incident:
+                        # User cancelled
+                        return False
+                    
+                    # NEW: Validate the edited incident
+                    try:
+                        self._validate_incident_fields(final_incident)
+                        # Validation passed - accept it
+                        incident = final_incident
+                        updated_fields.append("full record (TOML edit)")
+                        break
+                        
+                    except ValueError as e:
+                        # Validation failed - ask user
+                        print(f"\n{'='*70}", file=sys.stderr)
+                        print(f"VALIDATION ERROR in edited record", file=sys.stderr)
+                        print(f"{'='*70}", file=sys.stderr)
+                        print(f"{str(e)}", file=sys.stderr)
+                        print(f"{'='*70}\n", file=sys.stderr)
+                        
+                        print("Options:", file=sys.stderr)
+                        print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
+                        print("  [a] Abandon - cancel this update", file=sys.stderr)
+                        
+                        choice = input("\nChoice (e/a): ").strip().lower()
+                        
+                        if choice != 'e':
+                            # Abandon
+                            return False
+                        
+                        # Loop back and reopen editor with the invalid incident
+                        incident = final_incident
+                        continue                    
             elif description:
                 final_description = description
             elif use_stdin and StdinHandler.has_stdin_data():
@@ -3766,6 +3822,56 @@ class IncidentManager:
                     os.unlink(tmp_path)
                 return None
                 
+    def _validate_incident_fields(self, incident: Incident) -> None:
+        """
+        Validate all KV fields in an incident against special field definitions.
+        
+        Args:
+            incident: Incident to validate
+            
+        Raises:
+            ValueError: If any field fails validation
+        """
+        special_fields = self.project_config.get_special_fields()
+        
+        # Validate string fields
+        for key, values in incident.kv_strings.items():
+            base_key = self._strip_type_suffix(key)
+            if base_key in special_fields:
+                field = special_fields[base_key]
+                if field.accepted_values:
+                    for value in values:
+                        if value not in field.accepted_values:
+                            raise ValueError(
+                                f"Invalid value '{value}' for field '{base_key}'. "
+                                f"Accepted values: {', '.join(field.accepted_values)}"
+                            )
+        
+        # Validate integer fields
+        for key, values in incident.kv_integers.items():
+            base_key = self._strip_type_suffix(key)
+            if base_key in special_fields:
+                field = special_fields[base_key]
+                if field.accepted_values:
+                    for value in values:
+                        if str(value) not in field.accepted_values:
+                            raise ValueError(
+                                f"Invalid value '{value}' for field '{base_key}'. "
+                                f"Accepted values: {', '.join(field.accepted_values)}"
+                            )
+        
+        # Validate float fields
+        for key, values in incident.kv_floats.items():
+            base_key = self._strip_type_suffix(key)
+            if base_key in special_fields:
+                field = special_fields[base_key]
+                if field.accepted_values:
+                    for value in values:
+                        if str(value) not in field.accepted_values:
+                            raise ValueError(
+                                f"Invalid value '{value}' for field '{base_key}'. "
+                                f"Accepted values: {', '.join(field.accepted_values)}"
+                            )
     def create_incident(
         self,
         kv_list: List[str],
@@ -3774,7 +3880,8 @@ class IncidentManager:
         use_editor: bool = False,
         use_toml_editor: bool = True,
         custom_id: Optional[str] = None,
-        template_id: Optional[str] = None,  # ← ADD THIS
+        template_id: Optional[str] = None,
+        allow_validation_editor: bool = True,
     ) -> str:
         """
         Create new incident from KV list.
@@ -3843,10 +3950,32 @@ class IncidentManager:
         # Parse and apply all KV updates from CLI (override template)
         parsed_kv = KVParser.parse_kv_list(kv_list)
 
-        for key, kvtype, op, value in parsed_kv:
-            if op == '-':
-                raise ValueError(f"Cannot use removal operator '-' when creating incident")
-            self._validate_and_store_kv(key, kvtype, value, incident)
+        while True:  # NEW: Validation retry loop
+            try:
+                for key, kvtype, op, value in parsed_kv:
+                    if op == '-':
+                        raise ValueError(f"Cannot use removal operator '-' when creating incident")
+                    self._validate_and_store_kv(key, kvtype, value, incident)
+                
+                # Validation succeeded - break out of retry loop
+                break
+                
+            except ValueError as e:
+                # Validation failed - offer to edit
+                corrected = self._handle_validation_error(incident, e, allow_validation_editor)
+                if corrected:
+                    incident = corrected
+                    # Re-evaluate
+                    try:
+                        self._validate_incident_fields(incident)
+                        break
+                    except ValueError as e2:
+                        # Editor result still has validation errors - loop again
+                        print(f"\nValidation error in edited record {e2}.", file=sys.stderr)
+                        continue
+                else:
+                    # User abandoned
+                    raise RuntimeError("Record creation abandoned due to validation error")
         
         # Add system fields
         self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
@@ -3859,18 +3988,48 @@ class IncidentManager:
         
         if use_editor and use_toml_editor:
             # NEW BEHAVIOR: Edit full record with TOML
-            final_incident = self._create_incident_with_toml(incident)
-            
-            if not final_incident:
-                # User cancelled
-                raise RuntimeError("Record creation cancelled")
-            
-            # Restore system fields (in case user tried to modify them)
-            final_incident.kv_strings['created_at'] = [now]
-            final_incident.kv_strings['created_by'] = [author]
-            final_incident.kv_strings['updated_at'] = [now]
-            
-            incident = final_incident
+            while True:  # ← NEW: Validation loop
+                final_incident = self._create_incident_with_toml(incident)
+                
+                if not final_incident:
+                    # User cancelled
+                    raise RuntimeError("Record creation cancelled")
+                
+                # Restore system fields (in case user tried to modify them)
+                final_incident.kv_strings['created_at'] = [now]
+                final_incident.kv_strings['created_by'] = [author]
+                final_incident.kv_strings['updated_at'] = [now]
+                
+                # NEW: Validate the edited incident
+                try:
+                    self._validate_incident_fields(final_incident)
+                    # Validation passed - accept it
+                    incident = final_incident
+                    break
+                    
+                except ValueError as e:
+                    # Validation failed - ask user
+                    print(f"\n{'='*70}", file=sys.stderr)
+                    print(f"VALIDATION ERROR in edited record", file=sys.stderr)
+                    print(f"{'='*70}", file=sys.stderr)
+                    print(f"{str(e)}", file=sys.stderr)
+                    print(f"{'='*70}\n", file=sys.stderr)
+                    
+                    print("Options:", file=sys.stderr)
+                    print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
+                    print("  [a] Abandon - cancel this creation", file=sys.stderr)
+                    
+                    choice = input("\nChoice (e/a): ").strip().lower()
+                    
+                    if choice != 'e':
+                        # Abandon
+                        raise RuntimeError("Record creation abandoned due to validation error")
+                    
+                    # Loop back and reopen editor with the invalid incident
+                    incident = final_incident
+                    # Restore ID (it might have been changed in editor)
+                    incident.id = incident_id
+                    continue
             
         elif description:
             final_description = description
@@ -4273,8 +4432,6 @@ class IncidentManager:
         
         return update_id
 
-
-    
     def search_updates(
         self,
         ksearch: Optional[List[str]] = None,
@@ -4321,6 +4478,51 @@ class IncidentManager:
             return [f"{incident_id}:{update.id}" for update, incident_id, _ in matching_ids]
     
         return matching_ids
+
+    def _handle_validation_error(
+        self,
+        incident: Incident,
+        validation_error: ValueError,
+        allow_editor: bool = True,
+    ) -> Optional[Incident]:
+        """
+        Handle validation errors with user interaction.
+        
+        Args:
+            incident: The incident that failed validation
+            validation_error: The validation error that occurred
+            allow_editor: If False, re-raise error immediately (for automation)
+            
+        Returns:
+            Corrected incident from editor, or None if user abandons
+            
+        Raises:
+            ValueError: If allow_editor=False or user chooses to abandon
+        """
+        if not allow_editor:
+            # No editor allowed - re-raise for automation
+            raise validation_error
+        
+        # Interactive mode - offer choices
+        print(f"\n{'='*70}", file=sys.stderr)
+        print(f"VALIDATION ERROR", file=sys.stderr)
+        print(f"{'='*70}", file=sys.stderr)
+        print(f"{str(validation_error)}", file=sys.stderr)
+        print(f"{'='*70}\n", file=sys.stderr)
+        
+        print("Options:", file=sys.stderr)
+        print("  [e] Edit - open editor to correct the error", file=sys.stderr)
+        print("  [a] Abandon - cancel this operation", file=sys.stderr)
+        
+        choice = input("\nChoice (e/a): ").strip().lower()
+        
+        if choice != 'e':
+            # Abandon - re-raise the error
+            raise validation_error
+        
+        # Launch editor to fix
+        print("\nOpening editor to correct validation error...", file=sys.stderr)
+        return self._edit_incident_with_toml(incident)
 
 # ============================================================================
 # CLI
@@ -4730,16 +4932,20 @@ class IncidentCLI:
             
             arg_name = f"--{field_name}"
             
+            help_text = f"{field_name} ({field_def.field_type}, {field_def.value_type})"
+            if field_def.accepted_values:
+                help_text += f" - Accepted: {', '.join(field_def.accepted_values)}"
+
             kwargs = {
-                "help": f"{field_name} ({field_def.field_type}, {field_def.value_type})",
+                "help": help_text,
                 "dest": field_name,
             }
             
             if field_def.field_type == "multi":
                 kwargs["nargs"] = "*"
             
-            if field_def.accepted_values:
-                kwargs["choices"] = field_def.accepted_values
+            #if field_def.accepted_values:
+                #kwargs["choices"] = field_def.accepted_values
             
             if field_def.value_type == "integer":
                 kwargs["type"] = int
@@ -4793,6 +4999,12 @@ class IncidentCLI:
             "--template",
             metavar="RECORD_ID",
             help="Use existing record as template (editor mode only)",
+        )
+
+        record_new_parser.add_argument(
+            "--no-validation-editor",
+            action="store_true",
+            help="Don't launch editor on validation errors (for automation)",
         )
 
         self.record_new_parser = record_new_parser
@@ -4849,6 +5061,12 @@ class IncidentCLI:
             "--no-toml",
             action="store_true",
             help="Edit description only (without TOML frontmatter)",
+        )
+        
+        record_update_parser.add_argument(
+            "--no-validation-editor",
+            action="store_true",
+            help="Don't launch editor on validation errors (for automation)",
         )
         
         record_update_parser.add_argument(
@@ -5426,10 +5644,11 @@ $update_kv
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_description or has_stdin)
         use_toml_editor = not getattr(args, 'no_toml', False)
-        template_id = getattr(args, 'template', None)  # ← ADD THIS
+        template_id = getattr(args, 'template', None)
+        allow_validation_editor = not getattr(args, 'no_validation_editor', False)
         
         # Validate template usage
-        if template_id and not use_editor:  # ← ADD THIS BLOCK
+        if template_id and not use_editor:
             print(
                 "Error: --template can only be used in editor mode\n"
                 "Remove --description flag or stdin input to use editor",
@@ -5446,15 +5665,29 @@ $update_kv
                 use_toml_editor=use_toml_editor,
                 custom_id=getattr(args, 'custom_id', None),
                 template_id=template_id,
+                allow_validation_editor=allow_validation_editor,
             )
+            
+            print(f"✓ Created record: {record_id}")
+            
+            # Show summary from KV data
+            record = manager.get_incident(record_id)
+            if record:
+                if 'title' in record.kv_strings:
+                    title = record.kv_strings['title'][0]
+                    print(f"  Title: {title}")
+                for key, values in record.kv_strings.items():
+                    if key not in ('title', 'description', 'created_at', 'created_by', 'updated_at'):
+                        print(f"  {key}: {', '.join(values)}")
+
         except ValueError as e:
+            # Only happens if allow_validation_editor=False or non-validation ValueError
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         except RuntimeError as e:
             # User cancelled
             print(f"{e}", file=sys.stderr)
             sys.exit(1)
-
         print(f"✓ Created record: {record_id}")
         
         # Show summary from KV data
@@ -5545,10 +5778,11 @@ $update_kv
         use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
         
         use_toml_editor = not getattr(args, 'no_toml', False)
-        metadata_only = getattr(args, 'metadata_only', False)  # ← ADD THIS
+        metadata_only = getattr(args, 'metadata_only', False)
+        allow_validation_editor = not getattr(args, 'no_validation_editor', False)
         
         # Validate metadata_only usage
-        if metadata_only:  # ← ADD THIS BLOCK
+        if metadata_only:
             if not kv_list:
                 print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
                 sys.exit(1)
@@ -5560,21 +5794,34 @@ $update_kv
             print("Error: No fields to update", file=sys.stderr)
             sys.exit(1)
             
-        result = manager.update_incident_info(
-            args.record_id,
-            kv_list=kv_list,
-            description=args.description if has_description else None,
-            use_stdin=has_stdin and not has_description,
-            use_editor=use_editor,
-            use_toml_editor=use_toml_editor,
-            metadata_only=metadata_only,
-        )
-        
-        if result:
-            print(f"✓ Updated record: {args.record_id}")
-        else:
-            print(f"Update cancelled", file=sys.stderr)
+        # NEW: Only catch errors if validation editor is NOT allowed
+        try:
+            result = manager.update_incident_info(
+                args.record_id,
+                kv_list=kv_list,
+                description=args.description if has_description else None,
+                use_stdin=has_stdin and not has_description,
+                use_editor=use_editor,
+                use_toml_editor=use_toml_editor,
+                metadata_only=metadata_only,
+                allow_validation_editor=allow_validation_editor,
+            )
+            
+            if result:
+                print(f"✓ Updated record: {args.record_id}")
+            else:
+                print(f"Update cancelled", file=sys.stderr)
+                sys.exit(1)
+                
+        except ValueError as e:
+            # Only happens if allow_validation_editor=False (--no-validation-editor flag)
+            # or if it's a non-validation ValueError (like custom_id format)
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+        except RuntimeError as e:
+            # User cancelled after being offered editor
+            print(f"{e}", file=sys.stderr)
+            sys.exit(1)            
             
     def _cmd_add_update(self, args):
         """Add note to record."""
