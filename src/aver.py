@@ -3555,7 +3555,10 @@ class IncidentManager:
     
         updated_fields = []
         previous_content = None
-    
+        orig_kv_strings=incident.kv_strings;
+        orig_kv_integers=incident.kv_integers;        
+        orig_kv_floats=incident.kv_floats;
+        
         # Parse and apply KV updates from command line
         parsed_kv = KVParser.parse_kv_list(kv_list)
         while True:  # NEW: Validation retry loop
@@ -3564,16 +3567,20 @@ class IncidentManager:
                     if op == '-':
                         # Removal
                         if key in incident.kv_strings:
-                            del incident.kv_strings[key]
+                            incident.kv_strings[key] = [v for v in incident.kv_floats[key] if v != float_value_to_remove]
+                            #del incident.kv_strings[key]
                         if key in incident.kv_integers:
-                            del incident.kv_integers[key]
+                            incident.kv_integers[key] = [v for v in incident.kv_floats[key] if v != float_value_to_remove]
+                            #del incident.kv_integers[key]
                         if key in incident.kv_floats:
-                            del incident.kv_floats[key]
-                        updated_fields.append(f"removed {key}")
+                            updated_fields.append(f"removed {key}:{incident.kv_floats[key]}")
+                            incident.kv_floats[key] = [v for v in incident.kv_floats[key] if v != float_value_to_remove]
+                            #del incident.kv_floats[key]                    
                     else:
                         # Update
-                        self._validate_and_store_kv(key, kvtype, value, incident)
-                        updated_fields.append(key)
+                        updated_fields.append(f"Add {key}: {value}")
+                        self._validate_and_store_kv(key, kvtype, value, incident)    
+                        # updated_fields.append(key)
                 
                 # Validation succeeded - break out of retry loop
                 break
@@ -3625,7 +3632,7 @@ class IncidentManager:
                         self._validate_incident_fields(final_incident)
                         # Validation passed - accept it
                         incident = final_incident
-                        updated_fields.append("full record (TOML edit)")
+                        # updated_fields.append("full record (TOML edit)")
                         break
                         
                     except ValueError as e:
@@ -3671,13 +3678,41 @@ class IncidentManager:
         self.index_db.index_incident(incident, self.project_config)
         self.index_db.index_kv_data(incident)
     
-        # Log update
-        update_msg = f"Updated: {', '.join(updated_fields)}"
-    
+        update_msg = ""
+            
         # Append previous content to update message if it was changed
         if previous_content and incident.content != previous_content:
-            update_msg += f"\n\n## PREVIOUS RECORD TEXT\n{previous_content}"
-    
+            update_msg += f"\n\n## Previous Content\n\n{previous_content}"
+        # Log update
+
+        if updated_fields:
+            update_msg += f"\n\n## Updated Fields: \n{'\n * '.join(updated_fields)}"
+            update_msg += f"\n\n"
+
+        update_msg += f"\n\n## Previous Key/Vals\n"
+        
+        # System fields to skip
+        skip_fields = {}
+        
+        # Format all string KV that isn't in skip list
+        for key, values in orig_kv_strings.items():
+            if key not in skip_fields and values:
+                values_str = ', '.join(str(v) for v in values)
+                update_msg += f"{key}: {values_str}\n"
+        
+        # Format all integer KV
+        for key, values in orig_kv_integers.items():
+            if values:
+                values_str = ', '.join(str(v) for v in values)
+                update_msg += f"{key}: {values_str}\n"
+        
+        # Format all float KV
+        for key, values in orig_kv_floats.items():
+            if values:
+                values_str = ', '.join(str(v) for v in values)
+                update_msg += f"{key}: {values_str}\n"
+
+        
         update_id = IDGenerator.generate_update_id()
         incident_update = IncidentUpdate(
             id=update_id,
@@ -3686,6 +3721,7 @@ class IncidentManager:
             author=author,
             message=update_msg,
         )
+
         self.storage.save_update(incident_id, incident_update)
         self.index_db.index_update(incident_update)
     
