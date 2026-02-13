@@ -1,13 +1,13 @@
-+++
-created_at__string = "2026-02-07T20:12:42.836764Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-07T20:12:42.836764Z"
-title = "Add 'tlogger' type k/v assignments"
-type = "feature"
-status = "new"
-severity = ""
-tag = []
-+++
+---
+created_at__string: '2026-02-07T20:12:42.836764Z'
+created_by__string: mattd
+updated_at__string: '2026-02-07T20:12:42.836764Z'
+title: Add 'tlogger' type k/v assignments
+type: feature
+status: new
+severity: ''
+tag: []
+---
 
 TLogger was a "tagged logger" developed by dentm42 about 10 years ago.
 

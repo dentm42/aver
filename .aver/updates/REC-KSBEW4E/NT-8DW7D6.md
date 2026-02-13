@@ -1,9 +1,9 @@
-+++
-id = "NT-8DW7D6"
-incident_id = "REC-KSBEW4E"
-timestamp = "2026-02-10T02:39:38.305478Z"
-author = "mattd"
-+++
+---
+id: NT-8DW7D6
+incident_id: REC-KSBEW4E
+timestamp: '2026-02-10T02:39:38.305478Z'
+author: mattd
+---
 
 Updated: description
 

@@ -1,9 +1,9 @@
-+++
-id = "NT-ABKK57"
-incident_id = "REC-KW4YP14"
-timestamp = "2026-02-11T03:42:25.372309Z"
-author = "mattd"
-+++
+---
+id: NT-ABKK57
+incident_id: REC-KW4YP14
+timestamp: '2026-02-11T03:42:25.372309Z'
+author: mattd
+---
 
 ## Record Data
 

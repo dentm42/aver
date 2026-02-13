@@ -1,11 +1,11 @@
-+++
-created_at__string = "2026-02-11T03:42:25.372309Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-11T03:42:25.372309Z"
-title = "FEATURE: Update K/V sanity fix"
-type = "feature"
-status = "new"
-+++
+---
+created_at__string: '2026-02-11T03:42:25.372309Z'
+created_by__string: mattd
+updated_at__string: '2026-02-11T03:42:25.372309Z'
+title: 'FEATURE: Update K/V sanity fix'
+type: feature
+status: new
+---
 
 So, "system" update k/v data (updated_at, author, etc) isn't getting indexed in the DB on initial write
 it problably does on reindex, though this is not confirmed.

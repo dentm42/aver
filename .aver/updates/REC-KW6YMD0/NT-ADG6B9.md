@@ -1,9 +1,9 @@
-+++
-id = "NT-ADG6B9"
-incident_id = "REC-KW6YMD0"
-timestamp = "2026-02-11T04:25:34.664869Z"
-author = "mattd"
-+++
+---
+id: NT-ADG6B9
+incident_id: REC-KW6YMD0
+timestamp: '2026-02-11T04:25:34.664869Z'
+author: mattd
+---
 
 ## Record Data
 

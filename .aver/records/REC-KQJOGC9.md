@@ -1,13 +1,13 @@
-+++
-created_at__string = "2026-02-08T03:14:40.474913Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-08T03:53:20.102089Z"
-title = "First note not displaying with 'aver record view' command"
-type = "bug"
-status = "closed"
-severity = ""
-tag = []
-+++
+---
+created_at__string: '2026-02-08T03:14:40.474913Z'
+created_by__string: mattd
+updated_at__string: '2026-02-08T03:53:20.102089Z'
+title: First note not displaying with 'aver record view' command
+type: bug
+status: closed
+severity: ''
+tag: []
+---
 
 When you run
 

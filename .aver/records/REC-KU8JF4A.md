@@ -1,13 +1,13 @@
-+++
-created_at__string = "2026-02-10T03:04:27.400849Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-10T03:09:52.969030Z"
-title = "Define system fields in config.toml"
-type = ""
-status = "new"
-severity = ""
-tag = []
-+++
+---
+created_at__string: '2026-02-10T03:04:27.400849Z'
+created_by__string: mattd
+updated_at__string: '2026-02-10T03:09:52.969030Z'
+title: Define system fields in config.toml
+type: ''
+status: new
+severity: ''
+tag: []
+---
 
 System fields currently are automatically inserted, this is against our guarantees.
 

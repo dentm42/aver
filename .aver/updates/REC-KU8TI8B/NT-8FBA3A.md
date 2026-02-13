@@ -1,9 +1,9 @@
-+++
-id = "NT-8FBA3A"
-incident_id = "REC-KU8TI8B"
-timestamp = "2026-02-10T03:10:30.128771Z"
-author = "mattd"
-+++
+---
+id: NT-8FBA3A
+incident_id: REC-KU8TI8B
+timestamp: '2026-02-10T03:10:30.128771Z'
+author: mattd
+---
 
 ## Record Data
 

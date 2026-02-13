@@ -1,9 +1,9 @@
-+++
-id = "NT-A6RP13"
-incident_id = "REC-KSBC0AB"
-timestamp = "2026-02-11T02:01:22.766283Z"
-author = "mattd"
-+++
+---
+id: NT-A6RP13
+incident_id: REC-KSBC0AB
+timestamp: '2026-02-11T02:01:22.766283Z'
+author: mattd
+---
 
 Updated: status, full record (TOML edit)
 

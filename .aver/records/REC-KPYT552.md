@@ -1,13 +1,13 @@
-+++
-created_at__string = "2026-02-07T19:43:53.212009Z"
-created_by__string = "mattd"
-updated_at__string = "2026-02-09T01:33:03.315157Z"
-title = "record list with no records produces error"
-type = "bug"
-status = "closed"
-severity = "high"
-tag = []
-+++
+---
+created_at__string: '2026-02-07T19:43:53.212009Z'
+created_by__string: mattd
+updated_at__string: '2026-02-09T01:33:03.315157Z'
+title: record list with no records produces error
+type: bug
+status: closed
+severity: high
+tag: []
+---
 
 Performing:
 
