@@ -3,7 +3,7 @@
 aver: a verified knowledge tracking tool
 
 Minimal external dependencies. 
-Stores records and updates as Markdown files with TOML headers.
+Stores records and updates as Markdown files with yaml headers.
 Uses SQLite for indexing and searching only.
 """
 
@@ -25,26 +25,27 @@ from types import SimpleNamespace
 import select
 import secrets
 import time
-import tomli_w
 from string import Template
-
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib
+import tomli_w 
 
 
+"""
+YAMLSerializer
+"""
 
-# ============================================================================
-# TOML/Markdown Serialization Utilities
-# ============================================================================
+import yaml
+from typing import Optional, Any
 
-class TOMLSerializer:
+
+class YAMLSerializer:
     """
-    Centralized TOML serialization with proper escaping.
+    Centralized YAML serialization with type hints.
     
-    Handles all TOML string escaping, key formatting, and serialization
-    for both Incident and IncidentUpdate classes.
+    Handles all YAML formatting for both Incident and IncidentUpdate classes.
     """
     
     # Type hint suffixes for custom fields
@@ -58,122 +59,22 @@ class TOMLSerializer:
         TYPE_HINT_FLOAT: "float",
     }
     
+    TYPE_HINT_SUFFIX = "__"  # e.g., my_field__string
+    
     @staticmethod
-    def escape_string(s: str) -> str:
-        """
-        Escape a string for use in TOML basic strings (double-quoted).
-        
-        Handles backslashes, quotes, newlines, and other control characters
-        per the TOML specification.
-        """
-        if not isinstance(s, str):
-            s = str(s)
-        
-        # Order matters: escape backslashes first
-        s = s.replace('\\', '\\\\')
-        s = s.replace('"', '\\"')
-        s = s.replace('\b', '\\b')
-        s = s.replace('\f', '\\f')
-        s = s.replace('\n', '\\n')
-        s = s.replace('\r', '\\r')
-        s = s.replace('\t', '\\t')
-        
-        # Handle other control characters (U+0000 to U+001F except those above)
-        result = []
-        for char in s:
-            code = ord(char)
-            if code < 0x20 and char not in '\b\f\n\r\t':
-                result.append(f'\\u{code:04X}')
-            else:
-                result.append(char)
-        return ''.join(result)
-
+    def add_type_hint(key: str, value_type: str) -> str:
+        """Add type hint suffix to key. e.g., 'foo' + 'string' -> 'foo__string'"""
+        return f"{key}{YAMLSerializer.TYPE_HINT_SUFFIX}{value_type}"
+    
     @staticmethod
-    def escape_key(key: str) -> str:
-        """
-        Escape a key for use in TOML.
-        
-        Bare keys can only contain A-Za-z0-9_-.
-        If the key contains other characters, it must be quoted.
-        """
-        if not key:
-            return '""'
-        
-        # Check if it's a valid bare key
-        if all(c.isalnum() or c in '_-' for c in key):
-            return key
-        
-        # Otherwise, quote it and escape
-        return f'"{TOMLSerializer.escape_string(key)}"'
-
-    @staticmethod
-    def format_value(value: Any) -> str:
-        """Format a single value for TOML output."""
-        if isinstance(value, str):
-            return f'"{TOMLSerializer.escape_string(value)}"'
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, (int, float)):
-            return str(value)
-        else:
-            return f'"{TOMLSerializer.escape_string(str(value))}"'
-
-    @staticmethod
-    def format_list(values: list) -> str:
-        """Format a list for TOML output."""
-        formatted = [TOMLSerializer.format_value(v) for v in values]
-        return f"[{', '.join(formatted)}]"
-
-    @staticmethod
-    def dict_to_inline_table(d: dict) -> str:
-        """
-        Convert dict to inline TOML table format with proper escaping.
-        
-        Example: { "key1" = "value1", "key2" = 42 }
-        """
-        if not d:
-            return "{}"
-        items = []
-        for key, value in d.items():
-            escaped_key = TOMLSerializer.escape_string(key)
-            if isinstance(value, list):
-                items.append(f'"{escaped_key}" = {TOMLSerializer.format_list(value)}')
-            else:
-                items.append(f'"{escaped_key}" = {TOMLSerializer.format_value(value)}')
-        return "{ " + ", ".join(items) + " }"
-
-    @staticmethod
-    def dict_to_toml(d: dict, indent: int = 0) -> str:
-        """
-        Convert a dict to TOML string with proper escaping.
-        
-        This is a fallback when tomli_w is not available.
-        Handles nested dicts, lists, strings, ints, floats, and bools.
-        """
-        lines = []
-        prefix = "  " * indent
-        
-        for key, value in d.items():
-            escaped_key = TOMLSerializer.escape_key(key)
-            
-            if isinstance(value, dict):
-                # Nested table
-                lines.append(f"{prefix}[{escaped_key}]")
-                lines.append(TOMLSerializer.dict_to_toml(value, indent + 1))
-            elif isinstance(value, list):
-                if value and all(isinstance(v, dict) for v in value):
-                    # Array of tables
-                    for item in value:
-                        lines.append(f"{prefix}[[{escaped_key}]]")
-                        lines.append(TOMLSerializer.dict_to_toml(item, indent + 1))
-                else:
-                    # Simple array
-                    lines.append(f"{prefix}{escaped_key} = {TOMLSerializer.format_list(value)}")
-            else:
-                lines.append(f"{prefix}{escaped_key} = {TOMLSerializer.format_value(value)}")
-        
-        return '\n'.join(lines)
-        
+    def strip_type_hint(key: str) -> tuple[str, Optional[str]]:
+        """Remove type hint suffix from key. Returns (clean_key, type_or_none)."""
+        for vtype in ("string", "integer", "float"):
+            suffix = f"{YAMLSerializer.TYPE_HINT_SUFFIX}{vtype}"
+            if key.endswith(suffix):
+                return key[:-len(suffix)], vtype
+        return key, None
+    
     @staticmethod
     def normalize_dict_values(data):
         """
@@ -189,83 +90,107 @@ class TOMLSerializer:
                 # Keep as-is (multi-element list, dict, or single value)
                 result[key] = value
         return result
-
+    
     @staticmethod
     def dumps(d: dict) -> str:
         """
-        Serialize a dict to TOML string.
+        Serialize a dict to YAML string.
         
-        Uses tomli_w if available, otherwise falls back to manual serialization.
+        Uses PyYAML with explicit settings for clean, readable output.
         """
-        print (f"DUMP DICT: {d}")
-        if tomli_w:
-            result = tomli_w.dumps(TOMLSerializer.normalize_dict_values(d))
-            result = re.sub(r',\s*\n\s*', ', ', result)
-            return re.sub(r'\[\s*\n\s*', '[ ', result)
-        else:
-            result = TOMLSerializer.dict_to_toml(d)
-            return result + '\n' if result else '\n'
-
+        # Debug output (can be removed in production)
+        # print(f"DUMP DICT: {d}")
+        
+        # Normalize single-element lists
+        normalized = YAMLSerializer.normalize_dict_values(d)
+        
+        # Use yaml.safe_dump for security and clean output
+        yaml_str = yaml.safe_dump(
+            normalized,
+            default_flow_style=False,  # Use block style (multi-line) not flow style
+            sort_keys=False,           # Preserve insertion order (Python 3.7+)
+            allow_unicode=True,        # Support Unicode characters natively
+            width=1000,                # Prevent unwanted line wrapping
+            default_style=None,        # Let YAML choose appropriate quoting
+        )
+        
+        return yaml_str
+    
     @staticmethod
     def loads(s: str) -> dict:
-        """Parse a TOML string into a dict."""
-        return tomllib.loads(s)
+        """
+        Parse a YAML string into a dict.
+        
+        Uses safe_load for security (doesn't execute arbitrary Python code).
+        Returns empty dict if string is empty or contains only whitespace.
+        """
+        result = yaml.safe_load(s)
+        # yaml.safe_load returns None for empty strings
+        return result if result is not None else {}
 
-    TYPE_HINT_SUFFIX = "__"  # e.g., my_field__string
-    
-    @staticmethod
-    def add_type_hint(key: str, value_type: str) -> str:
-        """Add type hint suffix to key. e.g., 'foo' + 'string' -> 'foo__string'"""
-        return f"{key}{TOMLSerializer.TYPE_HINT_SUFFIX}{value_type}"
-    
-    @staticmethod
-    def strip_type_hint(key: str) -> tuple[str, Optional[str]]:
-        """Remove type hint suffix from key. Returns (clean_key, type_or_none)."""
-        for vtype in ("string", "integer", "float"):
-            suffix = f"{TOMLSerializer.TYPE_HINT_SUFFIX}{vtype}"
-            if key.endswith(suffix):
-                return key[:-len(suffix)], vtype
-        return key, None
 
 class MarkdownDocument:
     """
-    Handles Markdown documents with TOML frontmatter.
+    Handles Markdown documents with YAML frontmatter.
     
-    Provides unified parsing and serialization for both Incident and IncidentUpdate.
-    
-    Document format:
-        +++
-        key = "value"
-        ...
-        +++
+    Format:
+        ---
+        key: value
+        list:
+          - item1
+          - item2
+        ---
         
-        Body content here...
-    """    
-    FRONTMATTER_DELIMITER = "+++"
-    @classmethod
-    def parse(cls, content: str) -> tuple[dict, str]:
-        """Parse Markdown with TOML frontmatter. Returns (frontmatter_dict, body)."""
-        pattern = rf'^\+\+\+\s*(.*?)\s*\+\+\+(.*?)$'
-        match = re.match(pattern, content, re.DOTALL)
-        if not match:
-            frontmatter = ""
-            body = content
-        else:
-            frontmatter = TOMLSerializer.loads(match.group(1))
-            body = match.group(2).strip()
-
-        return frontmatter, body
+        Document body text here.
+    """
     
-    @classmethod
-    def serialize(cls, frontmatter: dict, body: str = "") -> str:
-        """Serialize to Markdown with TOML frontmatter."""
-        toml_str = TOMLSerializer.dumps(frontmatter)
-        parts = [cls.FRONTMATTER_DELIMITER, toml_str.strip(), cls.FRONTMATTER_DELIMITER]
-        if body:
-            parts.append("")
-            parts.append(body)
-            parts.append("\n\n")
-        return "\n".join(parts)
+    DELIMITER = "---" 
+    
+    @staticmethod
+    def create(metadata: dict, body: str) -> str:
+        """Create a markdown document with YAML frontmatter."""
+        yaml_str = YAMLSerializer.dumps(metadata)
+        return f"{MarkdownDocument.DELIMITER}\n{yaml_str}{MarkdownDocument.DELIMITER}\n\n{body}\n"
+    
+    @staticmethod
+    def parse(content: str) -> tuple[dict, str]:
+        """
+        Parse a markdown document with YAML frontmatter.
+        
+        Returns:
+            (metadata: dict, body: str)
+            
+        Raises:
+            ValueError: If document is malformed
+        """
+        if not content.startswith(MarkdownDocument.DELIMITER):
+            raise ValueError(f"Document must start with {MarkdownDocument.DELIMITER}")
+        
+        parts = content.split(MarkdownDocument.DELIMITER, 2)
+        
+        if len(parts) < 3:
+            raise ValueError("Malformed frontmatter: couldn't find closing delimiter")
+        
+        yaml_str = parts[1].strip()
+        body = parts[2].lstrip()
+        
+        try:
+            metadata = YAMLSerializer.loads(yaml_str)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in frontmatter: {e}")
+        
+        return metadata, body
+    
+    @staticmethod
+    def update_metadata(content: str, updates: dict) -> str:
+        """
+        Update metadata in a markdown document.
+        
+        Preserves body, updates only the specified metadata fields.
+        """
+        metadata, body = MarkdownDocument.parse(content)
+        metadata.update(updates)
+        return MarkdownDocument.create(metadata, body)
 
 class KVStore:
     """
@@ -282,7 +207,7 @@ class KVStore:
         float_key: str = "kv_floats"
     ) -> tuple[Dict[str, List[str]], Dict[str, List[int]], Dict[str, List[float]]]:
         """
-        Parse KV data from a dict (e.g., parsed TOML).
+        Parse KV data from a dict (e.g., parsed YAML).
         
         Handles type conversions for integers and floats.
         
@@ -320,15 +245,15 @@ class KVStore:
         kv_floats: Optional[Dict[str, List[float]]]
     ) -> str:
         """
-        Format KV data as TOML lines for frontmatter.
+        Format KV data as YAML lines for frontmatter.
         
         Returns:
             String with kv_strings, kv_integers, kv_floats lines
         """
         lines = []
-        lines.append(f"kv_strings = {TOMLSerializer.dict_to_inline_table(kv_strings or {})}")
-        lines.append(f"kv_integers = {TOMLSerializer.dict_to_inline_table(kv_integers or {})}")
-        lines.append(f"kv_floats = {TOMLSerializer.dict_to_inline_table(kv_floats or {})}")
+        lines.append(f"kv_strings = {YAMLSerializer.dict_to_inline_table(kv_strings or {})}")
+        lines.append(f"kv_integers = {YAMLSerializer.dict_to_inline_table(kv_integers or {})}")
+        lines.append(f"kv_floats = {YAMLSerializer.dict_to_inline_table(kv_floats or {})}")
         return '\n'.join(lines)
 
 
@@ -406,7 +331,7 @@ class Incident:
         return values[0] if field.field_type == "single" else values
     
     def to_markdown(self, project_config: ProjectConfig) -> str:
-        """Serialize to Markdown with TOML frontmatter."""
+        """Serialize to Markdown with yaml frontmatter."""
         # Build frontmatter from special fields
 
         #body = self.kv_strings.pop("description", None)
@@ -446,26 +371,23 @@ class Incident:
         # Build custom fields section (non-special fields with type hints)
         other_kv = self._get_other_kv(project_config)
         custom_fields = {}
-        print (f"OTHER_KV: {other_kv}")
+        # print (f"OTHER_KV: {other_kv}")
         if other_kv:
             custom_fields = {}
             for key, val in other_kv.items():
                 if key in self.kv_strings:
-                    hinted_key = TOMLSerializer.add_type_hint(key, "string")
+                    hinted_key = YAMLSerializer.add_type_hint(key, "string")
                 elif key in self.kv_integers:
-                    hinted_key = TOMLSerializer.add_type_hint(key, "integer")
+                    hinted_key = YAMLSerializer.add_type_hint(key, "integer")
                 elif key in self.kv_floats:
-                    hinted_key = TOMLSerializer.add_type_hint(key, "float")
+                    hinted_key = YAMLSerializer.add_type_hint(key, "float")
                 else:
                     hinted_key = key
                 custom_fields[hinted_key] = val
-                print (f"{hinted_key} = {val}")
+                # print (f"{hinted_key} = {val}")
         
-        # Use MarkdownDocument for serialization
-        #sections = {"Custom Fields": custom_fields} if custom_fields else None
-        #return MarkdownDocument.serialize_with_sections(frontmatter, sections)
         all_frontmatter = custom_fields | frontmatter
-        return MarkdownDocument.serialize( all_frontmatter, body = self.content )
+        return MarkdownDocument.create( all_frontmatter, body = self.content )
         
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
@@ -498,10 +420,10 @@ class Incident:
         except ValueError:
             # Fallback to original regex parsing for compatibility
             print ("Markdown Parse failed, falling back")
-            match = re.match(r'^\+\+\+\n(.*?)\n\+\+\+', content, re.DOTALL)
+            match = re.match(r'^\-\-\-\n(.*?)\n\-\-\-', content, re.DOTALL)
             if not match:
-                raise ValueError("Invalid Markdown format: missing TOML frontmatter")
-            frontmatter = TOMLSerializer.loads(match.group(1))
+                raise ValueError("Invalid Markdown format: missing yaml frontmatter")
+            frontmatter = YAMLSerializer.loads(match.group(1))
             body = content[match.end():].strip()
 
 
@@ -513,7 +435,7 @@ class Incident:
         special_fields = project_config.get_special_fields()
         special_field_names = set(special_fields.keys())
         
-        # Process all items in frontmatter TOML
+        # Process all items in frontmatter yaml
         for key_with_hint, value in frontmatter.items():
             # Check if this is a special field (by raw key name)
             if key_with_hint in special_field_names:
@@ -538,7 +460,7 @@ class Incident:
                         kv_floats[key_with_hint] = [float(v) for v in value]
             else:
                 # Custom field - check for type hint
-                clean_key, value_type = TOMLSerializer.strip_type_hint(key_with_hint)
+                clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
                 
                 # Also check if clean_key is a special field (in case hint was added erroneously)
                 if clean_key in special_field_names:
@@ -607,7 +529,7 @@ class IncidentUpdate:
         return d
         
     def to_markdown(self) -> str:
-        """Convert update to Markdown with TOML header including KV data."""
+        """Convert update to Markdown with yaml header including KV data."""
         # System fields
         frontmatter = {
             "id": self.id,
@@ -621,26 +543,26 @@ class IncidentUpdate:
         
         if self.kv_strings:
             for key, values in self.kv_strings.items():
-                hinted_key = TOMLSerializer.add_type_hint(key, "string")
+                hinted_key = YAMLSerializer.add_type_hint(key, "string")
                 custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
         if self.kv_integers:
             for key, values in self.kv_integers.items():
-                hinted_key = TOMLSerializer.add_type_hint(key, "integer")
+                hinted_key = YAMLSerializer.add_type_hint(key, "integer")
                 custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
         if self.kv_floats:
             for key, values in self.kv_floats.items():
-                hinted_key = TOMLSerializer.add_type_hint(key, "float")
+                hinted_key = YAMLSerializer.add_type_hint(key, "float")
                 custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
         # Merge and serialize
         all_frontmatter = frontmatter | custom_fields
-        return MarkdownDocument.serialize(all_frontmatter, body=self.message)
+        return MarkdownDocument.create(all_frontmatter, body=self.message)
 
     @classmethod
     def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
-        """Parse update from Markdown with TOML header."""
+        """Parse update from Markdown with yaml header."""
         # Use MarkdownDocument for parsing
         try:
             frontmatter, message = MarkdownDocument.parse(content)
@@ -703,7 +625,7 @@ class IDGenerator:
             return f"{id}.md"
         else:
             raise ValueError(
-                f"Invalid TOML syntax in {config_path}: {e}\n"
+                f"Invalid yaml syntax in {config_path}: {e}\n"
                 f"To reset your configuration, run:\n\n"
                 f"  aver config set-user-global --handle <your-handle> --email <your-email>"
             )
@@ -880,13 +802,7 @@ class ProjectConfig:
     
     def save(self):
         """Save config back to file."""
-        if not tomli_w:
-            raise RuntimeError(
-                "tomli_w not available. Cannot write TOML config.\n"
-                "Install with: pip install tomli_w"
-            )
-        with open(self.config_path, "wb") as f:
-            tomli_w.dump(self._raw_config, f)
+        yaml.dump(self._raw_config, f)
 
 
 # ============================================================================
@@ -1120,9 +1036,6 @@ class DatabaseDiscovery:
     def _to_plain_dict(d):
         """
         Recursively convert ConfigDict (or any dict subclass) back to plain dict.
-        
-        Ensures the config is safe for tomli_w serialization, which may not
-        handle dict subclasses properly.
         """
         if isinstance(d, dict):
             return {k: DatabaseDiscovery._to_plain_dict(v) for k, v in d.items()}
@@ -1146,7 +1059,7 @@ class DatabaseDiscovery:
         plain_config = DatabaseDiscovery._to_plain_dict(config)
         
         with open(config_path, "wb") as f:
-            tomli_w.dump(plain_config, f)
+            yaml.dump(plain_config, f)
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
@@ -1799,7 +1712,7 @@ class EditorConfig:
     def get_editor() -> str:
         """
         Get configured editor in order of precedence:
-        1. User-global config (~/.config/incident-manater/user.toml)
+        1. User-global config (~/.config/incident-manager/user.toml)
         2. EDITOR environment variable
         3. System defaults (vim, nano, vi, emacs)
         """
@@ -2296,7 +2209,7 @@ class IncidentFileStorage:
         return sorted(incident_ids)
 
     def save_update(self, incident_id: str, update: IncidentUpdate):
-        """Save update to Markdown file with TOML header."""
+        """Save update to Markdown file with yaml header."""
         updates_dir = self._get_updates_dir(incident_id)
         filename = IDGenerator.generate_update_filename(update.id)
         update_file = updates_dir / filename
@@ -3574,14 +3487,14 @@ class IncidentManager:
                 else:
                     kv_store[key].append(converter(value))
 
-    def _create_incident_with_toml(
+    def _create_incident_with_yaml(
         self,
         initial_incident: Incident,
     ) -> Optional[Incident]:
         """
-        Launch editor with incident template in TOML frontmatter format.
+        Launch editor with incident template in yaml frontmatter format.
         
-        Used when creating new records. Similar to _edit_incident_with_toml but
+        Used when creating new records. Similar to _edit_incident_with_yaml but
         for new records that don't exist yet.
         
         Flow:
@@ -3605,7 +3518,7 @@ class IncidentManager:
             # Prepare incident for editing (filter non-editable fields)
             editable_incident = self._prepare_incident_for_editing(initial_incident)
             
-            # Generate markdown with TOML frontmatter
+            # Generate markdown with yaml frontmatter
             markdown_content = editable_incident.to_markdown(self.project_config)
             
             # Create temp file
@@ -3728,7 +3641,7 @@ class IncidentManager:
         incident: Incident,
     ) -> Incident:
         """
-        Prepare incident for TOML editing by filtering out non-editable special fields.
+        Prepare incident for yaml editing by filtering out non-editable special fields.
         
         Creates a copy of the incident with only editable fields in the KV stores.
         Non-editable special fields will be preserved from the original and restored
@@ -3818,15 +3731,15 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
-        use_toml_editor: bool = True,
+        use_yaml_editor: bool = True,
         metadata_only: bool = False,
         allow_validation_editor: bool = True,
     ) -> bool:
         """
         Update incident fields from KV list and/or description.
         
-        When use_editor=True and use_toml_editor=True (default), presents the full
-        incident with TOML frontmatter for editing. Non-editable special fields are
+        When use_editor=True and use_yaml_editor=True (default), presents the full
+        incident with yaml frontmatter for editing. Non-editable special fields are
         filtered out during editing and restored afterwards.
     
         Args:
@@ -3836,7 +3749,7 @@ class IncidentManager:
             description: Optional new description
             use_stdin: Read description from STDIN
             use_editor: Launch editor for description
-            use_toml_editor: If True with use_editor, edit full record with TOML (default)
+            use_yaml_editor: If True with use_editor, edit full record with yaml (default)
     
         Example:
             manager.update_incident_info(
@@ -3913,10 +3826,10 @@ class IncidentManager:
                 # User already edited the full record during validation error handling
                 # No need to open editor again - the incident is already updated
                 pass
-            elif use_editor and use_toml_editor:
-                # NEW BEHAVIOR: Edit full record with TOML frontmatter
+            elif use_editor and use_yaml_editor:
+                # NEW BEHAVIOR: Edit full record with yaml frontmatter
                 while True:  # ← NEW: Validation loop
-                    final_incident = self._edit_incident_with_toml(incident)
+                    final_incident = self._edit_incident_with_yaml(incident)
                     
                     if not final_incident:
                         # User cancelled
@@ -3927,7 +3840,7 @@ class IncidentManager:
                         self._validate_incident_fields(final_incident)
                         # Validation passed - accept it
                         incident = final_incident
-                        # updated_fields.append("full record (TOML edit)")
+                        # updated_fields.append("full record (yaml edit)")
                         break
                         
                     except ValueError as e:
@@ -3956,7 +3869,7 @@ class IncidentManager:
             elif use_stdin and StdinHandler.has_stdin_data():
                 final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
             elif use_editor:
-                # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
+                # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
                 final_description = EditorConfig.launch_editor(
                     initial_content=previous_content or "",
                 )
@@ -4038,12 +3951,12 @@ class IncidentManager:
         """
         return self.storage.load_updates(incident_id)
                 
-    def _edit_incident_with_toml(
+    def _edit_incident_with_yaml(
         self,
         incident: Incident,
     ) -> Optional[Incident]:
         """
-        Launch editor with full incident in TOML frontmatter format.
+        Launch editor with full incident in yaml frontmatter format.
         
         Flow:
         1. Filter out non-editable special fields
@@ -4070,7 +3983,7 @@ class IncidentManager:
             # Prepare incident for editing (filter non-editable fields)
             editable_incident = self._prepare_incident_for_editing(incident)
             
-            # Generate markdown with TOML frontmatter
+            # Generate markdown with yaml frontmatter
             markdown_content = editable_incident.to_markdown(self.project_config)
             
             # Create temp file
@@ -4210,7 +4123,7 @@ class IncidentManager:
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
-        use_toml_editor: bool = True,
+        use_yaml_editor: bool = True,
         custom_id: Optional[str] = None,
         template_id: Optional[str] = None,
         allow_validation_editor: bool = True,
@@ -4218,8 +4131,8 @@ class IncidentManager:
         """
         Create new incident from KV lists.
         
-        When use_editor=True and use_toml_editor=True (default), presents a 
-        template with TOML frontmatter for editing.
+        When use_editor=True and use_yaml_editor=True (default), presents a 
+        template with yaml frontmatter for editing.
         
         Args:
             kv_single: List of single-value KV strings (replaces)
@@ -4227,7 +4140,7 @@ class IncidentManager:
             description: Optional incident description
             use_stdin: Read description from STDIN
             use_editor: Launch editor
-            use_toml_editor: If True with use_editor, edit full record with TOML (default)
+            use_yaml_editor: If True with use_editor, edit full record with yaml (default)
             custom_id: Optional custom incident ID
         
         Example:
@@ -4239,7 +4152,7 @@ class IncidentManager:
                 ],
                 kv_multi=["tags$bug", "tags$urgent"],
                 use_editor=True,
-                use_toml_editor=True,
+                use_yaml_editor=True,
             )
         """
         author = self.effective_user["handle"]
@@ -4322,10 +4235,10 @@ class IncidentManager:
             # User already edited the full record during validation error handling
             # No need to open editor again - the incident is already complete
             pass
-        elif use_editor and use_toml_editor:
-            # NEW BEHAVIOR: Edit full record with TOML
+        elif use_editor and use_yaml_editor:
+            # NEW BEHAVIOR: Edit full record with yaml
             while True:  # ← NEW: Validation loop
-                final_incident = self._create_incident_with_toml(incident)
+                final_incident = self._create_incident_with_yaml(incident)
                 
                 if not final_incident:
                     # User cancelled
@@ -4372,7 +4285,7 @@ class IncidentManager:
         elif use_stdin and StdinHandler.has_stdin_data():
             final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
         elif use_editor:
-            # OLD BEHAVIOR (when use_toml_editor=False): Edit description only
+            # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
             final_description = EditorConfig.launch_editor(
                 initial_content=(
                     "# Add your description below\n"
@@ -4467,7 +4380,7 @@ class IncidentManager:
     
         return incidents
 
-    def _create_update_with_toml(
+    def _create_update_with_yaml(
         self,
         incident_id: str,
         initial_message: str,
@@ -4476,14 +4389,14 @@ class IncidentManager:
         initial_kv_floats: dict,
     ) -> Optional[tuple]:
         """
-        Launch editor with note template including TOML frontmatter for KV data.
+        Launch editor with note template including yaml frontmatter for KV data.
         
         Used when adding notes with KV data. The note can have its own independent
         KV data that doesn't affect the incident.
         
         Flow:
         1. Create a temporary incident-like structure with the KV data
-        2. Generate markdown with TOML frontmatter
+        2. Generate markdown with yaml frontmatter
         3. Launch editor
         4. Parse back
         5. Handle errors with retry
@@ -4510,7 +4423,7 @@ class IncidentManager:
             temp_incident.kv_integers = initial_kv_integers.copy()
             temp_incident.kv_floats = initial_kv_floats.copy()
             
-            # Generate markdown with TOML frontmatter
+            # Generate markdown with yaml frontmatter
             markdown_content = temp_incident.to_markdown(self.project_config)
             
             # Create temp file
@@ -4598,7 +4511,7 @@ class IncidentManager:
         message: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
-        use_toml_editor: bool = True,
+        use_yaml_editor: bool = True,
         kv_single: Optional[List[str]] = None,
         kv_multi: Optional[List[str]] = None,
         template_id: Optional[str] = None,
@@ -4606,15 +4519,15 @@ class IncidentManager:
         """
         Add update with optional independent KV data.
         
-        When use_editor=True and use_toml_editor=True (default), presents the
-        note with TOML frontmatter for editing KV data.
+        When use_editor=True and use_yaml_editor=True (default), presents the
+        note with yaml frontmatter for editing KV data.
         
         Args:
             incident_id: Incident ID
             message: Update message
             use_stdin: Read from STDIN
             use_editor: Open editor
-            use_toml_editor: If True with use_editor, edit note with TOML (default)
+            use_yaml_editor: If True with use_editor, edit note with yaml (default)
             kv_single: Single-value KV for UPDATE only (replaces keys)
             kv_multi: Multi-value KV for UPDATE only (adds values)
         
@@ -4689,11 +4602,11 @@ class IncidentManager:
         
         # Determine message source
         final_message = None        
-        if use_editor and use_toml_editor:
-            # NEW BEHAVIOR: Edit note with TOML frontmatter
+        if use_editor and use_yaml_editor:
+            # NEW BEHAVIOR: Edit note with yaml frontmatter
             initial_message = message or "# Add your note below\n# Lines starting with # are ignored\n\n"
             
-            result = self._create_update_with_toml(
+            result = self._create_update_with_yaml(
                 incident_id,
                 initial_message,
                 update_kv_strings,
@@ -4712,7 +4625,7 @@ class IncidentManager:
         elif use_stdin and StdinHandler.has_stdin_data():
             final_message = StdinHandler.read_stdin_with_timeout(timeout=2.0)
         elif use_editor:
-            # OLD BEHAVIOR (when use_toml_editor=False): Edit message only
+            # OLD BEHAVIOR (when use_yaml_editor=False): Edit message only
             final_message = EditorConfig.launch_editor(
                 initial_content=(
                     "# Add your update below\n"
@@ -4858,7 +4771,7 @@ class IncidentManager:
         
         # Launch editor to fix
         print("\nOpening editor to correct validation error...", file=sys.stderr)
-        return self._edit_incident_with_toml(incident)
+        return self._edit_incident_with_yaml(incident)
 
 # ============================================================================
 # CLI
@@ -5355,9 +5268,9 @@ class IncidentCLI:
         )
 
         record_new_parser.add_argument(
-            "--no-toml",
+            "--no-yaml",
             action="store_true",
-            help="Edit description only (without TOML frontmatter)",
+            help="Edit description only (without yaml frontmatter)",
         )
         
         record_new_parser.add_argument(
@@ -5421,11 +5334,11 @@ class IncidentCLI:
         record_update_parser.add_argument("record_id", help="Record ID")
         self._add_kv_options(record_update_parser)
         
-        # NEW: Add --no-toml flag
+        # NEW: Add --no-yaml flag
         record_update_parser.add_argument(
-            "--no-toml",
+            "--no-yaml",
             action="store_true",
-            help="Edit description only (without TOML frontmatter)",
+            help="Edit description only (without yaml frontmatter)",
         )
         
         record_update_parser.add_argument(
@@ -5474,9 +5387,9 @@ class IncidentCLI:
         )
         
         note_add_parser.add_argument(
-            "--no-toml",
+            "--no-yaml",
             action="store_true",
-            help="Edit message only (without TOML frontmatter)",
+            help="Edit message only (without yaml frontmatter)",
         )
         note_add_parser.add_argument(
             "--template",
@@ -6001,7 +5914,7 @@ $update_kv
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_description or has_stdin)
-        use_toml_editor = not getattr(args, 'no_toml', False)
+        use_yaml_editor = not getattr(args, 'no_yaml', False)
         template_id = getattr(args, 'template', None)
         allow_validation_editor = not getattr(args, 'no_validation_editor', False)
         
@@ -6021,7 +5934,7 @@ $update_kv
                 description=args.description,
                 use_stdin=has_stdin and not has_description,
                 use_editor=use_editor,
-                use_toml_editor=use_toml_editor,
+                use_yaml_editor=use_yaml_editor,
                 custom_id=getattr(args, 'custom_id', None),
                 template_id=template_id,
                 allow_validation_editor=allow_validation_editor,
@@ -6117,7 +6030,7 @@ $update_kv
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
         
-        use_toml_editor = not getattr(args, 'no_toml', False)
+        use_yaml_editor = not getattr(args, 'no_yaml', False)
         metadata_only = getattr(args, 'metadata_only', False)
         allow_validation_editor = not getattr(args, 'no_validation_editor', False)
         
@@ -6143,7 +6056,7 @@ $update_kv
                 description=args.description if has_description else None,
                 use_stdin=has_stdin and not has_description,
                 use_editor=use_editor,
-                use_toml_editor=use_toml_editor,
+                use_yaml_editor=use_yaml_editor,
                 metadata_only=metadata_only,
                 allow_validation_editor=allow_validation_editor,
             )
@@ -6171,7 +6084,7 @@ $update_kv
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_message or has_stdin)
-        use_toml_editor = not getattr(args, 'no_toml', False)
+        use_yaml_editor = not getattr(args, 'no_yaml', False)
         template_id = getattr(args, 'template', None)
         
         # Validate template usage
@@ -6192,7 +6105,7 @@ $update_kv
                 message=args.message if has_message else None,
                 use_stdin=has_stdin and not has_message,
                 use_editor=use_editor,
-                use_toml_editor=use_toml_editor,
+                use_yaml_editor=use_yaml_editor,
                 kv_single=combined_kv,
                 kv_multi=None,
                 template_id=template_id,
