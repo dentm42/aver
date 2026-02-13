@@ -2348,6 +2348,11 @@ class IncidentIndexDatabase:
     def __init__(self, database_path: Path):
         self.database_path = database_path
         self._ensure_schema()
+    
+    @staticmethod
+    def _generate_timestamp() -> str:
+        """Generate ISO 8601 timestamp with Z suffix."""
+        return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
     def _ensure_schema(self):
         """Create tables if they don't exist."""
@@ -2428,7 +2433,7 @@ class IncidentIndexDatabase:
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
     
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         # Update minimal index entry
         cursor.execute(
@@ -2581,7 +2586,7 @@ class IncidentIndexDatabase:
         """Index key-value data for incident (update_id = NULL)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         # Clear existing KV data for this incident (incident-level only)
         cursor.execute("DELETE FROM kv_store WHERE incident_id = ? AND update_id IS NULL", (incident.id,))
@@ -2635,7 +2640,7 @@ class IncidentIndexDatabase:
         """Index key-value data for update (update_id is NOT NULL)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         # Insert string KV data for update
         for key, values in (kv_strings or {}).items():
@@ -2683,7 +2688,7 @@ class IncidentIndexDatabase:
         """Set single-value KV (replaces existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         if op == KVParser.TYPE_STRING:
             value_column = "value_string"
@@ -2721,7 +2726,7 @@ class IncidentIndexDatabase:
         """Add multi-value KV (keeps existing)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         if op == KVParser.TYPE_STRING:
             value_column = "value_string"
@@ -3203,6 +3208,134 @@ class IncidentManager:
         """
         self.effective_user = {"handle": handle, "email": email}
     
+    @staticmethod
+    def _generate_timestamp() -> str:
+        """Generate ISO 8601 timestamp with Z suffix."""
+        return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+    
+    def _remove_kv(self, incident: Incident, key: str, value: Optional[Any] = None) -> None:
+        """
+        Remove KV entry from incident.
+        
+        If value is None, removes the entire key from all KV stores.
+        If value is provided, removes only that specific value from the appropriate store.
+        
+        Args:
+            incident: Incident to modify
+            key: Key to remove
+            value: Optional specific value to remove (for multi-value fields)
+        """
+        if value is None:
+            # Remove entire key
+            if key in incident.kv_strings:
+                del incident.kv_strings[key]
+            if key in incident.kv_integers:
+                del incident.kv_integers[key]
+            if key in incident.kv_floats:
+                del incident.kv_floats[key]
+        else:
+            # Remove specific value
+            if key in incident.kv_strings:
+                incident.kv_strings[key] = [v for v in incident.kv_strings[key] if v != str(value)]
+            if key in incident.kv_integers:
+                incident.kv_integers[key] = [v for v in incident.kv_integers[key] if v != int(value)]
+            if key in incident.kv_floats:
+                incident.kv_floats[key] = [v for v in incident.kv_floats[key] if v != float(value)]
+    
+    def _get_kv_store_for_type(
+        self,
+        kvtype: Optional[str],
+        incident: Incident,
+    ) -> tuple[dict, callable]:
+        """
+        Get the appropriate KV store and conversion function for a type.
+        
+        Args:
+            kvtype: Type marker ($ for string, # for int, % for float, None for default)
+            incident: Incident containing the KV stores
+        
+        Returns:
+            (kv_store_dict, conversion_function)
+        """
+        if kvtype == KVParser.TYPE_INTEGER:
+            return incident.kv_integers, int
+        elif kvtype == KVParser.TYPE_FLOAT:
+            return incident.kv_floats, float
+        else:  # STRING or None - default to string
+            return incident.kv_strings, str
+    
+    def _apply_kv_changes_with_validation(
+        self,
+        incident: Incident,
+        kv_single: List[str],
+        kv_multi: List[str],
+        allow_validation_editor: bool,
+        processor_fn: callable,
+    ) -> tuple[Incident, bool]:
+        """
+        Apply KV changes with validation retry loop.
+        
+        This method handles the common pattern of:
+        1. Parsing KV lists
+        2. Processing them via a callback
+        3. Handling validation errors with editor retry
+        4. Managing the already_edited_in_validation flag
+        
+        Args:
+            incident: Incident to modify
+            kv_single: List of single-value KV strings
+            kv_multi: List of multi-value KV strings
+            allow_validation_editor: Whether to offer editor on validation failure
+            processor_fn: Callback to process the parsed KV entries.
+                         Signature: (incident, parsed_single, parsed_multi) -> None
+        
+        Returns:
+            (updated_incident, already_edited_in_validation)
+        
+        Raises:
+            ValueError: If validation fails and user abandons
+            RuntimeError: If validation fails and user abandons (from callback)
+        """
+        parsed_single = KVParser.parse_kv_list(kv_single) if kv_single else []
+        parsed_multi = KVParser.parse_kv_list(kv_multi) if kv_multi else []
+        already_edited_in_validation = False
+        
+        while True:
+            try:
+                # Call processor function (different for update vs create)
+                processor_fn(incident, parsed_single, parsed_multi)
+                break
+                
+            except ValueError as e:
+                # Validation failed - offer to edit
+                corrected = self._handle_validation_error(incident, e, allow_validation_editor)
+                
+                if corrected:
+                    # User edited - validate the edited incident
+                    incident = corrected
+                    already_edited_in_validation = True
+                    
+                    try:
+                        # Validate all fields in edited incident
+                        self._validate_incident_fields(incident)
+                        # Validation passed - clear CLI KV so we don't re-apply
+                        parsed_single = []
+                        parsed_multi = []
+                        break
+                        
+                    except ValueError as e2:
+                        # Editor result still invalid - show error and loop
+                        print(f"\nValidation error in edited record: {e2}", file=sys.stderr)
+                        # Clear parsed KV so we only validate the edited incident on retry
+                        parsed_single = []
+                        parsed_multi = []
+                        continue
+                else:
+                    # User abandoned - let the caller handle this
+                    raise
+        
+        return incident, already_edited_in_validation
+    
     def _validate_and_store_kv(
         self,
         key: str,
@@ -3426,41 +3559,20 @@ class IncidentManager:
                         incident.kv_floats[key].extend(float_values)
         else:
             # Non-special field - use type hint
-            if kvtype == KVParser.TYPE_STRING or kvtype is None:
-                # Default to string if no type hint
-                if replace or key not in incident.kv_strings:
-                    if isinstance(value, list):
-                        incident.kv_strings[key] = [str(v) for v in value]
-                    else:
-                        incident.kv_strings[key] = [str(value)] if value is not None else []
+            kv_store, converter = self._get_kv_store_for_type(kvtype, incident)
+            
+            if replace or key not in kv_store:
+                # Replace mode or new key
+                if isinstance(value, list):
+                    kv_store[key] = [converter(v) for v in value]
                 else:
-                    # Append
-                    if isinstance(value, list):
-                        incident.kv_strings[key].extend([str(v) for v in value])
-                    else:
-                        incident.kv_strings[key].append(str(value))
-            elif kvtype == KVParser.TYPE_INTEGER:
-                if replace or key not in incident.kv_integers:
-                    if isinstance(value, list):
-                        incident.kv_integers[key] = [int(v) for v in value]
-                    else:
-                        incident.kv_integers[key] = [int(value)] if value is not None else []
+                    kv_store[key] = [converter(value)] if value is not None else []
+            else:
+                # Append mode
+                if isinstance(value, list):
+                    kv_store[key].extend([converter(v) for v in value])
                 else:
-                    if isinstance(value, list):
-                        incident.kv_integers[key].extend([int(v) for v in value])
-                    else:
-                        incident.kv_integers[key].append(int(value))
-            elif kvtype == KVParser.TYPE_FLOAT:
-                if replace or key not in incident.kv_floats:
-                    if isinstance(value, list):
-                        incident.kv_floats[key] = [float(v) for v in value]
-                    else:
-                        incident.kv_floats[key] = [float(value)] if value is not None else []
-                else:
-                    if isinstance(value, list):
-                        incident.kv_floats[key].extend([float(v) for v in value])
-                    else:
-                        incident.kv_floats[key].append(float(value))
+                    kv_store[key].append(converter(value))
 
     def _create_incident_with_toml(
         self,
@@ -3739,7 +3851,7 @@ class IncidentManager:
             raise RuntimeError(f"Incident {incident_id} not found")
     
         author = self.effective_user["handle"]
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
     
         updated_fields = []
         previous_content = None
@@ -3747,79 +3859,43 @@ class IncidentManager:
         orig_kv_integers=incident.kv_integers;        
         orig_kv_floats=incident.kv_floats;
         
-        # Track if user already edited the incident during validation
-        already_edited_in_validation = False
-        
-        # Parse single and multi KV updates separately
-        parsed_single = KVParser.parse_kv_list(kv_single) if kv_single else []
-        parsed_multi = KVParser.parse_kv_list(kv_multi) if kv_multi else []
-        
-        while True:  # NEW: Validation retry loop
-            try:
-                # Process single-value KV (replaces)
-                for key, kvtype, op, value in parsed_single:
-                    if op == '-':
-                        # Removal
-                        if key in incident.kv_strings:
-                            del incident.kv_strings[key]
-                        if key in incident.kv_integers:
-                            del incident.kv_integers[key]
-                        if key in incident.kv_floats:
-                            updated_fields.append(f"removed {key}:{incident.kv_floats[key]}")
-                            del incident.kv_floats[key]
-                    else:
-                        # Update
-                        updated_fields.append(f"Set {key}: {value}")
-                        self._validate_and_store_kv_single(key, kvtype, value, incident)
-                
-                # Process multi-value KV (appends)
-                for key, kvtype, op, value in parsed_multi:
-                    if op == '-':
-                        # Removal for multi-value
-                        if key in incident.kv_strings and value is not None:
-                            incident.kv_strings[key] = [v for v in incident.kv_strings[key] if v != str(value)]
-                        if key in incident.kv_integers and value is not None:
-                            incident.kv_integers[key] = [v for v in incident.kv_integers[key] if v != int(value)]
-                        if key in incident.kv_floats and value is not None:
-                            incident.kv_floats[key] = [v for v in incident.kv_floats[key] if v != float(value)]
-                        updated_fields.append(f"Removed {key}: {value}")
-                    else:
-                        updated_fields.append(f"Add {key}: {value}")
-                        self._validate_and_store_kv_multi(key, kvtype, value, incident)
-                
-                # Validation succeeded - break out of retry loop
-                break
-                
-            except ValueError as e:
-                # Validation failed - offer to edit
-                corrected = self._handle_validation_error(incident, e, allow_validation_editor)
-                
-                if corrected:
-                    # User edited - validate the edited incident
-                    incident = corrected
-                    already_edited_in_validation = True  # Flag that user already edited
-                    
-                    try:
-                        # Validate all fields in edited incident
-                        self._validate_incident_fields(incident)
-                        # Validation passed - clear CLI KV and break
-                        updated_fields = ["full record (edited to fix validation)"]
-                        # Clear parsed KV so we don't re-apply CLI changes
-                        parsed_single = []
-                        parsed_multi = []
-                        break
-                        
-                    except ValueError as e2:
-                        # Editor result still invalid - show error and loop
-                        print(f"\nValidation error in edited record: {e2}", file=sys.stderr)
-                        # Clear parsed KV so we only validate the edited incident on retry
-                        parsed_single = []
-                        parsed_multi = []
-                        # Loop back - offer edit again
-                        continue
+        # Define processor for update operations
+        def process_update_kv(inc, parsed_single, parsed_multi):
+            # Process single-value KV (replaces)
+            for key, kvtype, op, value in parsed_single:
+                if op == '-':
+                    # Removal
+                    self._remove_kv(inc, key)
+                    updated_fields.append(f"removed {key}")
                 else:
-                    # User abandoned
-                    return False
+                    # Update
+                    updated_fields.append(f"Set {key}: {value}")
+                    self._validate_and_store_kv_single(key, kvtype, value, inc)
+            
+            # Process multi-value KV (appends)
+            for key, kvtype, op, value in parsed_multi:
+                if op == '-':
+                    # Removal for multi-value
+                    self._remove_kv(inc, key, value)
+                    updated_fields.append(f"Removed {key}: {value}")
+                else:
+                    updated_fields.append(f"Add {key}: {value}")
+                    self._validate_and_store_kv_multi(key, kvtype, value, inc)
+        
+        # Apply KV changes with validation retry loop
+        try:
+            incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                incident,
+                kv_single,
+                kv_multi,
+                allow_validation_editor,
+                process_update_kv,
+            )
+            if already_edited_in_validation:
+                updated_fields = ["full record (edited to fix validation)"]
+        except ValueError:
+            # User abandoned validation
+            return False
                 
         # Handle description/full record updates
         if (not metadata_only) and (description or use_stdin or use_editor):
@@ -4186,7 +4262,7 @@ class IncidentManager:
         else:
             incident_id = IDGenerator.generate_incident_id()
 
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
         
         # Load template if specified
         if template_id:
@@ -4205,53 +4281,32 @@ class IncidentManager:
             # Initialize empty incident
             incident = Incident(id=incident_id)
         
-        # Track if user already edited the incident during validation
-        already_edited_in_validation = False
+        # Define processor for create operations
+        def process_create_kv(inc, parsed_single, parsed_multi):
+            # Process single-value KV (replaces)
+            for key, kvtype, op, value in parsed_single:
+                if op == '-':
+                    raise ValueError(f"Cannot use removal operator '-' when creating incident")
+                self._validate_and_store_kv_single(key, kvtype, value, inc)
+            
+            # Process multi-value KV (appends)
+            for key, kvtype, op, value in parsed_multi:
+                if op == '-':
+                    raise ValueError(f"Cannot use removal operator '-' when creating incident")
+                self._validate_and_store_kv_multi(key, kvtype, value, inc)
         
-        # Parse single and multi KV updates separately
-        parsed_single = KVParser.parse_kv_list(kv_single) if kv_single else []
-        parsed_multi = KVParser.parse_kv_list(kv_multi) if kv_multi else []
-
-        while True:  # NEW: Validation retry loop
-            try:
-                # Process single-value KV (replaces)
-                for key, kvtype, op, value in parsed_single:
-                    if op == '-':
-                        raise ValueError(f"Cannot use removal operator '-' when creating incident")
-                    self._validate_and_store_kv_single(key, kvtype, value, incident)
-                
-                # Process multi-value KV (appends)
-                for key, kvtype, op, value in parsed_multi:
-                    if op == '-':
-                        raise ValueError(f"Cannot use removal operator '-' when creating incident")
-                    self._validate_and_store_kv_multi(key, kvtype, value, incident)
-                
-                # Validation succeeded - break out of retry loop
-                break
-                
-            except ValueError as e:
-                # Validation failed - offer to edit
-                corrected = self._handle_validation_error(incident, e, allow_validation_editor)
-                if corrected:
-                    incident = corrected
-                    already_edited_in_validation = True  # Flag that user already edited
-                    # Re-evaluate
-                    try:
-                        self._validate_incident_fields(incident)
-                        # Validation passed - clear CLI KV so we don't re-apply
-                        parsed_single = []
-                        parsed_multi = []
-                        break
-                    except ValueError as e2:
-                        # Editor result still has validation errors - loop again
-                        print(f"\nValidation error in edited record {e2}.", file=sys.stderr)
-                        # Clear parsed KV so we only validate the edited incident on retry
-                        parsed_single = []
-                        parsed_multi = []
-                        continue
-                else:
-                    # User abandoned
-                    raise RuntimeError("Record creation abandoned due to validation error")
+        # Apply KV changes with validation retry loop
+        try:
+            incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                incident,
+                kv_single,
+                kv_multi,
+                allow_validation_editor,
+                process_create_kv,
+            )
+        except (ValueError, RuntimeError):
+            # User abandoned - re-raise for CLI handler
+            raise RuntimeError("Record creation abandoned due to validation error")
         
         # Add system fields
         self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
@@ -4571,7 +4626,7 @@ class IncidentManager:
             raise RuntimeError(f"Incident {incident_id} not found")
         
         author = self.effective_user["handle"]
-        now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+        now = self._generate_timestamp()
         
         # Parse KV data for the UPDATE ONLY
         update_kv_strings = {}
@@ -4936,6 +4991,30 @@ class IncidentCLI:
             explicit_location=explicit_location,
             interactive=interactive,
         )
+    
+    def _setup_write_command(self, args) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
+        """
+        Common setup for write commands (create, update, add_update).
+        
+        Handles:
+        - Manager initialization
+        - Git identity checking and override
+        - KV list building
+        
+        Returns:
+            (manager, (kv_single, kv_multi))
+        """
+        manager = self._get_manager(args)
+        
+        # Check git identity and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
+        
+        # Build KV lists
+        kv_lists = self._build_kv_list(manager, args)
+        
+        return manager, kv_lists
 
     def _check_git_identity(self, args, manager: IncidentManager):
         """
@@ -5917,15 +5996,8 @@ $update_kv
 
     def _cmd_create(self, args):
         """Create record."""
-        manager = self._get_manager(args)
+        manager, (kv_single, kv_multi) = self._setup_write_command(args)
         
-        # Check git identity
-        identity_override = self._check_git_identity(args, manager)
-        if identity_override:
-            manager.set_user_override(identity_override["handle"], identity_override["email"])
-        
-        # Build KV lists (now returns tuple)
-        kv_single, kv_multi = self._build_kv_list(manager, args)
         has_description = args.description is not None
         has_stdin = StdinHandler.has_stdin_data()
         use_editor = not (has_description or has_stdin)
@@ -6039,15 +6111,7 @@ $update_kv
         
     def _cmd_update(self, args):
         """Update record metadata and/or description."""
-        manager = self._get_manager(args)
-    
-        # Check git identity before write operation and apply override if needed
-        identity_override = self._check_git_identity(args, manager)
-        if identity_override:
-            manager.set_user_override(identity_override["handle"], identity_override["email"])
-    
-        # Build KV lists from special fields and generic KV arguments (now returns tuple)
-        kv_single, kv_multi = self._build_kv_list(manager, args)
+        manager, (kv_single, kv_multi) = self._setup_write_command(args)
     
         has_description = True if (hasattr(args, 'description') and args.description is not None) else False
         has_stdin = StdinHandler.has_stdin_data()
@@ -6102,12 +6166,7 @@ $update_kv
             
     def _cmd_add_update(self, args):
         """Add note to record."""
-        manager = self._get_manager(args)
-
-        # Check git identity
-        identity_override = self._check_git_identity(args, manager)
-        if identity_override:
-            manager.set_user_override(identity_override["handle"], identity_override["email"])
+        manager, (kv_single, kv_multi) = self._setup_write_command(args)
 
         has_message = args.message is not None
         has_stdin = StdinHandler.has_stdin_data()
@@ -6125,9 +6184,6 @@ $update_kv
             sys.exit(1)
 
         try:
-            # Build KV lists for note (uses new-style options)
-            kv_single, kv_multi = self._build_kv_list(manager, args)
-            
             # For notes, combine both into kv_single parameter (legacy behavior preserved)
             combined_kv = kv_single + kv_multi
             
