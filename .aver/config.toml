@@ -27,3 +27,30 @@ accepted_values = ["low", "medium", "high", "critical"]
 type = "multi"
 value_type = "string"
 editable = true
+
+[special_fields.created_at]
+type = "single"
+value_type = "string"
+editable = false           # Not editable = set once, never updated, hidden from editor
+enabled = true             # Enabled = field is active
+required = true            # Required = must have a value
+system_value = "datetime"  # Auto-populated with current datetime (YYYY-MM-DD HH:MM:SS)
+
+# Created by (username) - automatically populated on creation
+[special_fields.created_by_username]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"  # Auto-populated with user's handle/name
+
+# Updated timestamp - automatically updated on every edit
+[special_fields.updated_at]
+type = "single"
+value_type = "string"
+editable = true            # Editable = true means auto-update on edit
+enabled = true
+required = false
+system_value = "datetime"  # Will update to current datetime on every edit
+
