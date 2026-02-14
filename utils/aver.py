@@ -3286,6 +3286,8 @@ class IncidentManager:
         - Fields with default values (applied if field is empty)
         - Auto-update fields (editable=True + system_value set, only on updates)
         
+        Important: Non-editable fields are ONLY set on creation, never on updates.
+        
         Args:
             incident: Incident to modify (modified in-place)
             is_create: True if creating new incident, False if updating
@@ -3309,16 +3311,18 @@ class IncidentManager:
             
             # Case 1: Field has system_value
             if field.system_value:
-                # Non-editable system fields: always set (override user input)
+                # Non-editable system fields: ONLY set on creation, never on updates
                 if not field.editable:
-                    should_set = True
-                    value_to_set = SystemValueDeriver.derive_value(
-                        field.system_value,
-                        user_identity=user_identity,
-                        incident_id=incident.id,
-                        update_id=update_id,
-                    )
-                # Editable system fields: only set on creation or if configured to auto-update
+                    if is_create:
+                        should_set = True
+                        value_to_set = SystemValueDeriver.derive_value(
+                            field.system_value,
+                            user_identity=user_identity,
+                            incident_id=incident.id,
+                            update_id=update_id,
+                        )
+                    # On update: do nothing - preserve existing value
+                # Editable system fields: set on creation, auto-update on edits
                 elif is_create:
                     should_set = True
                     value_to_set = SystemValueDeriver.derive_value(
@@ -3360,15 +3364,23 @@ class IncidentManager:
             
             # Apply the value if needed
             if should_set and value_to_set is not None:
-                if field.field_type == "single":
+                # Handle multi-value fields properly
+                if field.field_type == "multi":
+                    # For multi-value fields, check if value_to_set is already a list
+                    if isinstance(value_to_set, list):
+                        values = value_to_set
+                    else:
+                        # Single value for multi-field - wrap in list
+                        values = [value_to_set]
+                    
                     if field.value_type == "string":
-                        incident.kv_strings[field_name] = [value_to_set]
+                        incident.kv_strings[field_name] = values
                     elif field.value_type == "integer":
-                        incident.kv_integers[field_name] = [int(value_to_set)]
+                        incident.kv_integers[field_name] = [int(v) for v in values]
                     elif field.value_type == "float":
-                        incident.kv_floats[field_name] = [float(value_to_set)]
-                else:  # multi
-                    # For multi-value fields with system values, set as single-item list
+                        incident.kv_floats[field_name] = [float(v) for v in values]
+                else:
+                    # Single-value field
                     if field.value_type == "string":
                         incident.kv_strings[field_name] = [value_to_set]
                     elif field.value_type == "integer":
