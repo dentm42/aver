@@ -1,0 +1,159 @@
+# Sample Project Configuration for aver
+# This demonstrates the new system field capabilities
+
+# ============================================================================
+# System Fields with Auto-Population
+# ============================================================================
+
+# Created timestamp - automatically populated on creation, never updated
+[special_fields.created_at]
+type = "single"
+value_type = "string"
+editable = false           # Not editable = set once, never updated, hidden from editor
+enabled = true             # Enabled = field is active
+required = true            # Required = must have a value
+system_value = "datetime"  # Auto-populated with current datetime (YYYY-MM-DD HH:MM:SS)
+
+# Created by (username) - automatically populated on creation
+[special_fields.created_by_username]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"  # Auto-populated with user's handle/name
+
+# Created by (email) - automatically populated on creation
+[special_fields.created_by_email]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+system_value = "user_email"  # Auto-populated with user's email
+
+# Updated timestamp - automatically updated on every edit
+[special_fields.updated_at]
+type = "single"
+value_type = "string"
+editable = true            # Editable = true means auto-update on edit
+enabled = true
+required = false
+system_value = "datetime"  # Will update to current datetime on every edit
+
+# Record ID - stores the incident ID itself
+[special_fields.record_id]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "recordid"  # Auto-populated with the incident ID
+
+# ============================================================================
+# Regular Fields with Validation and Defaults
+# ============================================================================
+
+# Title - required, user-editable field
+[special_fields.title]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true            # User must provide a title
+
+# Status - with accepted values and default
+[special_fields.status]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+accepted_values = ["open", "in_progress", "resolved", "closed"]
+default = "open"           # Static default value
+
+# Priority - with accepted values
+[special_fields.priority]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+accepted_values = ["low", "medium", "high", "critical"]
+default = "medium"
+
+# Severity - numeric field with accepted values
+[special_fields.severity]
+type = "single"
+value_type = "integer"
+editable = true
+enabled = true
+required = false
+accepted_values = ["1", "2", "3", "4", "5"]
+default = "3"
+
+# ============================================================================
+# Multi-value Fields
+# ============================================================================
+
+# Tags - multi-value field
+[special_fields.tags]
+type = "multi"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+
+# Assignees - multi-value field
+[special_fields.assignees]
+type = "multi"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+
+# ============================================================================
+# Date-only Fields (using datestamp system value)
+# ============================================================================
+
+# Created date (no time) - date-only version
+[special_fields.created_date]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+system_value = "datestamp"  # Auto-populated with date only (YYYY-MM-DD)
+
+# Due date - user-editable date field
+[special_fields.due_date]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+
+# ============================================================================
+# Deprecated/Disabled Fields Example
+# ============================================================================
+
+# Old field that's being phased out - disabled but not removed
+[special_fields.old_category]
+type = "single"
+value_type = "string"
+editable = true
+enabled = false            # Disabled = treated as regular field, no special handling
+required = false
+
+# ============================================================================
+# Field with System Value as Default
+# ============================================================================
+
+# Reported date - defaults to current date if not provided
+[special_fields.reported_date]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+default = "${datestamp}"   # Default can reference system values using ${} syntax

@@ -332,14 +332,10 @@ class Incident:
     
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with yaml frontmatter."""
-        # Build frontmatter from special fields
-
-        #body = self.kv_strings.pop("description", None)
-        #if body is not None:
-        #    body = body[0]
+        # Build frontmatter from enabled special fields only
         
         frontmatter = {}
-        for field_name in project_config.get_special_fields().keys():
+        for field_name in project_config.get_enabled_special_fields().keys():
             field = project_config.get_special_field(field_name)
             
             if field.field_type == "single":
@@ -371,7 +367,6 @@ class Incident:
         # Build custom fields section (non-special fields with type hints)
         other_kv = self._get_other_kv(project_config)
         custom_fields = {}
-        # print (f"OTHER_KV: {other_kv}")
         if other_kv:
             custom_fields = {}
             for key, val in other_kv.items():
@@ -384,7 +379,6 @@ class Incident:
                 else:
                     hinted_key = key
                 custom_fields[hinted_key] = val
-                # print (f"{hinted_key} = {val}")
         
         all_frontmatter = custom_fields | frontmatter
         return MarkdownDocument.create( all_frontmatter, body = self.content )
@@ -679,18 +673,34 @@ class SpecialField:
         value_type: str = "string",  # "string", "integer", "float"
         accepted_values: Optional[List[str]] = None,
         editable: bool = True,
+        enabled: bool = True,
+        required: bool = False,
+        system_value: Optional[str] = None,
+        default: Optional[str] = None,
     ):
         self.name = name
         self.field_type = field_type  # single vs multi-value
         self.value_type = value_type
         self.accepted_values = accepted_values or []
         self.editable = editable
+        self.enabled = enabled
+        self.required = required
+        self.system_value = system_value  # e.g., "datetime", "user_email", "${datetime}"
+        self.default = default
     
     def validate(self, value: Any) -> bool:
         """Check if value is acceptable."""
         if self.accepted_values and str(value) not in self.accepted_values:
             return False
         return True
+    
+    def is_system_field(self) -> bool:
+        """Check if this field has a system-derived value."""
+        return self.system_value is not None
+    
+    def is_auto_update_field(self) -> bool:
+        """Check if this field should auto-update on edits (editable=True + system_value set)."""
+        return self.editable and self.system_value is not None
 
 
 class ProjectConfig:
@@ -723,30 +733,12 @@ class ProjectConfig:
         """Initialize with sensible defaults."""
         self._raw_config = {
             "special_fields": {
-                "recordname": {
-                    "type": "single",
-                    "value_type": "string",
-                    "editable": True,
-                },
-                "created_at": {
-                    "type": "single",
-                    "value_type": "string",
-                    "editable": True,
-                },
-                "created_by": {
-                    "type": "single",
-                    "value_type": "string",
-                    "editable": True,
-                },
-                "updated_at": {
-                    "type": "single",
-                    "value_type": "string",
-                    "editable": True,
-                },
                 "title": {
                     "type": "single",
                     "value_type": "string",
                     "editable": True,
+                    "enabled": True,
+                    "required": False,
                 },
             }
         }
@@ -763,6 +755,10 @@ class ProjectConfig:
             value_type = field_def.get("value_type", "string")
             accepted_values = field_def.get("accepted_values", [])
             editable = field_def.get("editable", True)
+            enabled = field_def.get("enabled", True)
+            required = field_def.get("required", False)
+            system_value = field_def.get("system_value", None)
+            default = field_def.get("default", None)
             
             self._special_fields[field_name] = SpecialField(
                 name=field_name,
@@ -770,11 +766,22 @@ class ProjectConfig:
                 value_type=value_type,
                 accepted_values=accepted_values,
                 editable=editable,
+                enabled=enabled,
+                required=required,
+                system_value=system_value,
+                default=default,
             )
     
     def get_special_fields(self) -> Dict[str, SpecialField]:
         """Get all special field definitions."""
         return self._special_fields
+    
+    def get_enabled_special_fields(self) -> Dict[str, SpecialField]:
+        """Get only enabled special field definitions."""
+        return {
+            name: field for name, field in self._special_fields.items()
+            if field.enabled
+        }
     
     def get_special_field(self, name: str) -> Optional[SpecialField]:
         """Get specific special field definition."""
@@ -783,6 +790,11 @@ class ProjectConfig:
     def is_special_field(self, name: str) -> bool:
         """Check if field is a special field."""
         return name in self._special_fields
+    
+    def is_enabled_special_field(self, name: str) -> bool:
+        """Check if field is an enabled special field."""
+        field = self._special_fields.get(name)
+        return field is not None and field.enabled
     
     def validate_field(self, name: str, value: Any) -> tuple[bool, Optional[str]]:
         """
@@ -795,14 +807,153 @@ class ProjectConfig:
         if not field:
             return False, f"Unknown field: {name}"
         
+        if not field.enabled:
+            return True, None  # Disabled fields pass validation
+        
         if field.accepted_values and str(value) not in field.accepted_values:
-            return False, f"Invalid {name}: {value}. Accepted: {field.accepted_values}"
+            return False, f"Invalid {name}: {value}. Accepted: {', '.join(field.accepted_values)}"
+        
+        return True, None
+    
+    def validate_required_fields(self, incident: 'Incident') -> tuple[bool, Optional[str]]:
+        """
+        Validate that all required fields are present and non-empty.
+        
+        Returns:
+            (is_valid, error_message)
+        """
+        for field_name, field in self._special_fields.items():
+            if not field.enabled or not field.required:
+                continue
+            
+            # Check if field has a value
+            has_value = False
+            if field.value_type == "string":
+                values = incident.kv_strings.get(field_name, [])
+                has_value = bool(values) and any(v.strip() for v in values)
+            elif field.value_type == "integer":
+                values = incident.kv_integers.get(field_name, [])
+                has_value = bool(values)
+            elif field.value_type == "float":
+                values = incident.kv_floats.get(field_name, [])
+                has_value = bool(values)
+            
+            if not has_value:
+                return False, f"Required field '{field_name}' is missing or empty"
         
         return True, None
     
     def save(self):
         """Save config back to file."""
         yaml.dump(self._raw_config, f)
+
+
+# ============================================================================
+# System Value Derivation
+# ============================================================================
+
+
+class SystemValueDeriver:
+    """Derive system values for special fields."""
+    
+    SUPPORTED_SYSTEM_VALUES = {
+        'datetime',      # Full timestamp: YYYY-MM-DD HH:MM:SS
+        'datestamp',     # Date only: YYYY-MM-DD
+        'user_email',    # User email from identity
+        'user_name',     # User handle/name from identity
+        'recordid',      # The incident ID
+        'updateid',      # The update ID (for updates only)
+    }
+    
+    @staticmethod
+    def derive_value(
+        system_value_spec: str,
+        user_identity: Optional[UserIdentity] = None,
+        incident_id: Optional[str] = None,
+        update_id: Optional[str] = None,
+    ) -> str:
+        """
+        Derive a system value based on the specification.
+        
+        Args:
+            system_value_spec: The system value specification (e.g., "datetime", "${datetime}")
+            user_identity: User identity for user_email and user_name
+            incident_id: Incident ID for recordid
+            update_id: Update ID for updateid
+            
+        Returns:
+            The derived value as a string
+        """
+        # Handle template syntax like "${datetime}"
+        if system_value_spec.startswith('${') and system_value_spec.endswith('}'):
+            value_type = system_value_spec[2:-1]
+        else:
+            value_type = system_value_spec
+        
+        # Derive the value based on type
+        if value_type == 'datetime':
+            return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        elif value_type == 'datestamp':
+            return datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        elif value_type == 'user_email':
+            if user_identity is None:
+                return ""
+            return user_identity.email
+        
+        elif value_type == 'user_name':
+            if user_identity is None:
+                return ""
+            return user_identity.handle
+        
+        elif value_type == 'recordid':
+            if incident_id is None:
+                return ""
+            return incident_id
+        
+        elif value_type == 'updateid':
+            if update_id is None:
+                return ""
+            return update_id
+        
+        else:
+            # Unknown system value type - return empty string
+            return ""
+    
+    @staticmethod
+    def resolve_default_value(
+        default_spec: Optional[str],
+        user_identity: Optional[UserIdentity] = None,
+        incident_id: Optional[str] = None,
+        update_id: Optional[str] = None,
+    ) -> str:
+        """
+        Resolve a default value, which may be static or reference a system value.
+        
+        Args:
+            default_spec: Default value specification (e.g., "pending" or "${datetime}")
+            user_identity: User identity for system values
+            incident_id: Incident ID for system values
+            update_id: Update ID for system values
+            
+        Returns:
+            The resolved default value
+        """
+        if default_spec is None:
+            return ""
+        
+        # Check if it's a system value reference
+        if default_spec.startswith('${') and default_spec.endswith('}'):
+            return SystemValueDeriver.derive_value(
+                default_spec,
+                user_identity=user_identity,
+                incident_id=incident_id,
+                update_id=update_id,
+            )
+        
+        # Static default value
+        return default_spec
 
 
 # ============================================================================
@@ -3121,6 +3272,110 @@ class IncidentManager:
         """
         self.effective_user = {"handle": handle, "email": email}
     
+    def _apply_system_fields(
+        self,
+        incident: Incident,
+        is_create: bool = True,
+        update_id: Optional[str] = None,
+    ) -> None:
+        """
+        Apply system-derived values to incident fields based on config.
+        
+        This handles:
+        - Fields with system_value set (auto-populated)
+        - Fields with default values (applied if field is empty)
+        - Auto-update fields (editable=True + system_value set, only on updates)
+        
+        Args:
+            incident: Incident to modify (modified in-place)
+            is_create: True if creating new incident, False if updating
+            update_id: Update ID (for updateid system value)
+        """
+        user_identity = UserIdentity(
+            handle=self.effective_user['handle'],
+            email=self.effective_user['email']
+        )
+        
+        special_fields = self.project_config.get_enabled_special_fields()
+        
+        for field_name, field in special_fields.items():
+            # Skip disabled fields
+            if not field.enabled:
+                continue
+            
+            # Determine if we should set this field
+            should_set = False
+            value_to_set = None
+            
+            # Case 1: Field has system_value
+            if field.system_value:
+                # Non-editable system fields: always set (override user input)
+                if not field.editable:
+                    should_set = True
+                    value_to_set = SystemValueDeriver.derive_value(
+                        field.system_value,
+                        user_identity=user_identity,
+                        incident_id=incident.id,
+                        update_id=update_id,
+                    )
+                # Editable system fields: only set on creation or if configured to auto-update
+                elif is_create:
+                    should_set = True
+                    value_to_set = SystemValueDeriver.derive_value(
+                        field.system_value,
+                        user_identity=user_identity,
+                        incident_id=incident.id,
+                        update_id=update_id,
+                    )
+                elif field.is_auto_update_field():
+                    # Auto-update on edit (editable=True means "update on edit" for system fields)
+                    should_set = True
+                    value_to_set = SystemValueDeriver.derive_value(
+                        field.system_value,
+                        user_identity=user_identity,
+                        incident_id=incident.id,
+                        update_id=update_id,
+                    )
+            
+            # Case 2: Field has default value and is currently empty (only on creation)
+            elif is_create and field.default is not None:
+                # Check if field is empty
+                field_is_empty = True
+                if field.value_type == "string":
+                    values = incident.kv_strings.get(field_name, [])
+                    field_is_empty = not values or not any(v.strip() for v in values)
+                elif field.value_type == "integer":
+                    field_is_empty = field_name not in incident.kv_integers
+                elif field.value_type == "float":
+                    field_is_empty = field_name not in incident.kv_floats
+                
+                if field_is_empty:
+                    should_set = True
+                    value_to_set = SystemValueDeriver.resolve_default_value(
+                        field.default,
+                        user_identity=user_identity,
+                        incident_id=incident.id,
+                        update_id=update_id,
+                    )
+            
+            # Apply the value if needed
+            if should_set and value_to_set is not None:
+                if field.field_type == "single":
+                    if field.value_type == "string":
+                        incident.kv_strings[field_name] = [value_to_set]
+                    elif field.value_type == "integer":
+                        incident.kv_integers[field_name] = [int(value_to_set)]
+                    elif field.value_type == "float":
+                        incident.kv_floats[field_name] = [float(value_to_set)]
+                else:  # multi
+                    # For multi-value fields with system values, set as single-item list
+                    if field.value_type == "string":
+                        incident.kv_strings[field_name] = [value_to_set]
+                    elif field.value_type == "integer":
+                        incident.kv_integers[field_name] = [int(value_to_set)]
+                    elif field.value_type == "float":
+                        incident.kv_floats[field_name] = [float(value_to_set)]
+    
     @staticmethod
     def _generate_timestamp() -> str:
         """Generate ISO 8601 timestamp with Z suffix."""
@@ -3878,8 +4133,8 @@ class IncidentManager:
                 incident.content = final_description
                 updated_fields.append("description")
     
-        # Update timestamp
-        incident.kv_strings['updated_at'] = [now]
+        # Apply system fields for update (will auto-update fields with editable=true + system_value)
+        self._apply_system_fields(incident, is_create=False)
     
         # Save and reindex
         self.storage.save_incident(incident, self.project_config)
@@ -4070,13 +4325,22 @@ class IncidentManager:
         """
         Validate all KV fields in an incident against special field definitions.
         
+        This includes:
+        - Checking accepted_values constraints
+        - Verifying required fields are present and non-empty
+        
         Args:
             incident: Incident to validate
             
         Raises:
             ValueError: If any field fails validation
         """
-        special_fields = self.project_config.get_special_fields()
+        special_fields = self.project_config.get_enabled_special_fields()
+        
+        # First, validate required fields are present
+        is_valid, error_msg = self.project_config.validate_required_fields(incident)
+        if not is_valid:
+            raise ValueError(error_msg)
         
         # Validate string fields
         for key, values in incident.kv_strings.items():
@@ -4221,10 +4485,8 @@ class IncidentManager:
             # User abandoned - re-raise for CLI handler
             raise RuntimeError("Record creation abandoned due to validation error")
         
-        # Add system fields
-        self._validate_and_store_kv('created_at', KVParser.TYPE_STRING, now, incident)
-        self._validate_and_store_kv('created_by', KVParser.TYPE_STRING, author, incident)
-        self._validate_and_store_kv('updated_at', KVParser.TYPE_STRING, now, incident)
+        # Apply system fields based on config (replaces hardcoded created_at, created_by, updated_at)
+        self._apply_system_fields(incident, is_create=True)
         
         # Determine description source
         final_description = None
@@ -4244,10 +4506,8 @@ class IncidentManager:
                     # User cancelled
                     raise RuntimeError("Record creation cancelled")
                 
-                # Restore system fields (in case user tried to modify them)
-                final_incident.kv_strings['created_at'] = [now]
-                final_incident.kv_strings['created_by'] = [author]
-                final_incident.kv_strings['updated_at'] = [now]
+                # Apply system fields (will override any user attempts to modify non-editable fields)
+                self._apply_system_fields(final_incident, is_create=True)
                 
                 # NEW: Validate the edited incident
                 try:
@@ -4675,8 +4935,8 @@ class IncidentManager:
             kv_floats=update_kv_floats or None,
         )
         
-        # Update incident's updated_at
-        incident.kv_strings['updated_at'] = [now]
+        # Apply system fields for update (will auto-update fields with editable=true + system_value)
+        self._apply_system_fields(incident, is_create=False, update_id=update_id)
         self.storage.save_incident(incident, self.project_config)
         
         return update_id
