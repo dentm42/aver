@@ -1,12 +1,13 @@
 ---
-created_by__string: mattd
-title: 'FEATURE: Update K/V sanity fix'
-type: feature
-status: new
-created_at: '2026-02-11T03:42:25.372309Z'
-created_by_username: mattd
-updated_at: '2026-02-13 23:19:22'
+id: NT-FX4ABA
+incident_id: REC-KW4YP14
+timestamp: '2026-02-14T04:18:27.568374Z'
+author: mattd
 ---
+
+
+
+## Previous Content
 
 So, "system" update k/v data (updated_at, author, etc) isn't getting indexed in the DB on initial write
 it problably does on reindex, though this is not confirmed.
@@ -16,5 +17,14 @@ a list of special fields with a type that flags it as "system" and then inserts 
 "system" available values.  Like the incident level special_fields - make an option so they are
 uneditable by the user.
 
-Need to re-evaluate now that we have system special fields all in config.toml and code changes
-may have changed this status.
+
+
+
+## Previous Key/Vals
+created_at: 2026-02-11T03:42:25.372309Z
+created_by: mattd
+updated_at: 2026-02-11T03:42:25.372309Z
+title: FEATURE: Update K/V sanity fix
+type: feature
+status: new
+

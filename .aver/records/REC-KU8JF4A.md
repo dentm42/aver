@@ -1,12 +1,9 @@
 ---
-created_at__string: '2026-02-10T03:04:27.400849Z'
 created_by__string: mattd
-updated_at__string: '2026-02-10T03:09:52.969030Z'
 title: Define system fields in config.toml
-type: ''
-status: new
-severity: ''
-tag: []
+status: closed
+created_at: '2026-02-10T03:04:27.400849Z'
+updated_at: '2026-02-13 23:17:30'
 ---
 
 System fields currently are automatically inserted, this is against our guarantees.
@@ -19,5 +16,7 @@ Will need to have a designation for "timestamp" for things like creation and upd
 Can also have some other "system" values available (username, email, datestamp, datetime, recordid, updateid)
 Create an enabled/disabled option
 Create a "required" option
+
+
 
 
