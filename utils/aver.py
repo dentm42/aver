@@ -25,7 +25,7 @@ from types import SimpleNamespace
 import select
 import secrets
 import time
-from string import Template
+from string import Template as StringTemplate
 try:
     import tomllib
 except ImportError:
@@ -602,14 +602,17 @@ class IDGenerator:
         return "".join(reversed(result))
     
     @staticmethod
-    def generate_incident_id() -> str:
+    def generate_incident_id(prefix: str = "REC") -> str:
         """
         Generate a distributed-safe incident ID based on epoch time.
-        Format: REC-<base36 epoch seconds - 1735689600>    # Since Jan 1, 2026
+        Format: {prefix}-<base36 epoch seconds - 1735689600>    # Since Jan 1, 2026
+        
+        Args:
+            prefix: ID prefix (default: "REC")
         """
         epochtime = time.time() - 1735689600  # Time 0 = Jan 1, 2026
         rand = secrets.token_hex(1)
-        recid = f"REC-{IDGenerator.to_base36(epochtime)}{rand}"
+        recid = f"{prefix}-{IDGenerator.to_base36(epochtime)}{rand}"
         return recid.upper()
 
     @staticmethod
@@ -626,10 +629,16 @@ class IDGenerator:
             
 
     @staticmethod
-    def generate_update_id() -> str:
+    def generate_update_id(prefix: str = "NT") -> str:
+        """
+        Generate a distributed-safe update ID based on epoch time.
+        
+        Args:
+            prefix: ID prefix (default: "NT")
+        """
         epochtime = time.time() - 1770300000
         rand = secrets.token_hex(1)  # small entropy bump
-        notefn = f"NT-{IDGenerator.to_base36(epochtime)}{rand}"
+        notefn = f"{prefix}-{IDGenerator.to_base36(epochtime)}{rand}"
         return notefn.upper()
 
 # ============================================================================
@@ -703,6 +712,52 @@ class SpecialField:
         return self.editable and self.system_value is not None
 
 
+class Template:
+    """Definition of a template configuration."""
+    
+    def __init__(
+        self,
+        name: str,
+        record_prefix: Optional[str] = None,
+        note_prefix: Optional[str] = None,
+        record_template_recordid: Optional[str] = None,
+        note_template_recordid: Optional[str] = None,
+        record_special_fields: Optional[Dict[str, dict]] = None,
+        note_special_fields: Optional[Dict[str, dict]] = None,
+    ):
+        self.name = name
+        self.record_prefix = record_prefix
+        self.note_prefix = note_prefix
+        self.record_template_recordid = record_template_recordid
+        self.note_template_recordid = note_template_recordid
+        self.record_special_fields = record_special_fields or {}
+        self.note_special_fields = note_special_fields or {}
+    
+    def get_record_prefix_override(self) -> Optional[str]:
+        """Get record prefix override for this template, if set."""
+        return self.record_prefix
+    
+    def get_note_prefix_override(self) -> Optional[str]:
+        """Get note prefix override for this template, if set."""
+        return self.note_prefix
+    
+    def get_record_template_recordid(self) -> Optional[str]:
+        """Get record template record ID for content extraction, if set."""
+        return self.record_template_recordid
+    
+    def get_note_template_recordid(self) -> Optional[str]:
+        """Get note template record ID for content extraction, if set."""
+        return self.note_template_recordid
+    
+    def has_record_special_fields(self) -> bool:
+        """Check if template has record-specific special fields."""
+        return bool(self.record_special_fields)
+    
+    def has_note_special_fields(self) -> bool:
+        """Check if template has note-specific special fields."""
+        return bool(self.note_special_fields)
+
+
 class ProjectConfig:
     """Project-level configuration (stored in .aver/config.toml)."""
     
@@ -711,6 +766,9 @@ class ProjectConfig:
         self.config_path = db_root / "config.toml"
         self._raw_config = {}
         self._special_fields: Dict[str, SpecialField] = {}
+        self._templates: Dict[str, Template] = {}
+        self.default_record_prefix = "REC"
+        self.default_note_prefix = "NT"
         self.load()
     
     def load(self):
@@ -727,11 +785,15 @@ class ProjectConfig:
             self._init_defaults()
             return
         
+        self._parse_prefixes()
         self._parse_special_fields()
+        self._parse_templates()
     
     def _init_defaults(self):
         """Initialize with sensible defaults."""
         self._raw_config = {
+            "default_record_prefix": "REC",
+            "default_note_prefix": "NT",
             "special_fields": {
                 "title": {
                     "type": "single",
@@ -742,7 +804,14 @@ class ProjectConfig:
                 },
             }
         }
+        self._parse_prefixes()
         self._parse_special_fields()
+        self._parse_templates()
+    
+    def _parse_prefixes(self):
+        """Parse default prefix settings."""
+        self.default_record_prefix = self._raw_config.get("default_record_prefix", "REC")
+        self.default_note_prefix = self._raw_config.get("default_note_prefix", "NT")
     
     def _parse_special_fields(self):
         """Parse special_fields section into SpecialField objects."""
@@ -771,6 +840,242 @@ class ProjectConfig:
                 system_value=system_value,
                 default=default,
             )
+    
+    def _parse_templates(self):
+        """Parse template configurations from config."""
+        self._templates = {}
+        
+        # Templates are stored as [template.{name}]
+        for key, value in self._raw_config.items():
+            if isinstance(key, str) and key.startswith("template."):
+                template_name = key[9:]  # Remove "template." prefix
+                
+                record_prefix = value.get("record_prefix", None)
+                note_prefix = value.get("note_prefix", None)
+                record_template_recordid = value.get("record_template_recordid", None)
+                note_template_recordid = value.get("note_template_recordid", None)
+                record_special_fields = value.get("record_special_fields", {})
+                note_special_fields = value.get("note_special_fields", {})
+                
+                self._templates[template_name] = Template(
+                    name=template_name,
+                    record_prefix=record_prefix,
+                    note_prefix=note_prefix,
+                    record_template_recordid=record_template_recordid,
+                    note_template_recordid=note_template_recordid,
+                    record_special_fields=record_special_fields,
+                    note_special_fields=note_special_fields,
+                )
+    
+    def get_template(self, name: str) -> Optional[Template]:
+        """Get template by name."""
+        return self._templates.get(name)
+    
+    def has_template(self, name: str) -> bool:
+        """Check if template exists."""
+        return name in self._templates
+    
+    def get_special_fields_for_template(
+        self,
+        template_name: Optional[str],
+        for_record: bool = True,
+    ) -> Dict[str, SpecialField]:
+        """
+        Get special fields for a template (additive with overrides).
+        
+        For records:
+        - Start with global special_fields
+        - Add/override with template's record_special_fields
+        
+        For notes:
+        - Use ONLY template's note_special_fields (not additive)
+        
+        Args:
+            template_name: Name of template, or None for global fields only
+            for_record: True for record fields, False for note fields
+            
+        Returns:
+            Dictionary of special fields
+        """
+        if not template_name:
+            # No template - return global fields
+            return self._special_fields.copy()
+        
+        template = self.get_template(template_name)
+        if not template:
+            # Template not found - return global fields
+            return self._special_fields.copy()
+        
+        if for_record:
+            # For records: Start with global, add/override with template
+            fields = self._special_fields.copy()
+            
+            if template.has_record_special_fields():
+                # Parse and add/override template fields
+                for field_name, field_def in template.record_special_fields.items():
+                    field_type = field_def.get("type", "single")
+                    value_type = field_def.get("value_type", "string")
+                    accepted_values = field_def.get("accepted_values", [])
+                    editable = field_def.get("editable", True)
+                    enabled = field_def.get("enabled", True)
+                    required = field_def.get("required", False)
+                    system_value = field_def.get("system_value", None)
+                    default = field_def.get("default", None)
+                    
+                    fields[field_name] = SpecialField(
+                        name=field_name,
+                        field_type=field_type,
+                        value_type=value_type,
+                        accepted_values=accepted_values,
+                        editable=editable,
+                        enabled=enabled,
+                        required=required,
+                        system_value=system_value,
+                        default=default,
+                    )
+            
+            return fields
+        else:
+            # For notes: Use ONLY template fields (not additive)
+            fields = {}
+            
+            if template.has_note_special_fields():
+                # Parse template note fields
+                for field_name, field_def in template.note_special_fields.items():
+                    field_type = field_def.get("type", "single")
+                    value_type = field_def.get("value_type", "string")
+                    accepted_values = field_def.get("accepted_values", [])
+                    editable = field_def.get("editable", True)
+                    enabled = field_def.get("enabled", True)
+                    required = field_def.get("required", False)
+                    system_value = field_def.get("system_value", None)
+                    default = field_def.get("default", None)
+                    
+                    fields[field_name] = SpecialField(
+                        name=field_name,
+                        field_type=field_type,
+                        value_type=value_type,
+                        accepted_values=accepted_values,
+                        editable=editable,
+                        enabled=enabled,
+                        required=required,
+                        system_value=system_value,
+                        default=default,
+                    )
+            
+            return fields
+    
+    def get_record_prefix(self, template_name: Optional[str] = None) -> str:
+        """
+        Get record prefix for a template, or default if not specified.
+        
+        Args:
+            template_name: Name of template, or None for default
+            
+        Returns:
+            Record prefix to use
+        """
+        if template_name:
+            template = self.get_template(template_name)
+            if template and template.record_prefix:
+                return template.record_prefix
+        
+        return self.default_record_prefix
+    
+    def get_note_prefix(self, template_name: Optional[str] = None) -> str:
+        """
+        Get note prefix for a template, or default if not specified.
+        
+        Args:
+            template_name: Name of template, or None for default
+            
+        Returns:
+            Note prefix to use
+        """
+        if template_name:
+            template = self.get_template(template_name)
+            if template and template.note_prefix:
+                return template.note_prefix
+        
+        return self.default_note_prefix
+    
+    def get_note_special_fields(
+        self,
+        parent_template_name: Optional[str],
+        note_template_name: Optional[str] = None,
+    ) -> Dict[str, SpecialField]:
+        """
+        Get special fields for a note, combining parent and note templates.
+        
+        Resolution:
+        1. Start with note_template's note_special_fields (if specified)
+        2. Add/override with parent_template's note_special_fields (takes precedence)
+        
+        This ensures the parent record's template controls the note structure,
+        but allows additional fields from the note template if they don't conflict.
+        
+        Args:
+            parent_template_name: Template of the parent record (takes precedence)
+            note_template_name: Template specified for the note (additive)
+            
+        Returns:
+            Dictionary of special fields for the note
+        """
+        fields = {}
+        
+        # Start with note template's note fields (if specified)
+        if note_template_name:
+            note_template = self.get_template(note_template_name)
+            if note_template and note_template.has_note_special_fields():
+                for field_name, field_def in note_template.note_special_fields.items():
+                    field_type = field_def.get("type", "single")
+                    value_type = field_def.get("value_type", "string")
+                    accepted_values = field_def.get("accepted_values", [])
+                    editable = field_def.get("editable", True)
+                    enabled = field_def.get("enabled", True)
+                    required = field_def.get("required", False)
+                    system_value = field_def.get("system_value", None)
+                    default = field_def.get("default", None)
+                    
+                    fields[field_name] = SpecialField(
+                        name=field_name,
+                        field_type=field_type,
+                        value_type=value_type,
+                        accepted_values=accepted_values,
+                        editable=editable,
+                        enabled=enabled,
+                        required=required,
+                        system_value=system_value,
+                        default=default,
+                    )
+        
+        # Override with parent template's note fields (takes precedence)
+        if parent_template_name:
+            parent_template = self.get_template(parent_template_name)
+            if parent_template and parent_template.has_note_special_fields():
+                for field_name, field_def in parent_template.note_special_fields.items():
+                    field_type = field_def.get("type", "single")
+                    value_type = field_def.get("value_type", "string")
+                    accepted_values = field_def.get("accepted_values", [])
+                    editable = field_def.get("editable", True)
+                    enabled = field_def.get("enabled", True)
+                    required = field_def.get("required", False)
+                    system_value = field_def.get("system_value", None)
+                    default = field_def.get("default", None)
+                    
+                    fields[field_name] = SpecialField(
+                        name=field_name,
+                        field_type=field_type,
+                        value_type=value_type,
+                        accepted_values=accepted_values,
+                        editable=editable,
+                        enabled=enabled,
+                        required=required,
+                        system_value=system_value,
+                        default=default,
+                    )
+        
+        return fields
     
     def get_special_fields(self) -> Dict[str, SpecialField]:
         """Get all special field definitions."""
@@ -863,6 +1168,7 @@ class SystemValueDeriver:
         'user_name',     # User handle/name from identity
         'recordid',      # The incident ID
         'updateid',      # The update ID (for updates only)
+        'template_id',   # The template name used for creation
     }
     
     @staticmethod
@@ -871,6 +1177,7 @@ class SystemValueDeriver:
         user_identity: Optional[UserIdentity] = None,
         incident_id: Optional[str] = None,
         update_id: Optional[str] = None,
+        template_name: Optional[str] = None,
     ) -> str:
         """
         Derive a system value based on the specification.
@@ -880,6 +1187,7 @@ class SystemValueDeriver:
             user_identity: User identity for user_email and user_name
             incident_id: Incident ID for recordid
             update_id: Update ID for updateid
+            template_name: Template name for template_id
             
         Returns:
             The derived value as a string
@@ -917,6 +1225,11 @@ class SystemValueDeriver:
                 return ""
             return update_id
         
+        elif value_type == 'template_id':
+            if template_name is None:
+                return ""
+            return template_name
+        
         else:
             # Unknown system value type - return empty string
             return ""
@@ -927,6 +1240,7 @@ class SystemValueDeriver:
         user_identity: Optional[UserIdentity] = None,
         incident_id: Optional[str] = None,
         update_id: Optional[str] = None,
+        template_name: Optional[str] = None,
     ) -> str:
         """
         Resolve a default value, which may be static or reference a system value.
@@ -936,6 +1250,7 @@ class SystemValueDeriver:
             user_identity: User identity for system values
             incident_id: Incident ID for system values
             update_id: Update ID for system values
+            template_name: Template name for system values
             
         Returns:
             The resolved default value
@@ -950,6 +1265,7 @@ class SystemValueDeriver:
                 user_identity=user_identity,
                 incident_id=incident_id,
                 update_id=update_id,
+                template_name=template_name,
             )
         
         # Static default value
@@ -1210,7 +1526,7 @@ class DatabaseDiscovery:
         plain_config = DatabaseDiscovery._to_plain_dict(config)
         
         with open(config_path, "wb") as f:
-            yaml.dump(plain_config, f)
+            tomli_w.dump(plain_config, f)
 
     @staticmethod
     def get_project_config(db_root: Path) -> dict:
@@ -2057,12 +2373,6 @@ class KVParser:
         if kv_str[0] in (KVParser.TYPE_STRING, KVParser.TYPE_INTEGER, KVParser.TYPE_FLOAT):
             raise ValueError(f"Key-value string cannot start with operator '{kv_str[0]}'")
         
-        # Pre-validation: check for multiple operators (except trailing dash)
-        kv_check = kv_str.rstrip('-')
-        operator_count = sum(kv_check.count(op) for op in KVParser.VALID_OPERATORS)
-        if operator_count > 1:
-            raise ValueError(f"Key-value string contains multiple operators: '{kv_str}'")
-        
         # Pre-validation: check for operator immediately followed by dash (invalid pattern)
         for kvtype in KVParser.VALID_OPERATORS:
             if kvtype + '-' in kv_str:
@@ -2079,74 +2389,77 @@ class KVParser:
         else:
             is_removal = False
         
-        # Find operator
-        for kvtype in KVParser.VALID_OPERATORS:
-            idx = kv_str.find(kvtype)
-            if idx > 0:  # Must have a key before operator
-                key = kv_str[:idx]
-                value_str = kv_str[idx+1:]
-                
-                # Validate key format
-                if not key:
-                    raise ValueError("Key cannot be empty")
-                if not KVParser._is_valid_key(key):
-                    raise ValueError(
-                        f"Invalid key '{key}': keys must contain only alphanumeric characters, "
-                        f"underscores, and hyphens"
-                    )
-                
-                # Validate value presence
-                if not value_str and not is_removal:
-                    raise ValueError(f"Value cannot be empty for key '{key}'")
-                
-                # Validate that there are no extra operators in value
-                for other_op in KVParser.VALID_OPERATORS:
-                    if other_op in value_str:
+        # Use regex to find the FIRST operator after a valid key
+        # Pattern: (valid_key)(operator)(rest)
+        # Valid key: alphanumeric, underscore, hyphen
+        # Build operator pattern dynamically from VALID_OPERATORS
+        import re
+        
+        # Escape operators for regex (in case any are regex special chars)
+        escaped_ops = [re.escape(op) for op in KVParser.VALID_OPERATORS]
+        ops_pattern = '|'.join(escaped_ops)
+        
+        pattern = rf'^([a-zA-Z0-9_-]+)({ops_pattern})(.*)$'
+        match = re.match(pattern, kv_str)
+        
+        if match:
+            key = match.group(1)
+            kvtype = match.group(2)
+            value_str = match.group(3)
+            
+            # Validate key format (already matched alphanumeric/underscore/hyphen, but check it's not empty)
+            if not key:
+                raise ValueError("Key cannot be empty")
+            if not KVParser._is_valid_key(key):
+                raise ValueError(
+                    f"Invalid key '{key}': keys must contain only alphanumeric characters, "
+                    f"underscores, and hyphens"
+                )
+            
+            # Validate value presence
+            if not value_str and not is_removal:
+                raise ValueError(f"Value cannot be empty for key '{key}'")
+            
+            # Convert value to appropriate type
+            if kvtype == KVParser.TYPE_STRING:
+                # String values can be empty in removal mode
+                value = value_str if value_str else None
+            elif kvtype == KVParser.TYPE_INTEGER:
+                if value_str:
+                    # Check for leading zeros (optional validation)
+                    if value_str.startswith('0') and len(value_str) > 1:
                         raise ValueError(
-                            f"Value for key '{key}' contains invalid operator '{other_op}': "
-                            f"'{value_str}'"
+                            f"Invalid integer value '{value_str}' for key '{key}': "
+                            f"leading zeros are not allowed"
                         )
-                
-                # Convert value to appropriate type
-                if kvtype == KVParser.TYPE_STRING:
-                    # String values can be empty in removal mode
-                    value = value_str if value_str else None
-                elif kvtype == KVParser.TYPE_INTEGER:
-                    if value_str:
-                        # Check for leading zeros (optional validation)
-                        if value_str.startswith('0') and len(value_str) > 1:
-                            raise ValueError(
-                                f"Invalid integer value '{value_str}' for key '{key}': "
-                                f"leading zeros are not allowed"
-                            )
-                        try:
-                            value = int(value_str)
-                        except ValueError:
-                            raise ValueError(
-                                f"Invalid integer value '{value_str}' for key '{key}': "
-                                f"not a valid integer"
-                            )
-                    else:
-                        value = None
-                elif kvtype == KVParser.TYPE_FLOAT:
-                    if value_str:
-                        try:
-                            value = float(value_str)
-                            # Check for special float values if needed
-                            if value_str.lower() in ('inf', '-inf', 'nan'):
-                                raise ValueError(
-                                    f"Invalid float value '{value_str}' for key '{key}': "
-                                    f"special values (inf, nan) are not allowed"
-                                )
-                        except ValueError:
+                    try:
+                        value = int(value_str)
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid integer value '{value_str}' for key '{key}': "
+                            f"not a valid integer"
+                        )
+                else:
+                    value = None
+            elif kvtype == KVParser.TYPE_FLOAT:
+                if value_str:
+                    try:
+                        value = float(value_str)
+                        # Check for special float values if needed
+                        if value_str.lower() in ('inf', '-inf', 'nan'):
                             raise ValueError(
                                 f"Invalid float value '{value_str}' for key '{key}': "
-                                f"not a valid float"
+                                f"special values (inf, nan) are not allowed"
                             )
-                    else:
-                        value = None
-                
-                return (key, kvtype, '+' if not is_removal else '-', value)
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid float value '{value_str}' for key '{key}': "
+                            f"not a valid float"
+                        )
+                else:
+                    value = None
+            
+            return (key, kvtype, '+' if not is_removal else '-', value)
         
         # Check for kv mode removal (key-)
         if is_removal:
@@ -3272,11 +3585,66 @@ class IncidentManager:
         """
         self.effective_user = {"handle": handle, "email": email}
     
+    def _get_incident_template_id(self, incident: Incident) -> Optional[str]:
+        """
+        Extract the template_id from an incident's fields, if present.
+        
+        Args:
+            incident: Incident to check
+            
+        Returns:
+            Template ID string, or None if not found
+        """
+        # Check if incident has a template_id field
+        if 'template_id' in incident.kv_strings:
+            values = incident.kv_strings['template_id']
+            if values and values[0]:
+                return values[0]
+        
+        return None
+    
+    def _resolve_template(
+        self,
+        template_id: str,
+    ) -> tuple[Optional[Incident], Optional[str]]:
+        """
+        Resolve a template ID to either a config template or a record template.
+        
+        Resolution order:
+        1. Check if template_id matches a config template name
+        2. If not, treat as a record ID and try to load it
+        
+        Args:
+            template_id: Template name or record ID
+            
+        Returns:
+            (template_incident, template_name) tuple
+            - If config template: (None, template_name)
+            - If record template: (incident, None)
+            - If not found: raises RuntimeError
+        """
+        # First, check if it's a config template
+        if self.project_config.has_template(template_id):
+            # It's a config template - return the name
+            return None, template_id
+        
+        # Not a config template - try to load as record ID
+        template_incident = self.storage.load_incident(template_id, self.project_config)
+        if template_incident:
+            return template_incident, None
+        
+        # Not found
+        raise RuntimeError(
+            f"Template '{template_id}' not found. "
+            f"Not a configured template and not an existing record ID."
+        )
+    
     def _apply_system_fields(
         self,
         incident: Incident,
         is_create: bool = True,
         update_id: Optional[str] = None,
+        template_name: Optional[str] = None,
     ) -> None:
         """
         Apply system-derived values to incident fields based on config.
@@ -3292,13 +3660,27 @@ class IncidentManager:
             incident: Incident to modify (modified in-place)
             is_create: True if creating new incident, False if updating
             update_id: Update ID (for updateid system value)
+            template_name: Template name for template-specific fields (records only)
         """
         user_identity = UserIdentity(
             handle=self.effective_user['handle'],
             email=self.effective_user['email']
         )
         
-        special_fields = self.project_config.get_enabled_special_fields()
+        # Get special fields (with template overrides if specified)
+        if template_name:
+            all_fields = self.project_config.get_special_fields_for_template(
+                template_name,
+                for_record=True,
+            )
+        else:
+            all_fields = self.project_config.get_special_fields()
+        
+        # Filter to enabled fields only
+        special_fields = {
+            name: field for name, field in all_fields.items()
+            if field.enabled
+        }
         
         for field_name, field in special_fields.items():
             # Skip disabled fields
@@ -3320,6 +3702,7 @@ class IncidentManager:
                             user_identity=user_identity,
                             incident_id=incident.id,
                             update_id=update_id,
+                            template_name=template_name,
                         )
                     # On update: do nothing - preserve existing value
                 # Editable system fields: set on creation, auto-update on edits
@@ -3330,6 +3713,7 @@ class IncidentManager:
                         user_identity=user_identity,
                         incident_id=incident.id,
                         update_id=update_id,
+                        template_name=template_name,
                     )
                 elif field.is_auto_update_field():
                     # Auto-update on edit (editable=True means "update on edit" for system fields)
@@ -3339,6 +3723,7 @@ class IncidentManager:
                         user_identity=user_identity,
                         incident_id=incident.id,
                         update_id=update_id,
+                        template_name=template_name,
                     )
             
             # Case 2: Field has default value and is currently empty (only on creation)
@@ -3360,6 +3745,7 @@ class IncidentManager:
                         user_identity=user_identity,
                         incident_id=incident.id,
                         update_id=update_id,
+                        template_name=template_name,
                     )
             
             # Apply the value if needed
@@ -4030,6 +4416,36 @@ class IncidentManager:
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
     
+        # Detect template from incident's template_id field
+        incident_template_id = self._get_incident_template_id(incident)
+        if incident_template_id:
+            # Check if template still exists
+            if not self.project_config.has_template(incident_template_id):
+                print(
+                    f"\n{'='*70}",
+                    file=sys.stderr
+                )
+                print(
+                    f"WARNING: Record was created with template '{incident_template_id}'",
+                    file=sys.stderr
+                )
+                print(
+                    f"but that template no longer exists in the configuration.",
+                    file=sys.stderr
+                )
+                print(
+                    f"{'='*70}\n",
+                    file=sys.stderr
+                )
+                
+                response = input("Proceed with update using global fields only? (y/n): ").strip().lower()
+                if response != 'y':
+                    print("Update cancelled", file=sys.stderr)
+                    return False
+                
+                # Clear template_id so we use global fields
+                incident_template_id = None
+    
         author = self.effective_user["handle"]
         now = self._generate_timestamp()
     
@@ -4145,8 +4561,8 @@ class IncidentManager:
                 incident.content = final_description
                 updated_fields.append("description")
     
-        # Apply system fields for update (will auto-update fields with editable=true + system_value)
-        self._apply_system_fields(incident, is_create=False)
+        # Apply system fields for update (using incident's template if it has one)
+        self._apply_system_fields(incident, is_create=False, template_name=incident_template_id)
     
         # Save and reindex
         self.storage.save_incident(incident, self.project_config)
@@ -4433,6 +4849,39 @@ class IncidentManager:
         """
         author = self.effective_user["handle"]
 
+        # Validate template usage requires editor
+        if template_id and not use_editor:
+            raise ValueError(
+                "The --template flag requires editor mode.\n"
+                "Remove --description flag or stdin input to use editor."
+            )
+        
+        # Resolve template first to get prefix and template content
+        template_incident = None
+        template_name = None
+        template_content = None
+        if template_id:
+            template_incident, template_name = self._resolve_template(template_id)
+            
+            # If it's a config template, check for record_template_recordid
+            if template_name:
+                template_config = self.project_config.get_template(template_name)
+                if template_config and template_config.record_template_recordid:
+                    # Load the template record for content extraction
+                    template_record = self.storage.load_incident(
+                        template_config.record_template_recordid,
+                        self.project_config
+                    )
+                    if template_record:
+                        # Extract text content only
+                        template_content = template_record.content
+                    else:
+                        print(
+                            f"Warning: Template record '{template_config.record_template_recordid}' "
+                            f"specified in template '{template_name}' not found",
+                            file=sys.stderr
+                        )
+        
         # Validate and use custom ID or generate new one
         if custom_id:
             if not IncidentFileStorage.validate_custom_id(custom_id):
@@ -4449,26 +4898,27 @@ class IncidentManager:
         
             incident_id = custom_id
         else:
-            incident_id = IDGenerator.generate_incident_id()
+            # Get prefix from template or default
+            prefix = self.project_config.get_record_prefix(template_name)
+            incident_id = IDGenerator.generate_incident_id(prefix)
 
         now = self._generate_timestamp()
         
-        # Load template if specified
-        if template_id:
-            template = self.storage.load_incident(template_id, self.project_config)
-            if not template:
-                raise RuntimeError(f"Template record {template_id} not found")
-            
-            # Start with template's editable data
+        # Load template data if specified
+        if template_incident:
+            # Using a record as template - copy its editable fields
             incident = Incident(id=incident_id)
-            editable_template = self._prepare_incident_for_editing(template)
+            editable_template = self._prepare_incident_for_editing(template_incident)
             incident.kv_strings = editable_template.kv_strings.copy()
             incident.kv_integers = editable_template.kv_integers.copy()
             incident.kv_floats = editable_template.kv_floats.copy()
             incident.content = editable_template.content
         else:
-            # Initialize empty incident
+            # Initialize empty incident (may have config template with content)
             incident = Incident(id=incident_id)
+            # If config template specifies template_recordid, use its content
+            if template_content:
+                incident.content = template_content
         
         # Define processor for create operations
         def process_create_kv(inc, parsed_single, parsed_multi):
@@ -4484,21 +4934,33 @@ class IncidentManager:
                     raise ValueError(f"Cannot use removal operator '-' when creating incident")
                 self._validate_and_store_kv_multi(key, kvtype, value, inc)
         
-        # Apply KV changes with validation retry loop
-        try:
-            incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
-                incident,
-                kv_single,
-                kv_multi,
-                allow_validation_editor,
-                process_create_kv,
-            )
-        except (ValueError, RuntimeError):
-            # User abandoned - re-raise for CLI handler
-            raise RuntimeError("Record creation abandoned due to validation error")
+        # Apply system fields FIRST (before validation) so template_id and other
+        # required system fields are populated before we validate
+        self._apply_system_fields(incident, is_create=True, template_name=template_name)
         
-        # Apply system fields based on config (replaces hardcoded created_at, created_by, updated_at)
-        self._apply_system_fields(incident, is_create=True)
+        # Apply KV changes with validation retry loop
+        # BUT: If we're going to open the editor anyway and no KV was provided,
+        # skip this step - validation will happen after editing
+        has_kv_to_process = bool(kv_single or kv_multi)
+        will_edit = use_editor and use_yaml_editor
+        
+        if has_kv_to_process or not will_edit:
+            # Either we have KV to validate, or we're not going to edit
+            # (so we need to validate what we have)
+            try:
+                incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                    incident,
+                    kv_single,
+                    kv_multi,
+                    allow_validation_editor,
+                    process_create_kv,
+                )
+            except (ValueError, RuntimeError) as e:
+                # User abandoned - re-raise with actual error message
+                raise RuntimeError(f"Record creation abandoned: {str(e)}")
+        else:
+            # No KV provided and we're opening editor - skip validation for now
+            already_edited_in_validation = False
         
         # Determine description source
         final_description = None
@@ -4519,7 +4981,7 @@ class IncidentManager:
                     raise RuntimeError("Record creation cancelled")
                 
                 # Apply system fields (will override any user attempts to modify non-editable fields)
-                self._apply_system_fields(final_incident, is_create=True)
+                self._apply_system_fields(final_incident, is_create=True, template_name=template_name)
                 
                 # NEW: Validate the edited incident
                 try:
@@ -4568,6 +5030,25 @@ class IncidentManager:
         
         if final_description:
             incident.content = final_description
+
+        # CRITICAL: Validate complete incident before saving
+        # (Editor path validates at line 4991, but non-editor paths need it here)
+        if not already_edited_in_validation and not (use_editor and use_yaml_editor):
+            # We didn't validate via editor, so validate now
+            try:
+                self._validate_incident_fields(incident)
+            except ValueError as e:
+                # Validation failed - show error and offer to fix
+                print(f"\n{'='*70}", file=sys.stderr)
+                print(f"VALIDATION ERROR", file=sys.stderr)
+                print(f"{'='*70}", file=sys.stderr)
+                print(f"{str(e)}", file=sys.stderr)
+                print(f"{'='*70}\n", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("The record cannot be saved because required fields are missing.", file=sys.stderr)
+                print("Please provide all required fields or use the editor to complete the record.", file=sys.stderr)
+                print("", file=sys.stderr)
+                raise RuntimeError(f"Record creation failed: {str(e)}")
 
         # Save to file
         self.storage.save_incident(incident, self.project_config)
@@ -4810,8 +5291,87 @@ class IncidentManager:
         if not incident:
             raise RuntimeError(f"Incident {incident_id} not found")
         
+        # Detect template from parent incident's template_id field
+        parent_template_id = self._get_incident_template_id(incident)
+        if parent_template_id:
+            # Check if template still exists
+            if not self.project_config.has_template(parent_template_id):
+                print(
+                    f"\n{'='*70}",
+                    file=sys.stderr
+                )
+                print(
+                    f"WARNING: Parent record was created with template '{parent_template_id}'",
+                    file=sys.stderr
+                )
+                print(
+                    f"but that template no longer exists in the configuration.",
+                    file=sys.stderr
+                )
+                print(
+                    f"{'='*70}\n",
+                    file=sys.stderr
+                )
+                
+                response = input("Proceed with note creation using global fields only? (y/n): ").strip().lower()
+                if response != 'y':
+                    raise RuntimeError("Note creation cancelled")
+                
+                # Clear template_id so we use global fields
+                parent_template_id = None
+        
         author = self.effective_user["handle"]
         now = self._generate_timestamp()
+        
+        # Validate template usage requires editor
+        if template_id and not use_editor:
+            raise ValueError(
+                "The --template flag requires editor mode.\n"
+                "Remove --message flag or stdin input to use editor."
+            )
+        
+        # Resolve template for note (if specified via --template)
+        template_incident = None
+        template_name = None
+        template_content = None
+        if template_id:
+            # User explicitly specified a template with --template flag
+            template_incident, template_name = self._resolve_template(template_id)
+            
+            # If it's a config template, check for note_template_recordid
+            if template_name:
+                template_config = self.project_config.get_template(template_name)
+                if template_config and template_config.note_template_recordid:
+                    # Load the template record for content extraction
+                    template_record = self.storage.load_incident(
+                        template_config.note_template_recordid,
+                        self.project_config
+                    )
+                    if template_record:
+                        # Extract text content only
+                        template_content = template_record.content
+                    else:
+                        print(
+                            f"Warning: Note template record '{template_config.note_template_recordid}' "
+                            f"specified in template '{template_name}' not found",
+                            file=sys.stderr
+                        )
+        elif parent_template_id:
+            # No --template specified, but parent has a template
+            # Use parent's note_template_recordid as default
+            parent_template_config = self.project_config.get_template(parent_template_id)
+            if parent_template_config and parent_template_config.note_template_recordid:
+                # Load the template record for content extraction
+                template_record = self.storage.load_incident(
+                    parent_template_config.note_template_recordid,
+                    self.project_config
+                )
+                if template_record:
+                    # Extract text content only
+                    template_content = template_record.content
+                    # Note: We're using parent's template content, but not setting template_name
+                    # This means we won't use the template's note_special_fields
+                    # (those come from parent_template_id via get_note_special_fields)
         
         # Parse KV data for the UPDATE ONLY
         update_kv_strings = {}
@@ -4846,14 +5406,10 @@ class IncidentManager:
                             update_kv_floats[key] = []
                         update_kv_floats[key].append(float(value))
  
-        # Load template if specified
-        if template_id:
-            template = self.storage.load_incident(template_id, self.project_config)
-            if not template:
-                raise RuntimeError(f"Template record {template_id} not found")
-            
-            # Start with template's editable KV data (CLI KV overrides)
-            editable_template = self._prepare_incident_for_editing(template)
+        # Load template data if specified
+        if template_incident:
+            # Using a record as template - copy its editable KV and content
+            editable_template = self._prepare_incident_for_editing(template_incident)
             
             # Merge template KV with CLI KV (CLI takes precedence)
             for key, values in editable_template.kv_strings.items():
@@ -4871,12 +5427,20 @@ class IncidentManager:
             # Use template content if no message provided
             if not message and editable_template.content:
                 message = editable_template.content
+        elif template_content:
+            # Config template with template_recordid - use that content
+            if not message:
+                message = template_content
         
         # Determine message source
         final_message = None        
         if use_editor and use_yaml_editor:
             # NEW BEHAVIOR: Edit note with yaml frontmatter
-            initial_message = message or "# Add your note below\n# Lines starting with # are ignored\n\n"
+            # Use template content if available, otherwise default prompt
+            if message:
+                initial_message = message
+            else:
+                initial_message = "# Add your note below\n# Lines starting with # are ignored\n\n"
             
             result = self._create_update_with_yaml(
                 incident_id,
@@ -4920,8 +5484,9 @@ class IncidentManager:
                 "  aver note add <id>  # opens editor"
             )
         
-        # Generate update ID
-        update_id = IDGenerator.generate_update_id()
+        # Generate update ID with template-specific or default prefix
+        note_prefix = self.project_config.get_note_prefix(template_name)
+        update_id = IDGenerator.generate_update_id(note_prefix)
         
         update = IncidentUpdate(
             id=update_id,
@@ -5076,6 +5641,15 @@ class IncidentCLI:
             "--choose",
             action="store_true",
             help="Prompt to choose database if multiple available",
+        )
+        
+        # Database initialization options
+        parser.add_argument(
+            "--override-repo-boundary",
+            dest="override_repo_boundary",
+            action="store_true",
+            default=False,
+            help="Bypass git repository boundary checks (for admin init)",
         )
         
         # Git identity resolution flags
@@ -5721,15 +6295,7 @@ class IncidentCLI:
             "init",
             help="Initialize a new database",
         )
-        admin_init_parser.add_argument(
-            "--location",
-            help="Database location (default: .aver in git root or current directory)",
-        )
-        admin_init_parser.add_argument(
-            "--override-repo-boundary",
-            action="store_true",
-            help="Bypass git repository boundary checks",
-        )
+        # Note: --location and --override-repo-boundary come from global args
         
         # admin config
         admin_config_parser = admin_subparsers.add_parser(
@@ -5874,7 +6440,7 @@ class IncidentCLI:
     # DEFAULT TEMPLATES
     # ====================================================================
     
-    TEMPLATE_VIEW = Template("""\
+    TEMPLATE_VIEW = StringTemplate("""\
 ────────────────────────────────────────────────────────────────────────────────
 Record: $id
 ────────────────────────────────────────────────────────────────────────────────
@@ -5886,11 +6452,11 @@ $kv_all
 ================================================================================
 """)
 
-    TEMPLATE_LIST_ITEM = Template("""\
+    TEMPLATE_LIST_ITEM = StringTemplate("""\
 $id | $title | $updated_at
 """)
 
-    TEMPLATE_LIST_UPDATES_ITEM = Template("""\
+    TEMPLATE_LIST_UPDATES_ITEM = StringTemplate("""\
 ────────────────────────────────────────────────────────────────────────────────
 Note $note_number: [$timestamp] by $author
 ────────────────────────────────────────────────────────────────────────────────
@@ -5899,12 +6465,12 @@ $message
 $kv_all
 """)
 
-    TEMPLATE_SEARCH_UPDATES_HEADER = Template("""\
+    TEMPLATE_SEARCH_UPDATES_HEADER = StringTemplate("""\
 Found $count matching notes:
 
 """)
 
-    TEMPLATE_SEARCH_UPDATES_ITEM = Template("""\
+    TEMPLATE_SEARCH_UPDATES_ITEM = StringTemplate("""\
 ################################################################################
 Record: $incident_id
 ################################################################################
@@ -5995,6 +6561,13 @@ $update_kv
 
     def _cmd_init(self, args):
         """Initialize database."""
+        # DEBUG: Print args to see what we're getting
+        print(f"DEBUG: args = {args}", file=sys.stderr)
+        print(f"DEBUG: hasattr override_repo_boundary = {hasattr(args, 'override_repo_boundary')}", file=sys.stderr)
+        if hasattr(args, 'override_repo_boundary'):
+            print(f"DEBUG: args.override_repo_boundary = {args.override_repo_boundary}", file=sys.stderr)
+        print(f"DEBUG: vars(args) = {vars(args)}", file=sys.stderr)
+        
         if args.location:
             db_root = Path(args.location)
         else:
@@ -6012,7 +6585,7 @@ $update_kv
 
         if not DatabaseDiscovery.enforce_repo_boundary(
             db_root,
-            override=getattr(args, 'override_repo_boundary', False),
+            override=args.override_repo_boundary,
         ):
             print(
                 f"Error: Database at {db_root} is outside git repository.\n"

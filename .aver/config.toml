@@ -1,3 +1,10 @@
+# ============================================================================
+# Global Prefix Configuration
+# ============================================================================
+
+default_record_prefix = "REC"
+default_note_prefix = "NT"
+
 [special_fields]
 
 [special_fields.title]
@@ -54,3 +61,11 @@ enabled = true
 required = false
 system_value = "datetime"  # Will update to current datetime on every edit
 
+# Template ID - tracks which template was used to create the record
+[special_fields.template_id]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+system_value = "template_id"
