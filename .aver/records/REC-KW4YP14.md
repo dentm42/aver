@@ -5,7 +5,7 @@ type: feature
 status: new
 created_at: '2026-02-11T03:42:25.372309Z'
 created_by_username: mattd
-updated_at: '2026-02-13 23:19:22'
+updated_at: '2026-02-14 23:37:24'
 ---
 
 So, "system" update k/v data (updated_at, author, etc) isn't getting indexed in the DB on initial write
@@ -18,3 +18,4 @@ uneditable by the user.
 
 Need to re-evaluate now that we have system special fields all in config.toml and code changes
 may have changed this status.
+
