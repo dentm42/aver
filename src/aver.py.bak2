@@ -514,7 +514,6 @@ class IncidentUpdate:
     timestamp: str
     author: str
     message: str
-    template_id: Optional[str] = None  # Template ID from parent record or imported file
     kv_strings: Optional[Dict[str, List[str]]] = None
     kv_integers: Optional[Dict[str, List[int]]] = None
     kv_floats: Optional[Dict[str, List[float]]] = None
@@ -527,8 +526,6 @@ class IncidentUpdate:
             "author": self.author,
             "message": self.message,
         }
-        if self.template_id:
-            d["template_id"] = self.template_id
         if self.kv_strings:
             d["kv_strings"] = self.kv_strings
         if self.kv_integers:
@@ -537,22 +534,23 @@ class IncidentUpdate:
             d["kv_floats"] = self.kv_floats
         return d
         
-    def to_markdown(self, project_config: Optional['ProjectConfig'] = None) -> str:
+    def to_markdown(self, project_config: Optional['ProjectConfig'] = None, parent_template_id: Optional[str] = None) -> str:
         """
         Convert update to Markdown with yaml header including KV data.
         
-        If project_config is provided and this update has a template_id,
-        uses special fields configuration. Otherwise falls back to legacy behavior.
+        If project_config is provided, uses special fields configuration to determine
+        which fields go in frontmatter. Otherwise falls back to legacy behavior.
         
         Args:
             project_config: ProjectConfig for special field definitions
+            parent_template_id: Template ID of parent record (for note special fields)
         """
         frontmatter = {}
         
-        if project_config and self.template_id:
+        if project_config and parent_template_id:
             # Use template-specific note special fields
             special_fields = project_config.get_special_fields_for_template(
-                self.template_id,
+                parent_template_id,
                 for_record=False,  # Get note fields
             )
             
@@ -571,8 +569,6 @@ class IncidentUpdate:
                     value = self.timestamp
                 elif field_name == "author":
                     value = self.author
-                elif field_name == "template_id":
-                    value = self.template_id
                 elif field_def.value_type == "string" and self.kv_strings:
                     value = self.kv_strings.get(field_name)
                     if value:
@@ -690,7 +686,6 @@ class IncidentUpdate:
             timestamp=frontmatter.get("timestamp", ""),
             author=frontmatter.get("author", ""),
             message=message,
-            template_id=frontmatter.get("template_id"),  # Extract template_id if present
             kv_strings=kv_strings if kv_strings else None,
             kv_integers=kv_integers if kv_integers else None,
             kv_floats=kv_floats if kv_floats else None,
@@ -2790,20 +2785,21 @@ class IncidentFileStorage:
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
-    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None):
+    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None, parent_template_id: Optional[str] = None):
         """
         Save update to Markdown file with yaml header.
         
         Args:
             incident_id: Parent incident ID
-            update: IncidentUpdate to save (should have template_id set if using templates)
+            update: IncidentUpdate to save
             project_config: ProjectConfig for special fields (optional)
+            parent_template_id: Template ID of parent record (optional, for note special fields)
         """
         updates_dir = self._get_updates_dir(incident_id)
         filename = IDGenerator.generate_update_filename(update.id)
         update_file = updates_dir / filename
 
-        content = update.to_markdown(project_config)
+        content = update.to_markdown(project_config, parent_template_id)
         update_file.write_text(content)
     
 
@@ -4765,22 +4761,15 @@ class IncidentManager:
 
         
         update_id = IDGenerator.generate_update_id()
-        
-        # Get template_id from incident for the update
-        incident_template_id = None
-        if incident.kv_strings and 'template_id' in incident.kv_strings:
-            incident_template_id = incident.kv_strings['template_id'][0]
-        
         incident_update = IncidentUpdate(
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
             author=author,
             message=update_msg,
-            template_id=incident_template_id,
         )
 
-        self.storage.save_update(incident_id, incident_update, self.project_config)
+        self.storage.save_update(incident_id, incident_update)
         self.index_db.index_update(incident_update)
     
         return True
@@ -5259,22 +5248,15 @@ class IncidentManager:
         # Create initial update
         initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
-        
-        # Get template_id from incident for the initial update
-        incident_template_id = None
-        if incident.kv_strings and 'template_id' in incident.kv_strings:
-            incident_template_id = incident.kv_strings['template_id'][0]
-        
         initial_update = IncidentUpdate(
             id=update_id,
             incident_id=incident_id,
             timestamp=now,
             author=author,
             message=initial_message,
-            template_id=incident_template_id,
         )
         
-        self.storage.save_update(incident_id, initial_update, self.project_config)
+        self.storage.save_update(incident_id, initial_update)
         self.index_db.index_update(initial_update)
         
         return incident_id
@@ -5753,14 +5735,13 @@ class IncidentManager:
             timestamp=now,
             author=author,
             message=final_message,
-            template_id=parent_template_id,  # Set template_id from parent record
             kv_strings=update_kv_strings if update_kv_strings else None,
             kv_integers=update_kv_integers if update_kv_integers else None,
             kv_floats=update_kv_floats if update_kv_floats else None,
         )
         
         # Save update
-        self.storage.save_update(incident_id, update, self.project_config)
+        self.storage.save_update(incident_id, update, self.project_config, parent_template_id)
         self.index_db.index_update(update)
         
         # Index update KV data (completely independent from incident KV)
