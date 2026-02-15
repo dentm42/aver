@@ -562,7 +562,7 @@ class IncidentUpdate:
             d["kv_floats"] = self.kv_floats
         return d
         
-    def to_markdown(self, project_config: 'ProjectConfig') -> str:
+    def to_markdown(self, project_config: 'ProjectConfig', parent_template_id: Optional[str] = None) -> str:
         """
         Convert update to Markdown with yaml header.
         
@@ -571,17 +571,19 @@ class IncidentUpdate:
         
         Args:
             project_config: ProjectConfig for special field definitions
+            parent_template_id: Template ID from parent record (for note special fields)
         """
         # Get template-specific note special fields if applicable
-        template_id = self.template_id
+        # Use parent_template_id if provided, otherwise try to get from note's own template_id
+        template_id = parent_template_id or self.template_id
         if template_id:
             special_fields = project_config.get_special_fields_for_template(
                 template_id,
                 for_record=False,  # Get note fields
             )
         else:
-            # No template - use global special fields (shouldn't happen for notes)
-            special_fields = project_config.get_special_fields()
+            # No template - use global note special fields
+            special_fields = project_config.get_note_special_fields()
         
         # Build frontmatter from enabled special fields only
         frontmatter = {}
@@ -868,7 +870,8 @@ class ProjectConfig:
         self.db_root = db_root
         self.config_path = db_root / "config.toml"
         self._raw_config = {}
-        self._special_fields: Dict[str, SpecialField] = {}
+        self._record_special_fields: Dict[str, SpecialField] = {}
+        self._note_special_fields: Dict[str, SpecialField] = {}
         self._templates: Dict[str, Template] = {}
         self.default_record_prefix = "REC"
         self.default_note_prefix = "NT"
@@ -897,13 +900,31 @@ class ProjectConfig:
         self._raw_config = {
             "default_record_prefix": "REC",
             "default_note_prefix": "NT",
-            "special_fields": {
+            "record_special_fields": {
                 "title": {
                     "type": "single",
                     "value_type": "string",
                     "editable": True,
                     "enabled": True,
                     "required": False,
+                },
+            },
+            "note_special_fields": {
+                "author": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": False,
+                    "enabled": True,
+                    "required": True,
+                    "system_value": "user_name",
+                },
+                "timestamp": {
+                    "type": "single",
+                    "value_type": "string",
+                    "editable": False,
+                    "enabled": True,
+                    "required": True,
+                    "system_value": "datetime",
                 },
             }
         }
@@ -917,12 +938,28 @@ class ProjectConfig:
         self.default_note_prefix = self._raw_config.get("default_note_prefix", "NT")
     
     def _parse_special_fields(self):
-        """Parse special_fields section into SpecialField objects."""
-        self._special_fields = {}
+        """
+        Parse special_fields sections into SpecialField objects.
         
-        special_fields_config = self._raw_config.get("special_fields", {})
+        Supports both new format (record_special_fields / note_special_fields)
+        and legacy format (special_fields, which becomes record fields only).
+        """
+        self._record_special_fields = {}
+        self._note_special_fields = {}
         
-        for field_name, field_def in special_fields_config.items():
+        # NEW FORMAT: record_special_fields and note_special_fields
+        record_fields_config = self._raw_config.get("record_special_fields", {})
+        note_fields_config = self._raw_config.get("note_special_fields", {})
+        
+        # LEGACY FORMAT: special_fields (backwards compatibility - becomes record fields)
+        legacy_fields_config = self._raw_config.get("special_fields", {})
+        
+        # If legacy format exists and new format doesn't, use legacy for records
+        if legacy_fields_config and not record_fields_config:
+            record_fields_config = legacy_fields_config
+        
+        # Parse record special fields
+        for field_name, field_def in record_fields_config.items():
             field_type = field_def.get("type", "single")
             value_type = field_def.get("value_type", "string")
             accepted_values = field_def.get("accepted_values", [])
@@ -932,7 +969,30 @@ class ProjectConfig:
             system_value = field_def.get("system_value", None)
             default = field_def.get("default", None)
             
-            self._special_fields[field_name] = SpecialField(
+            self._record_special_fields[field_name] = SpecialField(
+                name=field_name,
+                field_type=field_type,
+                value_type=value_type,
+                accepted_values=accepted_values,
+                editable=editable,
+                enabled=enabled,
+                required=required,
+                system_value=system_value,
+                default=default,
+            )
+        
+        # Parse note special fields
+        for field_name, field_def in note_fields_config.items():
+            field_type = field_def.get("type", "single")
+            value_type = field_def.get("value_type", "string")
+            accepted_values = field_def.get("accepted_values", [])
+            editable = field_def.get("editable", True)
+            enabled = field_def.get("enabled", True)
+            required = field_def.get("required", False)
+            system_value = field_def.get("system_value", None)
+            default = field_def.get("default", None)
+            
+            self._note_special_fields[field_name] = SpecialField(
                 name=field_name,
                 field_type=field_type,
                 value_type=value_type,
@@ -986,11 +1046,12 @@ class ProjectConfig:
         Get special fields for a template (additive with overrides).
         
         For records:
-        - Start with global special_fields
+        - Start with global record_special_fields
         - Add/override with template's record_special_fields
         
         For notes:
-        - Use ONLY template's note_special_fields (not additive)
+        - Start with global note_special_fields  
+        - Add/override with template's note_special_fields
         
         Args:
             template_name: Name of template, or None for global fields only
@@ -1000,17 +1061,23 @@ class ProjectConfig:
             Dictionary of special fields
         """
         if not template_name:
-            # No template - return global fields
-            return self._special_fields.copy()
+            # No template - return appropriate global fields
+            if for_record:
+                return self._record_special_fields.copy()
+            else:
+                return self._note_special_fields.copy()
         
         template = self.get_template(template_name)
         if not template:
             # Template not found - return global fields
-            return self._special_fields.copy()
+            if for_record:
+                return self._record_special_fields.copy()
+            else:
+                return self._note_special_fields.copy()
         
         if for_record:
             # For records: Start with global, add/override with template
-            fields = self._special_fields.copy()
+            fields = self._record_special_fields.copy()
             
             if template.has_record_special_fields():
                 # Parse and add/override template fields
@@ -1038,11 +1105,11 @@ class ProjectConfig:
             
             return fields
         else:
-            # For notes: Use ONLY template fields (not additive)
-            fields = {}
+            # For notes: Start with global note fields, add/override with template
+            fields = self._note_special_fields.copy()
             
             if template.has_note_special_fields():
-                # Parse template note fields
+                # Parse and add/override template note fields
                 for field_name, field_def in template.note_special_fields.items():
                     field_type = field_def.get("type", "single")
                     value_type = field_def.get("value_type", "string")
@@ -1180,37 +1247,70 @@ class ProjectConfig:
         return fields
     
     def get_special_fields(self) -> Dict[str, SpecialField]:
-        """Get all special field definitions."""
-        return self._special_fields
+        """
+        Get all record special field definitions.
+        
+        For backward compatibility, this returns record fields.
+        Use get_note_special_fields() for note fields.
+        """
+        return self._record_special_fields
+    
+    def get_note_special_fields(self) -> Dict[str, SpecialField]:
+        """Get all note special field definitions."""
+        return self._note_special_fields
     
     def get_enabled_special_fields(self) -> Dict[str, SpecialField]:
-        """Get only enabled special field definitions."""
+        """
+        Get only enabled record special field definitions.
+        
+        For backward compatibility, this returns record fields.
+        Use get_enabled_note_special_fields() for note fields.
+        """
         return {
-            name: field for name, field in self._special_fields.items()
+            name: field for name, field in self._record_special_fields.items()
+            if field.enabled
+        }
+    
+    def get_enabled_note_special_fields(self) -> Dict[str, SpecialField]:
+        """Get only enabled note special field definitions."""
+        return {
+            name: field for name, field in self._note_special_fields.items()
             if field.enabled
         }
     
     def get_special_field(self, name: str) -> Optional[SpecialField]:
-        """Get specific special field definition."""
-        return self._special_fields.get(name)
+        """
+        Get specific special field definition (searches both record and note fields).
+        
+        Searches record fields first, then note fields.
+        """
+        field = self._record_special_fields.get(name)
+        if field:
+            return field
+        return self._note_special_fields.get(name)
     
     def is_special_field(self, name: str) -> bool:
-        """Check if field is a special field."""
-        return name in self._special_fields
+        """Check if field is a special field (in either record or note fields)."""
+        return name in self._record_special_fields or name in self._note_special_fields
     
     def is_enabled_special_field(self, name: str) -> bool:
-        """Check if field is an enabled special field."""
-        field = self._special_fields.get(name)
+        """Check if field is an enabled special field (in either record or note fields)."""
+        field = self._record_special_fields.get(name)
+        if field and field.enabled:
+            return True
+        field = self._note_special_fields.get(name)
         return field is not None and field.enabled
     
     def validate_field(self, name: str, value: Any) -> tuple[bool, Optional[str]]:
         """
         Validate a field value.
         
+        Searches both record and note fields.
+        
         Returns:
             (is_valid, error_message)
         """
-        field = self._special_fields.get(name)
+        field = self.get_special_field(name)
         if not field:
             return False, f"Unknown field: {name}"
         
@@ -1229,7 +1329,7 @@ class ProjectConfig:
         Returns:
             (is_valid, error_message)
         """
-        for field_name, field in self._special_fields.items():
+        for field_name, field in self._record_special_fields.items():
             if not field.enabled or not field.required:
                 continue
             
@@ -2787,7 +2887,14 @@ class IncidentFileStorage:
         filename = IDGenerator.generate_update_filename(update.id)
         update_file = updates_dir / filename
 
-        content = update.to_markdown(project_config)
+        # Get parent incident's template_id to pass to to_markdown
+        parent_template_id = None
+        if project_config:
+            incident = self.load_incident(incident_id, project_config)
+            if incident and incident.kv_strings and 'template_id' in incident.kv_strings:
+                parent_template_id = incident.kv_strings['template_id'][0]
+        
+        content = update.to_markdown(project_config, parent_template_id=parent_template_id)
         update_file.write_text(content)
     
 
@@ -3797,7 +3904,11 @@ class IncidentManager:
                 for_record=not for_notes,  # for_record=True for incidents, False for notes
             )
         else:
-            all_fields = self.project_config.get_special_fields()
+            # No template - use appropriate global fields
+            if for_notes:
+                all_fields = self.project_config.get_note_special_fields()
+            else:
+                all_fields = self.project_config.get_special_fields()
         
         # Filter to enabled fields only
         special_fields = {
@@ -5617,13 +5728,34 @@ class IncidentManager:
         
         # Handle direct KV dicts (from --from-file)
         if kv_strings is not None or kv_integers is not None or kv_floats is not None:
-            # Direct KV mode
+            # Direct KV mode - need to filter out non-editable special fields
+            # Get note special fields for this template
+            note_special_fields = self.project_config.get_special_fields_for_template(
+                parent_template_id,
+                for_record=False,  # Get note fields
+            )
+            
+            non_editable_fields = {
+                name for name, field in note_special_fields.items()
+                if not field.editable
+            }
+            
             if kv_strings:
-                update_kv_strings = kv_strings.copy()
+                # Filter out non-editable special fields
+                update_kv_strings = {
+                    k: v for k, v in kv_strings.items()
+                    if k not in non_editable_fields
+                }
             if kv_integers:
-                update_kv_integers = kv_integers.copy()
+                update_kv_integers = {
+                    k: v for k, v in kv_integers.items()
+                    if k not in non_editable_fields
+                }
             if kv_floats:
-                update_kv_floats = kv_floats.copy()
+                update_kv_floats = {
+                    k: v for k, v in kv_floats.items()
+                    if k not in non_editable_fields
+                }
         else:
             # Normal KV list mode
             if kv_single:
@@ -6058,10 +6190,33 @@ class IncidentCLI:
         if identity_override:
             manager.set_user_override(identity_override["handle"], identity_override["email"])
         
-        # Build KV lists
-        kv_lists = self._build_kv_list(manager, args)
+        # Process field assignments if present
+        field_kv_single = []
+        field_kv_multi = []
+        if hasattr(args, 'field_assignments') and args.field_assignments:
+            is_note = (
+                hasattr(args, 'command') and args.command == 'note' and
+                hasattr(args, 'note_command') and args.note_command == 'add'
+            )
+            try:
+                field_kv_single, field_kv_multi = self._process_field_assignments(
+                    args.field_assignments,
+                    manager,
+                    for_notes=is_note
+                )
+            except ValueError as e:
+                raise RuntimeError(f"Field assignment error: {e}")
         
-        return manager, kv_lists
+        # Build KV from typed options and legacy options
+        typed_kv_single, typed_kv_multi = self._build_kv_list(manager, args)
+        
+        # Merge all KV sources
+        # Field assignments take precedence (they're more explicit)
+        final_kv_single = field_kv_single + typed_kv_single
+        final_kv_multi = field_kv_multi + typed_kv_multi
+        
+        return manager, (final_kv_single, final_kv_multi)
+
 
     def _process_from_file(
         self,
@@ -6109,7 +6264,10 @@ class IncidentCLI:
         # Step 1: Template resolution
         # Check for template_id in frontmatter (including special fields that resolve to template_id)
         template_ids_from_file = []
-        special_fields = manager.project_config.get_special_fields()
+        if is_note:
+            special_fields = manager.project_config.get_note_special_fields()
+        else:
+            special_fields = manager.project_config.get_special_fields()
         
         for key, value in frontmatter.items():
             # Check if this is a special field that resolves to template_id
@@ -6423,6 +6581,245 @@ class IncidentCLI:
             result.append(f"{key}{type_marker}{value}")
         
         return result
+    
+    def _get_reserved_flags(self, command: Optional[str] = None, subcommand: Optional[str] = None) -> set:
+        """
+        Get reserved flags for a specific command context.
+        
+        Returns set of flags that should NOT be treated as field assignments.
+        Context-aware to avoid false positives.
+        
+        Args:
+            command: Main command (record, note, admin)
+            subcommand: Subcommand (new, update, add, etc.)
+        
+        Returns:
+            Set of reserved flag names
+        """
+        # Global flags (always reserved)
+        reserved = {
+            '--help', '-h',
+            '--location',
+            '--use',
+            '--choose',
+            '--override-repo-boundary',
+            '--use-git-id',
+            '--no-use-git-id',
+        }
+        
+        # Record/Note write operation flags
+        if command in ('record', 'note'):
+            if subcommand in ('new', 'update', 'add'):
+                reserved.update({
+                    '--message', '-m',
+                    '--text', '-t',
+                    '--number', '-n',
+                    '--decimal', '-d',
+                    '--text-multi', '--tm',
+                    '--number-multi', '--nm',
+                    '--decimal-multi', '--dm',
+                    '--kv',
+                    '--kmv',
+                    '--no-yaml',
+                    '--no-validation-editor',
+                    '--from-file',
+                })
+            
+            # Record-specific
+            if command == 'record':
+                if subcommand in ('new', 'update'):
+                    reserved.update({
+                        '--template',
+                        '--description',
+                        '--metadata-only',
+                    })
+            
+            # Note-specific
+            if command == 'note':
+                if subcommand == 'add':
+                    reserved.update({
+                        '--template',
+                        '--reply-to',
+                        '--help-fields',
+                    })
+                elif subcommand in ('list', 'search'):
+                    reserved.update({
+                        '--ksearch',
+                        '--limit',
+                        '--ids-only',
+                    })
+        
+        # Admin flags
+        elif command == 'admin':
+            reserved.update({
+                '--handle',
+                '--email',
+                '--library',
+                '--path',
+                '--prefix',
+            })
+        
+        return reserved
+    
+    def _filter_remaining_args(
+        self, 
+        remaining: List[str], 
+        command: Optional[str] = None,
+        subcommand: Optional[str] = None
+    ) -> List[str]:
+        """
+        Filter remaining args to extract field assignments.
+        
+        Separates field assignments (--field=value or --field value) from
+        unknown functional parameters.
+        
+        Args:
+            remaining: List of unparsed arguments
+            command: Main command for context
+            subcommand: Subcommand for context
+            
+        Returns:
+            List of field assignments in "key=value" format
+            
+        Raises:
+            ValueError: If unknown functional parameter found
+        """
+        reserved_flags = self._get_reserved_flags(command, subcommand)
+        field_assignments = []
+        i = 0
+        
+        while i < len(remaining):
+            arg = remaining[i]
+            
+            if not arg.startswith('--'):
+                # Not a flag - might be a positional arg that snuck through
+                raise ValueError(f"Unexpected argument: {arg}")
+            
+            # Split on = to handle --flag=value format
+            if '=' in arg:
+                flag = arg.split('=', 1)[0]
+                value = arg.split('=', 1)[1]
+                
+                if flag in reserved_flags:
+                    # This is a known functional flag used incorrectly
+                    raise ValueError(f"Unknown option: {arg}")
+                else:
+                    # Field assignment in --field=value format
+                    field_name = flag[2:]  # Remove --
+                    field_assignments.append(f"{field_name}={value}")
+                    i += 1
+            else:
+                # No = sign, could be --flag value format
+                flag = arg
+                
+                if flag in reserved_flags:
+                    # Known functional flag used incorrectly
+                    raise ValueError(f"Unknown option: {arg}")
+                else:
+                    # Field assignment in --field value format
+                    if i + 1 < len(remaining) and not remaining[i+1].startswith('--'):
+                        field_name = flag[2:]  # Remove --
+                        value = remaining[i+1]
+                        field_assignments.append(f"{field_name}={value}")
+                        i += 2  # Skip both flag and value
+                    else:
+                        raise ValueError(f"Missing value for field: {flag}")
+        
+        return field_assignments
+    
+    def _process_field_assignments(
+        self, 
+        assignments: List[str], 
+        manager: IncidentManager,
+        for_notes: bool = False
+    ) -> tuple[List[str], List[str]]:
+        """
+        Convert field assignments into KV lists with type markers.
+        
+        Validates against special_fields config and applies appropriate
+        type markers based on field definitions.
+        
+        Args:
+            assignments: List of "key=value" strings
+            manager: IncidentManager for config access
+            for_notes: True if processing note fields
+            
+        Returns:
+            (kv_single, kv_multi) - Lists with type markers
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        # Get applicable special fields
+        if for_notes:
+            # Start with global note fields
+            all_note_fields = manager.project_config.get_note_special_fields().copy()
+            # Add note fields from all templates
+            for template_name in manager.project_config._templates.keys():
+                template_fields = manager.project_config.get_special_fields_for_template(
+                    template_name,
+                    for_record=False,
+                )
+                all_note_fields.update(template_fields)
+            special_fields = all_note_fields
+        else:
+            special_fields = manager.project_config.get_special_fields()
+        
+        kv_single = []
+        kv_multi = []
+        
+        for assignment in assignments:
+            if '=' not in assignment:
+                raise ValueError(f"Invalid assignment format: {assignment}")
+            
+            key, value = assignment.split('=', 1)
+            
+            if key in special_fields:
+                # This is a special field - validate and type from config
+                field = special_fields[key]
+                
+                # Check if editable
+                if not field.editable:
+                    raise ValueError(
+                        f"Field '{key}' is not editable (system field)"
+                    )
+                
+                # Validate accepted values
+                if field.accepted_values and value not in field.accepted_values:
+                    raise ValueError(
+                        f"Invalid value '{value}' for field '{key}'.\n"
+                        f"Accepted values: {', '.join(field.accepted_values)}"
+                    )
+                
+                # Determine type marker from config
+                if field.value_type == "integer":
+                    type_marker = "#"
+                    try:
+                        int(value)  # Validate it's an integer
+                    except ValueError:
+                        raise ValueError(
+                            f"Field '{key}' requires an integer value, got: {value}"
+                        )
+                elif field.value_type == "float":
+                    type_marker = "%"
+                    try:
+                        float(value)  # Validate it's a float
+                    except ValueError:
+                        raise ValueError(
+                            f"Field '{key}' requires a float value, got: {value}"
+                        )
+                else:
+                    type_marker = "$"
+                
+                # Add to appropriate list based on field type
+                target = kv_multi if field.field_type == "multi" else kv_single
+                target.append(f"{key}{type_marker}{value}")
+            else:
+                # Not a special field - treat as custom string field
+                # (User can override with --text/--number if they want type hints)
+                kv_single.append(f"{key}${value}")
+        
+        return kv_single, kv_multi
 
     def _build_kv_list(self, manager: IncidentManager, args) -> tuple[List[str], List[str]]:
         """
@@ -6445,8 +6842,8 @@ class IncidentCLI:
         )
         
         if is_note_command:
-            # For notes, get all note special fields from all templates
-            all_note_fields = {}
+            # For notes, start with global note fields, then add from templates
+            all_note_fields = manager.project_config.get_note_special_fields().copy()
             for template_name in manager.project_config._templates.keys():
                 template_fields = manager.project_config.get_special_fields_for_template(
                     template_name,
@@ -6551,67 +6948,6 @@ class IncidentCLI:
             kv_multi.extend(args.kv_multi)
         
         return kv_single, kv_multi
-
-    def _add_special_field_args(self, parser, manager: IncidentManager, for_notes: bool = False):
-        """
-        Dynamically add arguments for special fields defined in ProjectConfig.
-        
-        This allows admins to define custom fields like --severity, --assignees,
-        etc. in their config, and they become available as CLI arguments.
-        
-        Args:
-            parser: Argument parser to add fields to
-            manager: IncidentManager instance
-            for_notes: If True, get note special fields from parent record's template
-        """
-        if for_notes:
-            # For notes, we need to get note special fields
-            # Check if there's a record_id in parsed args to determine template
-            # This is tricky because we're called during argument parsing...
-            # For now, just get all possible note special fields from all templates
-            all_note_fields = {}
-            
-            # Get note special fields from all templates
-            for template_name in manager.project_config._templates.keys():
-                template_fields = manager.project_config.get_special_fields_for_template(
-                    template_name,
-                    for_record=False,  # Get note fields
-                )
-                # Merge (later templates override earlier ones if same field name)
-                all_note_fields.update(template_fields)
-            
-            special_fields = all_note_fields
-        else:
-            # For records, get global/record special fields
-            special_fields = manager.project_config.get_special_fields()
-        
-        for field_name, field_def in special_fields.items():
-            if not field_def.editable:
-                continue
-            
-            arg_name = f"--{field_name}"
-            
-            help_text = f"{field_name} ({field_def.field_type}, {field_def.value_type})"
-            if field_def.accepted_values:
-                help_text += f" - Accepted: {', '.join(field_def.accepted_values)}"
-
-            kwargs = {
-                "help": help_text,
-                "dest": field_name,
-            }
-            
-            if field_def.field_type == "multi":
-                kwargs["nargs"] = "*"
-            
-            #if field_def.accepted_values:
-                #kwargs["choices"] = field_def.accepted_values
-            
-            if field_def.value_type == "integer":
-                kwargs["type"] = int
-            elif field_def.value_type == "float":
-                kwargs["type"] = float
-            
-            parser.add_argument(arg_name, **kwargs)
 
     def setup_commands(self):
         """Set up all CLI commands."""
@@ -6799,6 +7135,11 @@ class IncidentCLI:
             metavar="PATH",
             help="Import note from markdown file (blocks editor, rewrites non-editable fields)",
         )
+        note_add_parser.add_argument(
+            "--help-fields",
+            action="store_true",
+            help="Show available fields for the target record",
+        )
         self._add_kv_options(note_add_parser, include_old_style=True)
         self.note_add_parser = note_add_parser
         
@@ -6950,30 +7291,47 @@ class IncidentCLI:
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
-        parsed,remaining = self.parser.parse_known_args(args)
+        parsed, remaining = self.parser.parse_known_args(args)
+
+        # Filter remaining args into field assignments
+        field_assignments = []
+        if remaining:
+            try:
+                # Get command context for context-aware filtering
+                command = getattr(parsed, 'command', None)
+                subcommand = None
+                if command == 'record':
+                    subcommand = getattr(parsed, 'record_command', None)
+                elif command == 'note':
+                    subcommand = getattr(parsed, 'note_command', None)
+                elif command == 'admin':
+                    subcommand = getattr(parsed, 'admin_command', None)
+                
+                field_assignments = self._filter_remaining_args(remaining, command, subcommand)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        
+        # Store field assignments for later processing
+        parsed.field_assignments = field_assignments
 
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
-                    manager = self._get_manager(parsed)
-                    self._add_special_field_args(self.record_new_parser, manager)
-                    parsed = self.parser.parse_args(args)
                     self._cmd_create(parsed)
                 elif parsed.record_command == "view":
                     self._cmd_view(parsed)
                 elif parsed.record_command == "list":
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
-                    manager = self._get_manager(args)
-                    self._add_special_field_args(self.record_update_parser, manager)
-                    parsed = self.parser.parse_args(args)
                     self._cmd_update(parsed)
                     
             elif parsed.command == "note":
                 if parsed.note_command == "add":
-                    manager = self._get_manager(parsed)
-                    self._add_special_field_args(self.note_add_parser, manager, for_notes=True)
-                    parsed = self.parser.parse_args(args)
+                    # Check for --help-fields
+                    if getattr(parsed, 'help_fields', False):
+                        self._show_note_fields_help(parsed.record_id)
+                        return
                     self._cmd_add_update(parsed)
                 elif parsed.note_command == "list":
                     self._cmd_list_updates(parsed)
@@ -7683,6 +8041,92 @@ $update_kv
                 print(f"{e}", file=sys.stderr)
                 sys.exit(1)            
             
+    def _show_note_fields_help(self, record_id: str):
+        """
+        Show available fields for a specific record's notes.
+        
+        Context-aware help that shows only fields applicable to the
+        target record's template.
+        """
+        try:
+            # Create minimal args for manager
+            from types import SimpleNamespace
+            manager_args = SimpleNamespace(
+                location=None,
+                use_alias=None,
+                choose=False,
+                override_repo_boundary=False,
+            )
+            manager = self._get_manager(manager_args)
+            
+            # Load the record
+            incident = manager.get_incident(record_id)
+            if not incident:
+                print(f"Error: Record {record_id} not found", file=sys.stderr)
+                sys.exit(1)
+            
+            # Get template
+            template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            print()
+            if template_id:
+                print(f"Available fields for {record_id} (template: {template_id}):")
+                print()
+                
+                # Get note special fields for this template
+                special_fields = manager.project_config.get_special_fields_for_template(
+                    template_id,
+                    for_record=False,  # Get note fields
+                )
+                
+                if not special_fields:
+                    print("  No special fields defined for this template's notes.")
+                    print()
+                else:
+                    editable_fields = {k: v for k, v in special_fields.items() if v.editable}
+                    
+                    if not editable_fields:
+                        print("  No editable fields defined for this template's notes.")
+                        print()
+                    else:
+                        for field_name, field_def in sorted(editable_fields.items()):
+                            # Field name and type
+                            type_info = f"({field_def.field_type}, {field_def.value_type})"
+                            print(f"  {field_name} {type_info}")
+                            
+                            # Accepted values
+                            if field_def.accepted_values:
+                                values_str = ", ".join(field_def.accepted_values)
+                                print(f"    Accepted: {values_str}")
+                            
+                            # Default value
+                            if field_def.default:
+                                print(f"    Default: {field_def.default}")
+                            
+                            print()
+            else:
+                print(f"Record {record_id} has no template.")
+                print("No special fields defined.")
+                print()
+            
+            print("Usage:")
+            print(f"  aver note add {record_id} --category=investigation --priority=high")
+            print(f"  aver note add {record_id} --message 'Found it' --category=bugfix")
+            print()
+            print("You can also use typed custom fields:")
+            print(f"  aver note add {record_id} --text customfield=value")
+            print(f"  aver note add {record_id} --number hours=8")
+            print()
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            if os.environ.get("AVER_DEBUG"):
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+
     def _cmd_add_update(self, args):
         """Add note to record."""
         manager, (kv_single, kv_multi) = self._setup_write_command(args)

@@ -209,7 +209,7 @@ setup_test_environment() {
     
     # Set user config
     print_test "Set user configuration"
-    if run_aver admin config set-user --handle "test_user" --email "test@example.com"; then
+    if run_aver admin config set-user --handle "testuser" --email "test@example.com"; then
         pass
     else
         fail "Failed to set user config"
@@ -225,8 +225,8 @@ setup_test_environment() {
 default_record_prefix = "REC"
 default_note_prefix = "NT"
 
-# Global special fields
-[special_fields.template_id]
+# Global record special fields
+[record_special_fields.template_id]
 type = "single"
 value_type = "string"
 editable = false
@@ -234,7 +234,7 @@ enabled = true
 required = false
 system_value = "template_id"
 
-[special_fields.created_at]
+[record_special_fields.created_at]
 type = "single"
 value_type = "string"
 editable = false
@@ -242,7 +242,7 @@ enabled = true
 required = true
 system_value = "datetime"
 
-[special_fields.created_by]
+[record_special_fields.created_by]
 type = "single"
 value_type = "string"
 editable = false
@@ -250,7 +250,7 @@ enabled = true
 required = true
 system_value = "user_name"
 
-[special_fields.updated_at]
+[record_special_fields.updated_at]
 type = "single"
 value_type = "string"
 editable = true
@@ -258,14 +258,14 @@ enabled = true
 required = false
 system_value = "datetime"
 
-[special_fields.title]
+[record_special_fields.title]
 type = "single"
 value_type = "string"
 editable = true
 enabled = true
 required = true
 
-[special_fields.status]
+[record_special_fields.status]
 type = "single"
 value_type = "string"
 editable = true
@@ -274,7 +274,7 @@ required = true
 accepted_values = ["open", "in_progress", "resolved", "closed"]
 default = "open"
 
-[special_fields.priority]
+[record_special_fields.priority]
 type = "single"
 value_type = "string"
 editable = true
@@ -283,7 +283,7 @@ required = false
 accepted_values = ["low", "medium", "high", "critical"]
 default = "medium"
 
-[special_fields.severity]
+[record_special_fields.severity]
 type = "single"
 value_type = "integer"
 editable = true
@@ -291,12 +291,29 @@ enabled = true
 required = false
 accepted_values = ["1", "2", "3", "4", "5"]
 
-[special_fields.tags]
+[record_special_fields.tags]
 type = "multi"
 value_type = "string"
 editable = true
 enabled = true
 required = false
+
+# Global note special fields
+[note_special_fields.author]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"
+
+[note_special_fields.timestamp]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "datetime"
 
 # Bug template
 [template.bug]
@@ -643,9 +660,9 @@ test_system_fields() {
     if output=$(run_aver record new --description "" --no-validation-editor --title "User Field Test" 2>&1); then
         local rec_id=$(echo "$output" | grep -oE "REC-[A-Z0-9]+")
         if [ -n "$rec_id" ] && check_content_contains "$TEST_DIR/records/$rec_id.md" "created_by"; then
-            if check_content_contains "$TEST_DIR/records/$rec_id.md" "test_user"; then
+            if check_content_contains "$TEST_DIR/records/$rec_id.md" "testuser"; then
                 pass
-                echo "  User: test_user"
+                echo "  User: testuser"
             else
                 fail "Wrong user in created_by"
             fi
@@ -901,8 +918,8 @@ test_library_management() {
     print_test "Per-library user for note creation"
     # Add a note to the work record using the work library
     if python3 "$AVER_PATH" --override-repo-boundary --use work note add "$work_rec2" --message "Work note" > /dev/null 2>&1; then
-        # Find the note file
-        local note_file=$(ls "$db1/updates/${work_rec2}/"*.md 2>/dev/null | head -1)
+        # Find the note file by grepping for the message
+        local note_file=$(grep -l "Work note" "$db1/updates/${work_rec2}/"*.md 2>/dev/null | head -1)
         if [ -n "$note_file" ] && grep -q "work_user" "$note_file"; then
             pass
             echo "  Note created by work_user"
@@ -1249,11 +1266,11 @@ test_note_operations() {
         fail "Failed to list notes"
     fi
 
-    # Create another record for search testing
-    local output2=$(run_aver record new --description "" --no-validation-editor --title "Another Record" 2>&1)
-    local rec_id2=$(echo "$output2" | grep -oE "REC-[A-Z0-9]+")
+    # Create another record for search testing - use bug template so category field is available
+    local output2=$(run_aver record new --description "" --no-validation-editor --title "Another Record" --status "new" --severity 3 --template bug 2>&1)
+    local rec_id2=$(echo "$output2" | grep -oE "BUG-[A-Z0-9]+")
 
-    
+    set +e
     # Add note with searchable KV data
     # run_aver note add "$rec_id2" --message "Different note" --text "category=bug" > /dev/null 2>&1
     run_aver note add "$rec_id2" --message "Different note" --category "bug" > /dev/null 2>&1
@@ -1272,7 +1289,7 @@ test_note_operations() {
     fi
     
     print_test "Note list for non-existent record"
-    set +e
+    
     output=$(run_aver note list "INVALID-ID" 2>&1)
     exit_code=$?
     set -e
@@ -1315,7 +1332,7 @@ test_note_special_fields() {
 template_id: bug
 title: Test Bug for Notes
 severity: 3
-status: open
+status: new
 ---
 Test bug for testing note special fields.
 EOF
@@ -1336,8 +1353,8 @@ EOF
     fi
     
     print_test "Note special fields saved to markdown"
-    # Get the note file
-    local note_file=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
+    # Find the note file that contains our specific message
+    local note_file=$(grep -l "Investigating the issue" "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
     if [ -n "$note_file" ]; then
         if grep -q "category" "$note_file" && grep -q "investigation" "$note_file" && grep -q "priority" "$note_file" && grep -q "high" "$note_file"; then
             pass
@@ -1397,7 +1414,7 @@ EOF
     print_test "Add note with default special field value"
     # priority has default="medium" in config
     if run_aver note add "$bug_rec" --message "Checking logs" --category "investigation" > /dev/null 2>&1; then
-        local note_file3=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | tail -1)
+        local note_file3=$(grep -l "Checking logs" "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
         if [ -n "$note_file3" ] && grep -q "priority" "$note_file3" && grep -q "medium" "$note_file3"; then
             pass
             echo "  Default priority value applied"
@@ -1423,8 +1440,8 @@ EOF
     
     print_test "Note special fields independent from record special fields"
     # Create a note with category (note field) - record has severity (record field)
-    if run_aver note add "$bug_rec" --message "Note about severity" --category "documentation" > /dev/null 2>&1; then
-        local note_file4=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | tail -1)
+    if run_aver note add "$bug_rec" --message "Severity note" --category "documentation" > /dev/null 2>&1; then
+        local note_file4=$(grep -l "Severity note" "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
         # Note should have category (note field) but NOT severity (record field)
         if [ -n "$note_file4" ] && grep -q "category" "$note_file4" && ! grep -q "severity" "$note_file4"; then
             pass

@@ -20,7 +20,7 @@ import tempfile
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, List, TYPE_CHECKING, Union
 from types import SimpleNamespace
 import select
 import secrets
@@ -30,7 +30,10 @@ try:
     import tomllib
 except ImportError:
     import tomli as tomllib
-import tomli_w 
+try:
+    import tomli_w
+except ImportError:
+    tomli_w = None
 
 
 """
@@ -426,7 +429,16 @@ class Incident:
         kv_integers = {}
         kv_floats = {}
         
-        special_fields = project_config.get_special_fields()
+        # Check if there's a template_id in the frontmatter to get template-specific fields
+        template_id = frontmatter.get('template_id')
+        if template_id:
+            special_fields = project_config.get_special_fields_for_template(
+                template_id,
+                for_record=True,
+            )
+        else:
+            special_fields = project_config.get_special_fields()
+        
         special_field_names = set(special_fields.keys())
         
         # Process all items in frontmatter yaml
@@ -495,23 +507,51 @@ class Incident:
 
 @dataclass
 class IncidentUpdate:
-    """Update/comment on an incident."""
+    """
+    Update/comment on an incident.
+    
+    Like Incident, stores all fields (including system fields) in KV data
+    based on special_fields configuration. The 'message' is the note content.
+    """
 
     id: str
-    incident_id: str
-    timestamp: str
-    author: str
     message: str
     kv_strings: Optional[Dict[str, List[str]]] = None
     kv_integers: Optional[Dict[str, List[int]]] = None
     kv_floats: Optional[Dict[str, List[float]]] = None
+    
+    # Convenience properties for common fields (read from KV)
+    @property
+    def incident_id(self) -> Optional[str]:
+        """Get incident_id from KV strings."""
+        if self.kv_strings and 'incident_id' in self.kv_strings:
+            return self.kv_strings['incident_id'][0]
+        return None
+    
+    @property
+    def timestamp(self) -> Optional[str]:
+        """Get timestamp from KV strings."""
+        if self.kv_strings and 'timestamp' in self.kv_strings:
+            return self.kv_strings['timestamp'][0]
+        return None
+    
+    @property
+    def author(self) -> Optional[str]:
+        """Get author from KV strings."""
+        if self.kv_strings and 'author' in self.kv_strings:
+            return self.kv_strings['author'][0]
+        return None
+    
+    @property
+    def template_id(self) -> Optional[str]:
+        """Get template_id from KV strings."""
+        if self.kv_strings and 'template_id' in self.kv_strings:
+            return self.kv_strings['template_id'][0]
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
             "id": self.id,
-            "incident_id": self.incident_id,
-            "timestamp": self.timestamp,
-            "author": self.author,
             "message": self.message,
         }
         if self.kv_strings:
@@ -522,49 +562,92 @@ class IncidentUpdate:
             d["kv_floats"] = self.kv_floats
         return d
         
-    def to_markdown(self) -> str:
-        """Convert update to Markdown with yaml header including KV data."""
-        # System fields
-        frontmatter = {
-            "id": self.id,
-            "incident_id": self.incident_id,
-            "timestamp": self.timestamp,
-            "author": self.author,
-        }
+    def to_markdown(self, project_config: 'ProjectConfig') -> str:
+        """
+        Convert update to Markdown with yaml header.
         
-        # Add KV data with type hints
+        Works like Incident.to_markdown() - uses special_fields configuration
+        to determine which fields go in frontmatter vs custom fields section.
+        
+        Args:
+            project_config: ProjectConfig for special field definitions
+        """
+        # Get template-specific note special fields if applicable
+        template_id = self.template_id
+        if template_id:
+            special_fields = project_config.get_special_fields_for_template(
+                template_id,
+                for_record=False,  # Get note fields
+            )
+        else:
+            # No template - use global special fields (shouldn't happen for notes)
+            special_fields = project_config.get_special_fields()
+        
+        # Build frontmatter from enabled special fields only
+        frontmatter = {}
+        for field_name, field_def in special_fields.items():
+            if not field_def.enabled:
+                continue
+            
+            # Get value from KV data
+            value = None
+            if field_def.value_type == "string" and self.kv_strings:
+                value = self.kv_strings.get(field_name)
+            elif field_def.value_type == "integer" and self.kv_integers:
+                value = self.kv_integers.get(field_name)
+            elif field_def.value_type == "float" and self.kv_floats:
+                value = self.kv_floats.get(field_name)
+            
+            if not value:
+                continue
+            
+            # Single vs multi value
+            if field_def.field_type == "single":
+                frontmatter[field_name] = value[0]
+            else:
+                frontmatter[field_name] = value
+        
+        # Build custom fields section (non-special fields with type hints)
+        special_field_names = set(special_fields.keys())
         custom_fields = {}
         
         if self.kv_strings:
             for key, values in self.kv_strings.items():
-                hinted_key = YAMLSerializer.add_type_hint(key, "string")
-                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+                if key not in special_field_names:
+                    hinted_key = YAMLSerializer.add_type_hint(key, "string")
+                    custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
         if self.kv_integers:
             for key, values in self.kv_integers.items():
-                hinted_key = YAMLSerializer.add_type_hint(key, "integer")
-                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+                if key not in special_field_names:
+                    hinted_key = YAMLSerializer.add_type_hint(key, "integer")
+                    custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
         if self.kv_floats:
             for key, values in self.kv_floats.items():
-                hinted_key = YAMLSerializer.add_type_hint(key, "float")
-                custom_fields[hinted_key] = values[0] if len(values) == 1 else values
+                if key not in special_field_names:
+                    hinted_key = YAMLSerializer.add_type_hint(key, "float")
+                    custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
-        # Merge and serialize
-        all_frontmatter = frontmatter | custom_fields
+        # Merge: custom fields first (with hints), then special fields (without hints)
+        all_frontmatter = custom_fields | frontmatter
         return MarkdownDocument.create(all_frontmatter, body=self.message)
 
     @classmethod
     def from_markdown(cls, content: str, update_id: str, incident_id: str) -> "IncidentUpdate":
-        """Parse update from Markdown with yaml header."""
+        """
+        Parse update from Markdown with yaml header.
+        
+        Like Incident.from_markdown(), stores ALL frontmatter fields in KV data.
+        The 'id' field is special - it's the only one stored as an object property.
+        """
         # Use MarkdownDocument for parsing
         try:
             frontmatter, message = MarkdownDocument.parse(content)
         except ValueError as e:
             raise ValueError(f"Invalid update file format: {e}")
 
-        # Parse ALL frontmatter fields as KV data (for display in $kv_all)
-        # Even IncidentUpdate's own properties (id, timestamp, etc.) should be in kv_all
+        # Parse ALL frontmatter fields as KV data
         kv_strings = {}
         kv_integers = {}
         kv_floats = {}
@@ -572,6 +655,10 @@ class IncidentUpdate:
         for key_with_hint, value in frontmatter.items():
             # Check for type hint
             clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
+            
+            # Skip 'id' - it's the object identifier, not a KV field
+            if clean_key == 'id':
+                continue
             
             # Convert to list if single value
             if not isinstance(value, list):
@@ -587,9 +674,6 @@ class IncidentUpdate:
 
         return cls(
             id=frontmatter.get("id", update_id),
-            incident_id=frontmatter.get("incident_id", incident_id),
-            timestamp=frontmatter.get("timestamp", ""),
-            author=frontmatter.get("author", ""),
             message=message,
             kv_strings=kv_strings if kv_strings else None,
             kv_integers=kv_integers if kv_integers else None,
@@ -864,27 +948,26 @@ class ProjectConfig:
         """Parse template configurations from config."""
         self._templates = {}
         
-        # Templates are stored as [template.{name}]
-        for key, value in self._raw_config.items():
-            if isinstance(key, str) and key.startswith("template."):
-                template_name = key[9:]  # Remove "template." prefix
-                
-                record_prefix = value.get("record_prefix", None)
-                note_prefix = value.get("note_prefix", None)
-                record_template_recordid = value.get("record_template_recordid", None)
-                note_template_recordid = value.get("note_template_recordid", None)
-                record_special_fields = value.get("record_special_fields", {})
-                note_special_fields = value.get("note_special_fields", {})
-                
-                self._templates[template_name] = Template(
-                    name=template_name,
-                    record_prefix=record_prefix,
-                    note_prefix=note_prefix,
-                    record_template_recordid=record_template_recordid,
-                    note_template_recordid=note_template_recordid,
-                    record_special_fields=record_special_fields,
-                    note_special_fields=note_special_fields,
-                )
+        # Templates are stored under the 'template' key as a nested dict
+        templates_section = self._raw_config.get('template', {})
+        
+        for template_name, template_config in templates_section.items():
+            record_prefix = template_config.get("record_prefix", None)
+            note_prefix = template_config.get("note_prefix", None)
+            record_template_recordid = template_config.get("record_template_recordid", None)
+            note_template_recordid = template_config.get("note_template_recordid", None)
+            record_special_fields = template_config.get("record_special_fields", {})
+            note_special_fields = template_config.get("note_special_fields", {})
+            
+            self._templates[template_name] = Template(
+                name=template_name,
+                record_prefix=record_prefix,
+                note_prefix=note_prefix,
+                record_template_recordid=record_template_recordid,
+                note_template_recordid=note_template_recordid,
+                record_special_fields=record_special_fields,
+                note_special_fields=note_special_fields,
+            )
     
     def get_template(self, name: str) -> Optional[Template]:
         """Get template by name."""
@@ -2691,13 +2774,20 @@ class IncidentFileStorage:
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
-    def save_update(self, incident_id: str, update: IncidentUpdate):
-        """Save update to Markdown file with yaml header."""
+    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None):
+        """
+        Save update to Markdown file with yaml header.
+        
+        Args:
+            incident_id: Parent incident ID
+            update: IncidentUpdate to save (should have template_id set if using templates)
+            project_config: ProjectConfig for special fields (optional)
+        """
         updates_dir = self._get_updates_dir(incident_id)
         filename = IDGenerator.generate_update_filename(update.id)
         update_file = updates_dir / filename
 
-        content = update.to_markdown()
+        content = update.to_markdown(project_config)
         update_file.write_text(content)
     
 
@@ -3668,15 +3758,18 @@ class IncidentManager:
             f"Not a configured template and not an existing record ID."
         )
     
-    def _apply_system_fields(
+    def _apply_special_fields(
         self,
-        incident: Incident,
+        record: Union[Incident, IncidentUpdate],
         is_create: bool = True,
         update_id: Optional[str] = None,
         template_name: Optional[str] = None,
+        for_notes: bool = False,
     ) -> None:
         """
-        Apply system-derived values to incident fields based on config.
+        Apply special field values (system-derived and defaults) based on config.
+        
+        Works for both Incident (records) and IncidentUpdate (notes).
         
         This handles:
         - Fields with system_value set (auto-populated)
@@ -3686,10 +3779,11 @@ class IncidentManager:
         Important: Non-editable fields are ONLY set on creation, never on updates.
         
         Args:
-            incident: Incident to modify (modified in-place)
-            is_create: True if creating new incident, False if updating
+            record: Incident or IncidentUpdate to modify (modified in-place)
+            is_create: True if creating new record/note, False if updating
             update_id: Update ID (for updateid system value)
-            template_name: Template name for template-specific fields (records only)
+            template_name: Template name for template-specific fields
+            for_notes: True if this is an IncidentUpdate (note), False for Incident (record)
         """
         user_identity = UserIdentity(
             handle=self.effective_user['handle'],
@@ -3700,7 +3794,7 @@ class IncidentManager:
         if template_name:
             all_fields = self.project_config.get_special_fields_for_template(
                 template_name,
-                for_record=True,
+                for_record=not for_notes,  # for_record=True for incidents, False for notes
             )
         else:
             all_fields = self.project_config.get_special_fields()
@@ -3729,7 +3823,7 @@ class IncidentManager:
                         value_to_set = SystemValueDeriver.derive_value(
                             field.system_value,
                             user_identity=user_identity,
-                            incident_id=incident.id,
+                            incident_id=record.id,
                             update_id=update_id,
                             template_name=template_name,
                         )
@@ -3740,7 +3834,7 @@ class IncidentManager:
                     value_to_set = SystemValueDeriver.derive_value(
                         field.system_value,
                         user_identity=user_identity,
-                        incident_id=incident.id,
+                        incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
                     )
@@ -3750,7 +3844,7 @@ class IncidentManager:
                     value_to_set = SystemValueDeriver.derive_value(
                         field.system_value,
                         user_identity=user_identity,
-                        incident_id=incident.id,
+                        incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
                     )
@@ -3760,25 +3854,33 @@ class IncidentManager:
                 # Check if field is empty
                 field_is_empty = True
                 if field.value_type == "string":
-                    values = incident.kv_strings.get(field_name, [])
+                    values = record.kv_strings.get(field_name, []) if record.kv_strings else []
                     field_is_empty = not values or not any(v.strip() for v in values)
                 elif field.value_type == "integer":
-                    field_is_empty = field_name not in incident.kv_integers
+                    field_is_empty = not record.kv_integers or field_name not in record.kv_integers
                 elif field.value_type == "float":
-                    field_is_empty = field_name not in incident.kv_floats
+                    field_is_empty = not record.kv_floats or field_name not in record.kv_floats
                 
                 if field_is_empty:
                     should_set = True
                     value_to_set = SystemValueDeriver.resolve_default_value(
                         field.default,
                         user_identity=user_identity,
-                        incident_id=incident.id,
+                        incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
                     )
             
             # Apply the value if needed
             if should_set and value_to_set is not None:
+                # Initialize KV dicts if needed
+                if not record.kv_strings:
+                    record.kv_strings = {}
+                if not record.kv_integers:
+                    record.kv_integers = {}
+                if not record.kv_floats:
+                    record.kv_floats = {}
+                
                 # Handle multi-value fields properly
                 if field.field_type == "multi":
                     # For multi-value fields, check if value_to_set is already a list
@@ -3789,19 +3891,19 @@ class IncidentManager:
                         values = [value_to_set]
                     
                     if field.value_type == "string":
-                        incident.kv_strings[field_name] = values
+                        record.kv_strings[field_name] = values
                     elif field.value_type == "integer":
-                        incident.kv_integers[field_name] = [int(v) for v in values]
+                        record.kv_integers[field_name] = [int(v) for v in values]
                     elif field.value_type == "float":
-                        incident.kv_floats[field_name] = [float(v) for v in values]
+                        record.kv_floats[field_name] = [float(v) for v in values]
                 else:
                     # Single-value field
                     if field.value_type == "string":
-                        incident.kv_strings[field_name] = [value_to_set]
+                        record.kv_strings[field_name] = [value_to_set]
                     elif field.value_type == "integer":
-                        incident.kv_integers[field_name] = [int(value_to_set)]
+                        record.kv_integers[field_name] = [int(value_to_set)]
                     elif field.value_type == "float":
-                        incident.kv_floats[field_name] = [float(value_to_set)]
+                        record.kv_floats[field_name] = [float(value_to_set)]
     
     @staticmethod
     def _generate_timestamp() -> str:
@@ -4408,8 +4510,11 @@ class IncidentManager:
     def update_incident_info(
         self,
         incident_id: str,
-        kv_single: List[str],
-        kv_multi: List[str],
+        kv_single: Optional[List[str]] = None,
+        kv_multi: Optional[List[str]] = None,
+        kv_strings: Optional[Dict[str, List[str]]] = None,
+        kv_integers: Optional[Dict[str, List[int]]] = None,
+        kv_floats: Optional[Dict[str, List[float]]] = None,
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
@@ -4418,7 +4523,7 @@ class IncidentManager:
         allow_validation_editor: bool = True,
     ) -> bool:
         """
-        Update incident fields from KV list and/or description.
+        Update incident fields from KV list/dicts and/or description.
         
         When use_editor=True and use_yaml_editor=True (default), presents the full
         incident with yaml frontmatter for editing. Non-editable special fields are
@@ -4428,6 +4533,9 @@ class IncidentManager:
             incident_id: Incident ID
             kv_single: List of single-value KV strings to update/remove (replaces)
             kv_multi: List of multi-value KV strings to update/remove (appends)
+            kv_strings: Direct KV strings dict (for --from-file)
+            kv_integers: Direct KV integers dict (for --from-file)
+            kv_floats: Direct KV floats dict (for --from-file)
             description: Optional new description
             use_stdin: Read description from STDIN
             use_editor: Launch editor for description
@@ -4484,6 +4592,22 @@ class IncidentManager:
         orig_kv_integers=incident.kv_integers;        
         orig_kv_floats=incident.kv_floats;
         
+        # Handle direct KV dicts (from --from-file)
+        if kv_strings is not None or kv_integers is not None or kv_floats is not None:
+            # Direct KV mode - replace incident's KV data entirely
+            if kv_strings:
+                incident.kv_strings = kv_strings.copy()
+            if kv_integers:
+                incident.kv_integers = kv_integers.copy()
+            if kv_floats:
+                incident.kv_floats = kv_floats.copy()
+            
+            # Skip the normal KV list processing
+            has_kv_to_process = False
+        else:
+            # Normal KV list mode
+            has_kv_to_process = bool(kv_single or kv_multi)
+        
         # Define processor for update operations
         def process_update_kv(inc, parsed_single, parsed_multi):
             # Process single-value KV (replaces)
@@ -4508,19 +4632,22 @@ class IncidentManager:
                     self._validate_and_store_kv_multi(key, kvtype, value, inc)
         
         # Apply KV changes with validation retry loop
-        try:
-            incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
-                incident,
-                kv_single,
-                kv_multi,
-                allow_validation_editor,
-                process_update_kv,
-            )
-            if already_edited_in_validation:
-                updated_fields = ["full record (edited to fix validation)"]
-        except ValueError:
-            # User abandoned validation
-            return False
+        already_edited_in_validation = False
+        if has_kv_to_process:
+            try:
+                incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                    incident,
+                    kv_single,
+                    kv_multi,
+                    allow_validation_editor,
+                    process_update_kv,
+                )
+                if already_edited_in_validation:
+                    updated_fields = ["full record (edited to fix validation)"]
+            except ValueError:
+                # User abandoned validation
+                return False
+        # else: Using direct KV dicts from --from-file, already set above
                 
         # Handle description/full record updates
         if (not metadata_only) and (description or use_stdin or use_editor):
@@ -4591,7 +4718,7 @@ class IncidentManager:
                 updated_fields.append("description")
     
         # Apply system fields for update (using incident's template if it has one)
-        self._apply_system_fields(incident, is_create=False, template_name=incident_template_id)
+        self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
     
         # Save and reindex
         self.storage.save_incident(incident, self.project_config)
@@ -4634,15 +4761,32 @@ class IncidentManager:
 
         
         update_id = IDGenerator.generate_update_id()
+        
+        # Get template_id from incident for the update
+        incident_template_id = None
+        if incident.kv_strings and 'template_id' in incident.kv_strings:
+            incident_template_id = incident.kv_strings['template_id'][0]
+        
+        # Create update with minimal info
         incident_update = IncidentUpdate(
             id=update_id,
-            incident_id=incident_id,
-            timestamp=now,
-            author=author,
             message=update_msg,
         )
+        
+        # Apply special fields
+        self._apply_special_fields(
+            incident_update,
+            is_create=True,
+            template_name=incident_template_id,
+            for_notes=True,
+        )
+        
+        # Set incident_id explicitly
+        if not incident_update.kv_strings:
+            incident_update.kv_strings = {}
+        incident_update.kv_strings['incident_id'] = [incident_id]
 
-        self.storage.save_update(incident_id, incident_update)
+        self.storage.save_update(incident_id, incident_update, self.project_config)
         self.index_db.index_update(incident_update)
     
         return True
@@ -4792,7 +4936,24 @@ class IncidentManager:
         Raises:
             ValueError: If any field fails validation
         """
-        special_fields = self.project_config.get_enabled_special_fields()
+        # Check if incident has a template_id to get template-specific fields
+        template_id = None
+        if incident.kv_strings and 'template_id' in incident.kv_strings:
+            template_id = incident.kv_strings['template_id'][0]
+        
+        if template_id:
+            # Get template-specific fields (global + template overrides)
+            all_fields = self.project_config.get_special_fields_for_template(
+                template_id,
+                for_record=True,
+            )
+            special_fields = {
+                name: field for name, field in all_fields.items()
+                if field.enabled
+            }
+        else:
+            # Use global fields
+            special_fields = self.project_config.get_enabled_special_fields()
         
         # First, validate required fields are present
         is_valid, error_msg = self.project_config.validate_required_fields(incident)
@@ -4839,8 +5000,11 @@ class IncidentManager:
                             )
     def create_incident(
         self,
-        kv_single: List[str],
-        kv_multi: List[str],
+        kv_single: Optional[List[str]] = None,
+        kv_multi: Optional[List[str]] = None,
+        kv_strings: Optional[Dict[str, List[str]]] = None,
+        kv_integers: Optional[Dict[str, List[int]]] = None,
+        kv_floats: Optional[Dict[str, List[float]]] = None,
         description: Optional[str] = None,
         use_stdin: bool = False,
         use_editor: bool = False,
@@ -4850,7 +5014,7 @@ class IncidentManager:
         allow_validation_editor: bool = True,
     ) -> str:
         """
-        Create new incident from KV lists.
+        Create new incident from KV lists or dicts.
         
         When use_editor=True and use_yaml_editor=True (default), presents a 
         template with yaml frontmatter for editing.
@@ -4858,6 +5022,9 @@ class IncidentManager:
         Args:
             kv_single: List of single-value KV strings (replaces)
             kv_multi: List of multi-value KV strings (appends)
+            kv_strings: Direct KV strings dict (for --from-file)
+            kv_integers: Direct KV integers dict (for --from-file)
+            kv_floats: Direct KV floats dict (for --from-file)
             description: Optional incident description
             use_stdin: Read description from STDIN
             use_editor: Launch editor
@@ -4878,13 +5045,6 @@ class IncidentManager:
         """
         author = self.effective_user["handle"]
 
-        # Validate template usage requires editor
-        if template_id and not use_editor:
-            raise ValueError(
-                "The --template flag requires editor mode.\n"
-                "Remove --description flag or stdin input to use editor."
-            )
-        
         # Resolve template first to get prefix and template content
         template_incident = None
         template_name = None
@@ -4949,6 +5109,22 @@ class IncidentManager:
             if template_content:
                 incident.content = template_content
         
+        # Handle direct KV dicts (from --from-file)
+        if kv_strings is not None or kv_integers is not None or kv_floats is not None:
+            # Direct KV mode - set directly on incident
+            if kv_strings:
+                if not incident.kv_strings:
+                    incident.kv_strings = {}
+                incident.kv_strings.update(kv_strings)
+            if kv_integers:
+                if not incident.kv_integers:
+                    incident.kv_integers = {}
+                incident.kv_integers.update(kv_integers)
+            if kv_floats:
+                if not incident.kv_floats:
+                    incident.kv_floats = {}
+                incident.kv_floats.update(kv_floats)
+        
         # Define processor for create operations
         def process_create_kv(inc, parsed_single, parsed_multi):
             # Process single-value KV (replaces)
@@ -4965,12 +5141,12 @@ class IncidentManager:
         
         # Apply system fields FIRST (before validation) so template_id and other
         # required system fields are populated before we validate
-        self._apply_system_fields(incident, is_create=True, template_name=template_name)
+        self._apply_special_fields(incident, is_create=True, template_name=template_name, for_notes=False)
         
         # Apply KV changes with validation retry loop
         # BUT: If we're going to open the editor anyway and no KV was provided,
         # skip this step - validation will happen after editing
-        has_kv_to_process = bool(kv_single or kv_multi)
+        has_kv_to_process = bool(kv_single or kv_multi) or bool(kv_strings or kv_integers or kv_floats)
         will_edit = use_editor and use_yaml_editor
         
         if has_kv_to_process or not will_edit:
@@ -5010,7 +5186,7 @@ class IncidentManager:
                     raise RuntimeError("Record creation cancelled")
                 
                 # Apply system fields (will override any user attempts to modify non-editable fields)
-                self._apply_system_fields(final_incident, is_create=True, template_name=template_name)
+                self._apply_special_fields(final_incident, is_create=True, template_name=template_name, for_notes=False)
                 
                 # NEW: Validate the edited incident
                 try:
@@ -5089,15 +5265,33 @@ class IncidentManager:
         # Create initial update
         initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
+        
+        # Get template_id from incident for the initial update
+        # Get template from incident for initial update
+        incident_template_id = None
+        if incident.kv_strings and 'template_id' in incident.kv_strings:
+            incident_template_id = incident.kv_strings['template_id'][0]
+        
+        # Create initial update with minimal info
         initial_update = IncidentUpdate(
             id=update_id,
-            incident_id=incident_id,
-            timestamp=now,
-            author=author,
             message=initial_message,
         )
         
-        self.storage.save_update(incident_id, initial_update)
+        # Apply special fields to the update
+        self._apply_special_fields(
+            initial_update,
+            is_create=True,
+            template_name=incident_template_id,
+            for_notes=True,
+        )
+        
+        # Set incident_id explicitly
+        if not initial_update.kv_strings:
+            initial_update.kv_strings = {}
+        initial_update.kv_strings['incident_id'] = [incident_id]
+        
+        self.storage.save_update(incident_id, initial_update, self.project_config)
         self.index_db.index_update(initial_update)
         
         return incident_id
@@ -5296,6 +5490,9 @@ class IncidentManager:
         use_yaml_editor: bool = True,
         kv_single: Optional[List[str]] = None,
         kv_multi: Optional[List[str]] = None,
+        kv_strings: Optional[Dict[str, List[str]]] = None,
+        kv_integers: Optional[Dict[str, List[int]]] = None,
+        kv_floats: Optional[Dict[str, List[float]]] = None,
         template_id: Optional[str] = None,
         reply_to_id: Optional[str] = None,
     ) -> str:
@@ -5311,6 +5508,11 @@ class IncidentManager:
             use_stdin: Read from STDIN
             use_editor: Open editor
             use_yaml_editor: If True with use_editor, edit note with yaml (default)
+            kv_single: Single-value KV list
+            kv_multi: Multi-value KV list
+            kv_strings: Direct KV strings dict (for --from-file)
+            kv_integers: Direct KV integers dict (for --from-file)
+            kv_floats: Direct KV floats dict (for --from-file)
             kv_single: Single-value KV for UPDATE only (replaces keys)
             kv_multi: Multi-value KV for UPDATE only (adds values)
         
@@ -5413,33 +5615,44 @@ class IncidentManager:
         update_kv_integers = {}
         update_kv_floats = {}
         
-        if kv_single:
-            parsed_kv = KVParser.parse_kv_list(kv_single)
-            for key, kvtype, op, value in parsed_kv:
-                if op != '-':
-                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
-                        update_kv_strings[key] = [str(value)]
-                    elif kvtype == KVParser.TYPE_INTEGER:
-                        update_kv_integers[key] = [int(value)]
-                    elif kvtype == KVParser.TYPE_FLOAT:
-                        update_kv_floats[key] = [float(value)]
-        
-        if kv_multi:
-            parsed_kv = KVParser.parse_kv_list(kv_multi)
-            for key, kvtype, op, value in parsed_kv:
-                if op != '-':
-                    if kvtype == KVParser.TYPE_STRING or kvtype is None:
-                        if key not in update_kv_strings:
-                            update_kv_strings[key] = []
-                        update_kv_strings[key].append(str(value))
-                    elif kvtype == KVParser.TYPE_INTEGER:
-                        if key not in update_kv_integers:
-                            update_kv_integers[key] = []
-                        update_kv_integers[key].append(int(value))
-                    elif kvtype == KVParser.TYPE_FLOAT:
-                        if key not in update_kv_floats:
-                            update_kv_floats[key] = []
-                        update_kv_floats[key].append(float(value))
+        # Handle direct KV dicts (from --from-file)
+        if kv_strings is not None or kv_integers is not None or kv_floats is not None:
+            # Direct KV mode
+            if kv_strings:
+                update_kv_strings = kv_strings.copy()
+            if kv_integers:
+                update_kv_integers = kv_integers.copy()
+            if kv_floats:
+                update_kv_floats = kv_floats.copy()
+        else:
+            # Normal KV list mode
+            if kv_single:
+                parsed_kv = KVParser.parse_kv_list(kv_single)
+                for key, kvtype, op, value in parsed_kv:
+                    if op != '-':
+                        if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                            update_kv_strings[key] = [str(value)]
+                        elif kvtype == KVParser.TYPE_INTEGER:
+                            update_kv_integers[key] = [int(value)]
+                        elif kvtype == KVParser.TYPE_FLOAT:
+                            update_kv_floats[key] = [float(value)]
+            
+            if kv_multi:
+                parsed_kv = KVParser.parse_kv_list(kv_multi)
+                for key, kvtype, op, value in parsed_kv:
+                    if op != '-':
+                        if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                            if key not in update_kv_strings:
+                                update_kv_strings[key] = []
+                            update_kv_strings[key].append(str(value))
+                        elif kvtype == KVParser.TYPE_INTEGER:
+                            if key not in update_kv_integers:
+                                update_kv_integers[key] = []
+                            update_kv_integers[key].append(int(value))
+                        elif kvtype == KVParser.TYPE_FLOAT:
+                            if key not in update_kv_floats:
+                                update_kv_floats[key] = []
+                            update_kv_floats[key].append(float(value))
  
         # Load template data if specified
         if template_incident:
@@ -5551,35 +5764,47 @@ class IncidentManager:
         note_prefix = self.project_config.get_note_prefix(template_name)
         update_id = IDGenerator.generate_update_id(note_prefix)
         
+        # Create update with minimal info - special fields will be applied next
         update = IncidentUpdate(
             id=update_id,
-            incident_id=incident_id,
-            timestamp=now,
-            author=author,
             message=final_message,
-            kv_strings=update_kv_strings if update_kv_strings else None,
-            kv_integers=update_kv_integers if update_kv_integers else None,
-            kv_floats=update_kv_floats if update_kv_floats else None,
+            kv_strings=update_kv_strings or {},
+            kv_integers=update_kv_integers,
+            kv_floats=update_kv_floats,
         )
         
+        # Apply special fields (sets incident_id, timestamp, author, template_id, etc.)
+        self._apply_special_fields(
+            update,
+            is_create=True,
+            template_name=parent_template_id,
+            for_notes=True,
+        )
+        
+        # Set incident_id explicitly (not a system_value field, just a reference)
+        if not update.kv_strings:
+            update.kv_strings = {}
+        update.kv_strings['incident_id'] = [incident_id]
+        
         # Save update
-        self.storage.save_update(incident_id, update)
+        self.storage.save_update(incident_id, update, self.project_config)
         self.index_db.index_update(update)
         
         # Index update KV data (completely independent from incident KV)
         self.index_db.index_update_kv_data(
             incident_id,
             update_id,
-            kv_strings=update_kv_strings or None,
-            kv_integers=update_kv_integers or None,
-            kv_floats=update_kv_floats or None,
+            kv_strings=update.kv_strings,
+            kv_integers=update.kv_integers,
+            kv_floats=update.kv_floats,
         )
         
-        # Apply system fields for update (will auto-update fields with editable=true + system_value)
-        self._apply_system_fields(incident, is_create=False, update_id=update_id)
+        # Apply special fields to parent incident (auto-update fields with editable=true + system_value)
+        self._apply_special_fields(incident, is_create=False, update_id=update_id, for_notes=False)
         self.storage.save_incident(incident, self.project_config)
         
         return update_id
+
 
     def search_updates(
         self,
@@ -5833,10 +6058,235 @@ class IncidentCLI:
         if identity_override:
             manager.set_user_override(identity_override["handle"], identity_override["email"])
         
-        # Build KV lists
-        kv_lists = self._build_kv_list(manager, args)
+        # Process field assignments if present
+        field_kv_single = []
+        field_kv_multi = []
+        if hasattr(args, 'field_assignments') and args.field_assignments:
+            is_note = (
+                hasattr(args, 'command') and args.command == 'note' and
+                hasattr(args, 'note_command') and args.note_command == 'add'
+            )
+            try:
+                field_kv_single, field_kv_multi = self._process_field_assignments(
+                    args.field_assignments,
+                    manager,
+                    for_notes=is_note
+                )
+            except ValueError as e:
+                raise RuntimeError(f"Field assignment error: {e}")
         
-        return manager, kv_lists
+        # Build KV from typed options and legacy options
+        typed_kv_single, typed_kv_multi = self._build_kv_list(manager, args)
+        
+        # Merge all KV sources
+        # Field assignments take precedence (they're more explicit)
+        final_kv_single = field_kv_single + typed_kv_single
+        final_kv_multi = field_kv_multi + typed_kv_multi
+        
+        return manager, (final_kv_single, final_kv_multi)
+
+
+    def _process_from_file(
+        self,
+        filepath: str,
+        manager: IncidentManager,
+        args: argparse.Namespace,
+        is_note: bool = False,
+        existing_record: Optional['Incident'] = None,
+    ) -> tuple[dict, str, Optional[str]]:
+        """
+        Process --from-file for record new, record update, or note add.
+        
+        Args:
+            filepath: Path to markdown file to import
+            manager: IncidentManager instance
+            args: Command arguments (may contain CLI overrides)
+            is_note: True if processing a note, False if processing a record
+            existing_record: For record update, the existing record being updated
+        
+        Returns:
+            (frontmatter_dict, body_content, resolved_template_id)
+            
+        Raises:
+            RuntimeError: On validation errors or conflicts
+        """
+        from pathlib import Path
+        
+        # Read the file
+        file_path = Path(filepath)
+        if not file_path.exists():
+            raise RuntimeError(f"File not found: {filepath}")
+        
+        try:
+            with open(file_path, "r") as f:
+                content = f.read()
+        except Exception as e:
+            raise RuntimeError(f"Failed to read file {filepath}: {e}")
+        
+        # Parse markdown
+        try:
+            frontmatter, body = MarkdownDocument.parse(content)
+        except ValueError as e:
+            raise RuntimeError(f"Failed to parse markdown file {filepath}: {e}")
+        
+        # Step 1: Template resolution
+        # Check for template_id in frontmatter (including special fields that resolve to template_id)
+        template_ids_from_file = []
+        special_fields = manager.project_config.get_special_fields()
+        
+        for key, value in frontmatter.items():
+            # Check if this is a special field that resolves to template_id
+            clean_key, _ = YAMLSerializer.strip_type_hint(key)
+            if clean_key in special_fields:
+                field_def = special_fields[clean_key]
+                if field_def.system_value == "template_id":
+                    template_ids_from_file.append((clean_key, str(value)))
+            elif key == "template_id":
+                template_ids_from_file.append((key, str(value)))
+        
+        # Check for conflicts in template_id fields
+        if len(template_ids_from_file) > 1:
+            unique_values = set(tid for _, tid in template_ids_from_file)
+            if len(unique_values) > 1:
+                fields = ", ".join(f"{key}={val}" for key, val in template_ids_from_file)
+                raise RuntimeError(
+                    f"Conflicting template_id fields in file: {fields}\n"
+                    f"Multiple fields resolve to template_id but have different values"
+                )
+        
+        # Determine final template
+        template_id_cli = getattr(args, 'template', None)
+        template_id_from_file = template_ids_from_file[0][1] if template_ids_from_file else None
+        
+        resolved_template_id = template_id_cli or template_id_from_file
+        
+        # For record update: check if template change is allowed
+        if existing_record and template_id_from_file and existing_record.template_id != template_id_from_file:
+            # Template is changing - check if this is allowed
+            template_id_fields = [field_name for field_name, field_def in special_fields.items() 
+                                 if field_def.system_value == "template_id"]
+            
+            if template_id_fields:
+                # Check if ALL template_id fields are editable
+                any_non_editable = any(
+                    not special_fields[fname].editable 
+                    for fname in template_id_fields
+                )
+                if any_non_editable:
+                    raise RuntimeError(
+                        f"Cannot change template from '{existing_record.template_id}' to '{template_id_from_file}'\n"
+                        f"One or more template_id fields have editable=false"
+                    )
+        
+        # Step 2: Merge frontmatter with CLI arguments
+        # CLI arguments take precedence
+        merged_frontmatter = frontmatter.copy()
+        
+        # Override with CLI special fields
+        for field_name, field_def in special_fields.items():
+            if hasattr(args, field_name) and getattr(args, field_name) is not None:
+                cli_value = getattr(args, field_name)
+                # Add type hint based on field definition
+                if field_def.value_type == "integer":
+                    hinted_key = YAMLSerializer.add_type_hint(field_name, "integer")
+                elif field_def.value_type == "float":
+                    hinted_key = YAMLSerializer.add_type_hint(field_name, "float")
+                else:
+                    hinted_key = YAMLSerializer.add_type_hint(field_name, "string")
+                
+                # Remove any existing variants of this field (with or without type hints)
+                keys_to_remove = []
+                for key in merged_frontmatter.keys():
+                    clean_key, _ = YAMLSerializer.strip_type_hint(key)
+                    if clean_key == field_name:
+                        keys_to_remove.append(key)
+                for key in keys_to_remove:
+                    del merged_frontmatter[key]
+                
+                # Add CLI value
+                merged_frontmatter[hinted_key] = cli_value
+        
+        # Override with CLI template if provided
+        if template_id_cli and template_ids_from_file:
+            # Remove template_id fields from file
+            for field_key, _ in template_ids_from_file:
+                if field_key in merged_frontmatter:
+                    del merged_frontmatter[field_key]
+        
+        # Step 3: Rewrite non-editable special fields with system values
+        # This includes template_id if resolved
+        if resolved_template_id:
+            # Find template_id special fields and set them
+            for field_name, field_def in special_fields.items():
+                if field_def.system_value == "template_id" and not field_def.editable:
+                    # Add type hint
+                    if field_def.value_type == "integer":
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "integer")
+                    elif field_def.value_type == "float":
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "float")
+                    else:
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "string")
+                    
+                    merged_frontmatter[hinted_key] = resolved_template_id
+        
+        # Rewrite other system fields (created_at, created_by, etc.)
+        # Get current user for created_by/author
+        user_handle = manager.effective_user["handle"]
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        for field_name, field_def in special_fields.items():
+            if not field_def.editable and field_def.system_value:
+                # This is a non-editable system field - rewrite it
+                system_value = None
+                
+                if field_def.system_value == "datetime":
+                    system_value = now
+                elif field_def.system_value == "user_name":
+                    system_value = user_handle
+                elif field_def.system_value == "template_id":
+                    system_value = resolved_template_id
+                
+                if system_value is not None:
+                    # Add type hint
+                    if field_def.value_type == "integer":
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "integer")
+                    elif field_def.value_type == "float":
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "float")
+                    else:
+                        hinted_key = YAMLSerializer.add_type_hint(field_name, "string")
+                    
+                    # Remove any existing variant
+                    keys_to_remove = []
+                    for key in merged_frontmatter.keys():
+                        clean_key, _ = YAMLSerializer.strip_type_hint(key)
+                        if clean_key == field_name:
+                            keys_to_remove.append(key)
+                    for key in keys_to_remove:
+                        del merged_frontmatter[key]
+                    
+                    merged_frontmatter[hinted_key] = system_value
+        
+        # Step 4: Handle record ID for records (not notes)
+        if not is_note:
+            # Check for ID in frontmatter
+            record_id_from_file = None
+            for key, value in frontmatter.items():
+                clean_key, _ = YAMLSerializer.strip_type_hint(key)
+                if clean_key == "id":
+                    record_id_from_file = str(value)
+                    break
+            
+            # For record new: check for conflicts
+            if not existing_record and record_id_from_file:
+                # Check if this ID already exists
+                existing = manager.get_incident(record_id_from_file)
+                if existing:
+                    raise RuntimeError(
+                        f"Record ID '{record_id_from_file}' already exists\n"
+                        f"Cannot import file with existing record ID"
+                    )
+        
+        return merged_frontmatter, body, resolved_template_id
 
     def _check_git_identity(self, args, manager: IncidentManager):
         """
@@ -5996,6 +6446,243 @@ class IncidentCLI:
             result.append(f"{key}{type_marker}{value}")
         
         return result
+    
+    def _get_reserved_flags(self, command: Optional[str] = None, subcommand: Optional[str] = None) -> set:
+        """
+        Get reserved flags for a specific command context.
+        
+        Returns set of flags that should NOT be treated as field assignments.
+        Context-aware to avoid false positives.
+        
+        Args:
+            command: Main command (record, note, admin)
+            subcommand: Subcommand (new, update, add, etc.)
+        
+        Returns:
+            Set of reserved flag names
+        """
+        # Global flags (always reserved)
+        reserved = {
+            '--help', '-h',
+            '--location',
+            '--use',
+            '--choose',
+            '--override-repo-boundary',
+            '--use-git-id',
+            '--no-use-git-id',
+        }
+        
+        # Record/Note write operation flags
+        if command in ('record', 'note'):
+            if subcommand in ('new', 'update', 'add'):
+                reserved.update({
+                    '--message', '-m',
+                    '--text', '-t',
+                    '--number', '-n',
+                    '--decimal', '-d',
+                    '--text-multi', '--tm',
+                    '--number-multi', '--nm',
+                    '--decimal-multi', '--dm',
+                    '--kv',
+                    '--kmv',
+                    '--no-yaml',
+                    '--no-validation-editor',
+                    '--from-file',
+                })
+            
+            # Record-specific
+            if command == 'record':
+                if subcommand in ('new', 'update'):
+                    reserved.update({
+                        '--template',
+                        '--description',
+                        '--metadata-only',
+                    })
+            
+            # Note-specific
+            if command == 'note':
+                if subcommand == 'add':
+                    reserved.update({
+                        '--template',
+                        '--reply-to',
+                        '--help-fields',
+                    })
+                elif subcommand in ('list', 'search'):
+                    reserved.update({
+                        '--ksearch',
+                        '--limit',
+                        '--ids-only',
+                    })
+        
+        # Admin flags
+        elif command == 'admin':
+            reserved.update({
+                '--handle',
+                '--email',
+                '--library',
+                '--path',
+                '--prefix',
+            })
+        
+        return reserved
+    
+    def _filter_remaining_args(
+        self, 
+        remaining: List[str], 
+        command: Optional[str] = None,
+        subcommand: Optional[str] = None
+    ) -> List[str]:
+        """
+        Filter remaining args to extract field assignments.
+        
+        Separates field assignments (--field=value or --field value) from
+        unknown functional parameters.
+        
+        Args:
+            remaining: List of unparsed arguments
+            command: Main command for context
+            subcommand: Subcommand for context
+            
+        Returns:
+            List of field assignments in "key=value" format
+            
+        Raises:
+            ValueError: If unknown functional parameter found
+        """
+        reserved_flags = self._get_reserved_flags(command, subcommand)
+        field_assignments = []
+        i = 0
+        
+        while i < len(remaining):
+            arg = remaining[i]
+            
+            if not arg.startswith('--'):
+                # Not a flag - might be a positional arg that snuck through
+                raise ValueError(f"Unexpected argument: {arg}")
+            
+            # Split on = to handle --flag=value format
+            if '=' in arg:
+                flag = arg.split('=', 1)[0]
+                value = arg.split('=', 1)[1]
+                
+                if flag in reserved_flags:
+                    # This is a known functional flag used incorrectly
+                    raise ValueError(f"Unknown option: {arg}")
+                else:
+                    # Field assignment in --field=value format
+                    field_name = flag[2:]  # Remove --
+                    field_assignments.append(f"{field_name}={value}")
+                    i += 1
+            else:
+                # No = sign, could be --flag value format
+                flag = arg
+                
+                if flag in reserved_flags:
+                    # Known functional flag used incorrectly
+                    raise ValueError(f"Unknown option: {arg}")
+                else:
+                    # Field assignment in --field value format
+                    if i + 1 < len(remaining) and not remaining[i+1].startswith('--'):
+                        field_name = flag[2:]  # Remove --
+                        value = remaining[i+1]
+                        field_assignments.append(f"{field_name}={value}")
+                        i += 2  # Skip both flag and value
+                    else:
+                        raise ValueError(f"Missing value for field: {flag}")
+        
+        return field_assignments
+    
+    def _process_field_assignments(
+        self, 
+        assignments: List[str], 
+        manager: IncidentManager,
+        for_notes: bool = False
+    ) -> tuple[List[str], List[str]]:
+        """
+        Convert field assignments into KV lists with type markers.
+        
+        Validates against special_fields config and applies appropriate
+        type markers based on field definitions.
+        
+        Args:
+            assignments: List of "key=value" strings
+            manager: IncidentManager for config access
+            for_notes: True if processing note fields
+            
+        Returns:
+            (kv_single, kv_multi) - Lists with type markers
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        # Get applicable special fields
+        if for_notes:
+            all_note_fields = {}
+            for template_name in manager.project_config._templates.keys():
+                template_fields = manager.project_config.get_special_fields_for_template(
+                    template_name,
+                    for_record=False,
+                )
+                all_note_fields.update(template_fields)
+            special_fields = all_note_fields
+        else:
+            special_fields = manager.project_config.get_special_fields()
+        
+        kv_single = []
+        kv_multi = []
+        
+        for assignment in assignments:
+            if '=' not in assignment:
+                raise ValueError(f"Invalid assignment format: {assignment}")
+            
+            key, value = assignment.split('=', 1)
+            
+            if key in special_fields:
+                # This is a special field - validate and type from config
+                field = special_fields[key]
+                
+                # Check if editable
+                if not field.editable:
+                    raise ValueError(
+                        f"Field '{key}' is not editable (system field)"
+                    )
+                
+                # Validate accepted values
+                if field.accepted_values and value not in field.accepted_values:
+                    raise ValueError(
+                        f"Invalid value '{value}' for field '{key}'.\n"
+                        f"Accepted values: {', '.join(field.accepted_values)}"
+                    )
+                
+                # Determine type marker from config
+                if field.value_type == "integer":
+                    type_marker = "#"
+                    try:
+                        int(value)  # Validate it's an integer
+                    except ValueError:
+                        raise ValueError(
+                            f"Field '{key}' requires an integer value, got: {value}"
+                        )
+                elif field.value_type == "float":
+                    type_marker = "%"
+                    try:
+                        float(value)  # Validate it's a float
+                    except ValueError:
+                        raise ValueError(
+                            f"Field '{key}' requires a float value, got: {value}"
+                        )
+                else:
+                    type_marker = "$"
+                
+                # Add to appropriate list based on field type
+                target = kv_multi if field.field_type == "multi" else kv_single
+                target.append(f"{key}{type_marker}{value}")
+            else:
+                # Not a special field - treat as custom string field
+                # (User can override with --text/--number if they want type hints)
+                kv_single.append(f"{key}${value}")
+        
+        return kv_single, kv_multi
 
     def _build_kv_list(self, manager: IncidentManager, args) -> tuple[List[str], List[str]]:
         """
@@ -6009,7 +6696,28 @@ class IncidentCLI:
         """
         kv_single = []
         kv_multi = []
-        special_fields = manager.project_config.get_special_fields()
+        
+        # Determine if we're processing notes or records
+        # Check if this is a note command by looking at the command structure
+        is_note_command = (
+            hasattr(args, 'command') and args.command == 'note' and
+            hasattr(args, 'note_command') and args.note_command == 'add'
+        )
+        
+        if is_note_command:
+            # For notes, get all note special fields from all templates
+            all_note_fields = {}
+            for template_name in manager.project_config._templates.keys():
+                template_fields = manager.project_config.get_special_fields_for_template(
+                    template_name,
+                    for_record=False,  # Get note fields
+                )
+                all_note_fields.update(template_fields)
+            special_fields = all_note_fields
+        else:
+            # For records, get global/record special fields
+            special_fields = manager.project_config.get_special_fields()
+        
         special_field_names = set(special_fields.keys())
         
         # Check if any new-style options were used
@@ -6104,43 +6812,6 @@ class IncidentCLI:
         
         return kv_single, kv_multi
 
-    def _add_special_field_args(self, parser, manager: IncidentManager):
-        """
-        Dynamically add arguments for special fields defined in ProjectConfig.
-        
-        This allows admins to define custom fields like --severity, --assignees,
-        etc. in their config, and they become available as CLI arguments.
-        """
-        special_fields = manager.project_config.get_special_fields()
-        
-        for field_name, field_def in special_fields.items():
-            if not field_def.editable:
-                continue
-            
-            arg_name = f"--{field_name}"
-            
-            help_text = f"{field_name} ({field_def.field_type}, {field_def.value_type})"
-            if field_def.accepted_values:
-                help_text += f" - Accepted: {', '.join(field_def.accepted_values)}"
-
-            kwargs = {
-                "help": help_text,
-                "dest": field_name,
-            }
-            
-            if field_def.field_type == "multi":
-                kwargs["nargs"] = "*"
-            
-            #if field_def.accepted_values:
-                #kwargs["choices"] = field_def.accepted_values
-            
-            if field_def.value_type == "integer":
-                kwargs["type"] = int
-            elif field_def.value_type == "float":
-                kwargs["type"] = float
-            
-            parser.add_argument(arg_name, **kwargs)
-
     def setup_commands(self):
         """Set up all CLI commands."""
         
@@ -6192,6 +6863,12 @@ class IncidentCLI:
             "--no-validation-editor",
             action="store_true",
             help="Don't launch editor on validation errors (for automation)",
+        )
+        
+        record_new_parser.add_argument(
+            "--from-file",
+            metavar="PATH",
+            help="Import record from markdown file (blocks editor, rewrites non-editable fields)",
         )
 
         self.record_new_parser = record_new_parser
@@ -6261,6 +6938,12 @@ class IncidentCLI:
             action="store_true",
             help="Update only metadata fields, skip content changes",
         )
+        
+        record_update_parser.add_argument(
+            "--from-file",
+            metavar="PATH",
+            help="Import record update from markdown file (blocks editor, rewrites non-editable fields)",
+        )
 
         self.record_update_parser = record_update_parser
 
@@ -6310,7 +6993,18 @@ class IncidentCLI:
             metavar="NOTE_ID",
             help="Reply to an existing note (quotes original text in editor)",
         )
+        note_add_parser.add_argument(
+            "--from-file",
+            metavar="PATH",
+            help="Import note from markdown file (blocks editor, rewrites non-editable fields)",
+        )
+        note_add_parser.add_argument(
+            "--help-fields",
+            action="store_true",
+            help="Show available fields for the target record",
+        )
         self._add_kv_options(note_add_parser, include_old_style=True)
+        self.note_add_parser = note_add_parser
         
         # note list
         note_list_parser = note_subparsers.add_parser(
@@ -6460,27 +7154,47 @@ class IncidentCLI:
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
-        parsed,remaining = self.parser.parse_known_args(args)
+        parsed, remaining = self.parser.parse_known_args(args)
+
+        # Filter remaining args into field assignments
+        field_assignments = []
+        if remaining:
+            try:
+                # Get command context for context-aware filtering
+                command = getattr(parsed, 'command', None)
+                subcommand = None
+                if command == 'record':
+                    subcommand = getattr(parsed, 'record_command', None)
+                elif command == 'note':
+                    subcommand = getattr(parsed, 'note_command', None)
+                elif command == 'admin':
+                    subcommand = getattr(parsed, 'admin_command', None)
+                
+                field_assignments = self._filter_remaining_args(remaining, command, subcommand)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        
+        # Store field assignments for later processing
+        parsed.field_assignments = field_assignments
 
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
-                    manager = self._get_manager(parsed)
-                    self._add_special_field_args(self.record_new_parser, manager)
-                    parsed = self.parser.parse_args(args)
                     self._cmd_create(parsed)
                 elif parsed.record_command == "view":
                     self._cmd_view(parsed)
                 elif parsed.record_command == "list":
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
-                    manager = self._get_manager(args)
-                    self._add_special_field_args(self.record_update_parser, manager)
-                    parsed = self.parser.parse_args(args)
                     self._cmd_update(parsed)
                     
             elif parsed.command == "note":
                 if parsed.note_command == "add":
+                    # Check for --help-fields
+                    if getattr(parsed, 'help_fields', False):
+                        self._show_note_fields_help(parsed.record_id)
+                        return
                     self._cmd_add_update(parsed)
                 elif parsed.note_command == "list":
                     self._cmd_list_updates(parsed)
@@ -6824,55 +7538,154 @@ $update_kv
         """Create record."""
         manager, (kv_single, kv_multi) = self._setup_write_command(args)
         
-        has_description = args.description is not None
-        has_stdin = StdinHandler.has_stdin_data()
-        use_editor = not (has_description or has_stdin)
-        use_yaml_editor = not getattr(args, 'no_yaml', False)
-        template_id = getattr(args, 'template', None)
-        allow_validation_editor = not getattr(args, 'no_validation_editor', False)
+        from_file = getattr(args, 'from_file', None)
         
-        # Validate template usage
-        if template_id and not use_editor:
-            print(
-                "Error: --template can only be used in editor mode\n"
-                "Remove --description flag or stdin input to use editor",
-                file=sys.stderr
-            )
-            sys.exit(1)
-
-        try:
-            record_id = manager.create_incident(
-                kv_single=kv_single,
-                kv_multi=kv_multi,
-                description=args.description,
-                use_stdin=has_stdin and not has_description,
-                use_editor=use_editor,
-                use_yaml_editor=use_yaml_editor,
-                custom_id=getattr(args, 'custom_id', None),
-                template_id=template_id,
-                allow_validation_editor=allow_validation_editor,
-            )
+        if from_file:
+            # --from-file mode: import from markdown file
+            try:
+                # Process the file
+                frontmatter, body, template_id = self._process_from_file(
+                    from_file, 
+                    manager, 
+                    args, 
+                    is_note=False
+                )
+                
+                # Reconstruct markdown with processed frontmatter
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                
+                # Use Incident.from_markdown to parse and get KV data
+                # (reuses existing parsing logic)
+                temp_incident = Incident.from_markdown(
+                    processed_content,
+                    "TEMP",  # Temporary ID, will be replaced
+                    manager.project_config
+                )
+                
+                file_kv_strings = temp_incident.kv_strings or {}
+                file_kv_integers = temp_incident.kv_integers or {}
+                file_kv_floats = temp_incident.kv_floats or {}
+                
+                # Merge with CLI KV data (CLI takes precedence)
+                # Parse CLI KV into dicts
+                cli_kv_strings = {}
+                cli_kv_integers = {}
+                cli_kv_floats = {}
+                
+                if kv_single:
+                    parsed = KVParser.parse_kv_list(kv_single)
+                    for key, kvtype, op, value in parsed:
+                        if op != '-':
+                            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                                cli_kv_strings[key] = [str(value)]
+                            elif kvtype == KVParser.TYPE_INTEGER:
+                                cli_kv_integers[key] = [int(value)]
+                            elif kvtype == KVParser.TYPE_FLOAT:
+                                cli_kv_floats[key] = [float(value)]
+                
+                if kv_multi:
+                    parsed = KVParser.parse_kv_list(kv_multi)
+                    for key, kvtype, op, value in parsed:
+                        if op != '-':
+                            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                                if key not in cli_kv_strings:
+                                    cli_kv_strings[key] = []
+                                cli_kv_strings[key].append(str(value))
+                            elif kvtype == KVParser.TYPE_INTEGER:
+                                if key not in cli_kv_integers:
+                                    cli_kv_integers[key] = []
+                                cli_kv_integers[key].append(int(value))
+                            elif kvtype == KVParser.TYPE_FLOAT:
+                                if key not in cli_kv_floats:
+                                    cli_kv_floats[key] = []
+                                cli_kv_floats[key].append(float(value))
+                
+                # Merge: CLI overrides file
+                final_kv_strings = file_kv_strings.copy()
+                final_kv_integers = file_kv_integers.copy()
+                final_kv_floats = file_kv_floats.copy()
+                
+                final_kv_strings.update(cli_kv_strings)
+                final_kv_integers.update(cli_kv_integers)
+                final_kv_floats.update(cli_kv_floats)
+                
+                # Extract custom_id from frontmatter if present
+                custom_id_from_file = frontmatter.get('id', None)
+                final_custom_id = getattr(args, 'custom_id', None) or custom_id_from_file
+                
+                # Create the record (no editor, no stdin, use file body)
+                record_id = manager.create_incident(
+                    kv_single=None,  # Already merged into final_kv_*
+                    kv_multi=None,
+                    kv_strings=final_kv_strings,
+                    kv_integers=final_kv_integers,
+                    kv_floats=final_kv_floats,
+                    description=body,
+                    use_stdin=False,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    custom_id=final_custom_id,
+                    template_id=template_id,
+                    allow_validation_editor=False,  # No editor in --from-file mode
+                )
+                
+                print(f"✓ Created record from file: {record_id}")
+                
+            except (ValueError, RuntimeError) as e:
+                print(f"Error importing from file: {e}", file=sys.stderr)
+                sys.exit(1)
+                
+        else:
+            # Normal mode (existing code)
+            has_description = args.description is not None
+            has_stdin = StdinHandler.has_stdin_data()
+            use_editor = not (has_description or has_stdin)
+            use_yaml_editor = not getattr(args, 'no_yaml', False)
+            template_id = getattr(args, 'template', None)
+            allow_validation_editor = not getattr(args, 'no_validation_editor', False)
             
-            print(f"✓ Created record: {record_id}")
-            
-            # Show summary from KV data
-            record = manager.get_incident(record_id)
-            if record:
-                if 'title' in record.kv_strings:
-                    title = record.kv_strings['title'][0]
-                    print(f"  Title: {title}")
-                for key, values in record.kv_strings.items():
-                    if key not in ('title', 'description', 'created_at', 'created_by', 'updated_at'):
-                        print(f"  {key}: {', '.join(values)}")
+            # Validate template usage
+            if template_id and not use_editor:
+                print(
+                    "Error: --template can only be used in editor mode\n"
+                    "Remove --description flag or stdin input to use editor",
+                    file=sys.stderr
+                )
+                sys.exit(1)
 
-        except ValueError as e:
-            # Only happens if allow_validation_editor=False or non-validation ValueError
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        except RuntimeError as e:
-            # User cancelled
-            print(f"{e}", file=sys.stderr)
-            sys.exit(1)
+            try:
+                record_id = manager.create_incident(
+                    kv_single=kv_single,
+                    kv_multi=kv_multi,
+                    description=args.description,
+                    use_stdin=has_stdin and not has_description,
+                    use_editor=use_editor,
+                    use_yaml_editor=use_yaml_editor,
+                    custom_id=getattr(args, 'custom_id', None),
+                    template_id=template_id,
+                    allow_validation_editor=allow_validation_editor,
+                )
+                
+                print(f"✓ Created record: {record_id}")
+                
+                # Show summary from KV data
+                record = manager.get_incident(record_id)
+                if record:
+                    if 'title' in record.kv_strings:
+                        title = record.kv_strings['title'][0]
+                        print(f"  Title: {title}")
+                    for key, values in record.kv_strings.items():
+                        if key not in ('title', 'description', 'created_at', 'created_by', 'updated_at'):
+                            print(f"  {key}: {', '.join(values)}")
+
+            except ValueError as e:
+                # Only happens if allow_validation_editor=False or non-validation ValueError
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            except RuntimeError as e:
+                # User cancelled
+                print(f"{e}", file=sys.stderr)
+                sys.exit(1)
 
     def _cmd_view(self, args):
         """View record details."""
@@ -6938,116 +7751,406 @@ $update_kv
     def _cmd_update(self, args):
         """Update record metadata and/or description."""
         manager, (kv_single, kv_multi) = self._setup_write_command(args)
-    
-        has_description = True if (hasattr(args, 'description') and args.description is not None) else False
-        has_stdin = StdinHandler.has_stdin_data()
-        use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
         
-        use_yaml_editor = not getattr(args, 'no_yaml', False)
-        metadata_only = getattr(args, 'metadata_only', False)
-        allow_validation_editor = not getattr(args, 'no_validation_editor', False)
+        from_file = getattr(args, 'from_file', None)
         
-        # Validate metadata_only usage
-        if metadata_only:
-            if not kv_single and not kv_multi:
-                print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
-                sys.exit(1)
-            if has_description:
-                print("Error: --metadata-only cannot be used with --description", file=sys.stderr)
-                sys.exit(1)
-
-        if not kv_single and not kv_multi and not (has_description or has_stdin or use_editor):
-            print("Error: No fields to update", file=sys.stderr)
-            sys.exit(1)
-            
-        # NEW: Only catch errors if validation editor is NOT allowed
-        try:
-            result = manager.update_incident_info(
-                args.record_id,
-                kv_single=kv_single,
-                kv_multi=kv_multi,
-                description=args.description if has_description else None,
-                use_stdin=has_stdin and not has_description,
-                use_editor=use_editor,
-                use_yaml_editor=use_yaml_editor,
-                metadata_only=metadata_only,
-                allow_validation_editor=allow_validation_editor,
-            )
-            
-            if result:
-                print(f"✓ Updated record: {args.record_id}")
-            else:
-                print(f"Update cancelled", file=sys.stderr)
+        if from_file:
+            # --from-file mode: import update from markdown file
+            try:
+                # Load existing record first
+                existing_record = manager.get_incident(args.record_id)
+                if not existing_record:
+                    print(f"Error: Record {args.record_id} not found", file=sys.stderr)
+                    sys.exit(1)
+                
+                # Process the file
+                frontmatter, body, template_id = self._process_from_file(
+                    from_file,
+                    manager,
+                    args,
+                    is_note=False,
+                    existing_record=existing_record
+                )
+                
+                # Reconstruct markdown and parse to get KV data
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_incident = Incident.from_markdown(
+                    processed_content,
+                    "TEMP",
+                    manager.project_config
+                )
+                
+                file_kv_strings = temp_incident.kv_strings or {}
+                file_kv_integers = temp_incident.kv_integers or {}
+                file_kv_floats = temp_incident.kv_floats or {}
+                
+                # Merge with CLI KV (same logic as record new)
+                cli_kv_strings = {}
+                cli_kv_integers = {}
+                cli_kv_floats = {}
+                
+                if kv_single:
+                    parsed = KVParser.parse_kv_list(kv_single)
+                    for key, kvtype, op, value in parsed:
+                        if op != '-':
+                            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                                cli_kv_strings[key] = [str(value)]
+                            elif kvtype == KVParser.TYPE_INTEGER:
+                                cli_kv_integers[key] = [int(value)]
+                            elif kvtype == KVParser.TYPE_FLOAT:
+                                cli_kv_floats[key] = [float(value)]
+                
+                if kv_multi:
+                    parsed = KVParser.parse_kv_list(kv_multi)
+                    for key, kvtype, op, value in parsed:
+                        if op != '-':
+                            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                                if key not in cli_kv_strings:
+                                    cli_kv_strings[key] = []
+                                cli_kv_strings[key].append(str(value))
+                            elif kvtype == KVParser.TYPE_INTEGER:
+                                if key not in cli_kv_integers:
+                                    cli_kv_integers[key] = []
+                                cli_kv_integers[key].append(int(value))
+                            elif kvtype == KVParser.TYPE_FLOAT:
+                                if key not in cli_kv_floats:
+                                    cli_kv_floats[key] = []
+                                cli_kv_floats[key].append(float(value))
+                
+                final_kv_strings = file_kv_strings.copy()
+                final_kv_integers = file_kv_integers.copy()
+                final_kv_floats = file_kv_floats.copy()
+                
+                final_kv_strings.update(cli_kv_strings)
+                final_kv_integers.update(cli_kv_integers)
+                final_kv_floats.update(cli_kv_floats)
+                
+                # Update the record (no editor)
+                result = manager.update_incident_info(
+                    args.record_id,
+                    kv_single=None,
+                    kv_multi=None,
+                    kv_strings=final_kv_strings,
+                    kv_integers=final_kv_integers,
+                    kv_floats=final_kv_floats,
+                    description=body,
+                    use_stdin=False,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    metadata_only=False,
+                    allow_validation_editor=False,
+                )
+                
+                if result:
+                    print(f"✓ Updated record from file: {args.record_id}")
+                else:
+                    print(f"Update cancelled", file=sys.stderr)
+                    sys.exit(1)
+                    
+            except (ValueError, RuntimeError) as e:
+                print(f"Error importing from file: {e}", file=sys.stderr)
                 sys.exit(1)
                 
-        except ValueError as e:
-            # Only happens if allow_validation_editor=False (--no-validation-editor flag)
-            # or if it's a non-validation ValueError (like custom_id format)
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
-        except RuntimeError as e:
-            # User cancelled after being offered editor
-            print(f"{e}", file=sys.stderr)
-            sys.exit(1)            
+        else:
+            # Normal mode (existing code)
+            has_description = True if (hasattr(args, 'description') and args.description is not None) else False
+            has_stdin = StdinHandler.has_stdin_data()
+            use_editor = True if (hasattr(args, 'use_editor') or (not has_description and not has_stdin)) else False
             
+            use_yaml_editor = not getattr(args, 'no_yaml', False)
+            metadata_only = getattr(args, 'metadata_only', False)
+            allow_validation_editor = not getattr(args, 'no_validation_editor', False)
+            
+            # Validate metadata_only usage
+            if metadata_only:
+                if not kv_single and not kv_multi:
+                    print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
+                    sys.exit(1)
+                if has_description:
+                    print("Error: --metadata-only cannot be used with --description", file=sys.stderr)
+                    sys.exit(1)
+
+            if not kv_single and not kv_multi and not (has_description or has_stdin or use_editor):
+                print("Error: No fields to update", file=sys.stderr)
+                sys.exit(1)
+                
+            # NEW: Only catch errors if validation editor is NOT allowed
+            try:
+                result = manager.update_incident_info(
+                    args.record_id,
+                    kv_single=kv_single,
+                    kv_multi=kv_multi,
+                    description=args.description if has_description else None,
+                    use_stdin=has_stdin and not has_description,
+                    use_editor=use_editor,
+                    use_yaml_editor=use_yaml_editor,
+                    metadata_only=metadata_only,
+                    allow_validation_editor=allow_validation_editor,
+                )
+                
+                if result:
+                    print(f"✓ Updated record: {args.record_id}")
+                else:
+                    print(f"Update cancelled", file=sys.stderr)
+                    sys.exit(1)
+                    
+            except ValueError as e:
+                # Only happens if allow_validation_editor=False (--no-validation-editor flag)
+                # or if it's a non-validation ValueError (like custom_id format)
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            except RuntimeError as e:
+                # User cancelled after being offered editor
+                print(f"{e}", file=sys.stderr)
+                sys.exit(1)            
+            
+    def _show_note_fields_help(self, record_id: str):
+        """
+        Show available fields for a specific record's notes.
+        
+        Context-aware help that shows only fields applicable to the
+        target record's template.
+        """
+        try:
+            # Create minimal args for manager
+            from types import SimpleNamespace
+            manager_args = SimpleNamespace(
+                location=None,
+                use_alias=None,
+                choose=False,
+                override_repo_boundary=False,
+            )
+            manager = self._get_manager(manager_args)
+            
+            # Load the record
+            incident = manager.get_incident(record_id)
+            if not incident:
+                print(f"Error: Record {record_id} not found", file=sys.stderr)
+                sys.exit(1)
+            
+            # Get template
+            template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            print()
+            if template_id:
+                print(f"Available fields for {record_id} (template: {template_id}):")
+                print()
+                
+                # Get note special fields for this template
+                special_fields = manager.project_config.get_special_fields_for_template(
+                    template_id,
+                    for_record=False,  # Get note fields
+                )
+                
+                if not special_fields:
+                    print("  No special fields defined for this template's notes.")
+                    print()
+                else:
+                    editable_fields = {k: v for k, v in special_fields.items() if v.editable}
+                    
+                    if not editable_fields:
+                        print("  No editable fields defined for this template's notes.")
+                        print()
+                    else:
+                        for field_name, field_def in sorted(editable_fields.items()):
+                            # Field name and type
+                            type_info = f"({field_def.field_type}, {field_def.value_type})"
+                            print(f"  {field_name} {type_info}")
+                            
+                            # Accepted values
+                            if field_def.accepted_values:
+                                values_str = ", ".join(field_def.accepted_values)
+                                print(f"    Accepted: {values_str}")
+                            
+                            # Default value
+                            if field_def.default:
+                                print(f"    Default: {field_def.default}")
+                            
+                            print()
+            else:
+                print(f"Record {record_id} has no template.")
+                print("No special fields defined.")
+                print()
+            
+            print("Usage:")
+            print(f"  aver note add {record_id} --category=investigation --priority=high")
+            print(f"  aver note add {record_id} --message 'Found it' --category=bugfix")
+            print()
+            print("You can also use typed custom fields:")
+            print(f"  aver note add {record_id} --text customfield=value")
+            print(f"  aver note add {record_id} --number hours=8")
+            print()
+            
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            if os.environ.get("AVER_DEBUG"):
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+
     def _cmd_add_update(self, args):
         """Add note to record."""
         manager, (kv_single, kv_multi) = self._setup_write_command(args)
 
-        has_message = args.message is not None
-        has_stdin = StdinHandler.has_stdin_data()
-        use_editor = not (has_message or has_stdin)
-        use_yaml_editor = not getattr(args, 'no_yaml', False)
-        template_id = getattr(args, 'template', None)
-        reply_to_id = getattr(args, 'reply_to', None)
+        from_file = getattr(args, 'from_file', None)
         
-        # Validate template usage
-        if template_id and not use_editor:
-            print(
-                "Error: --template can only be used in editor mode\n"
-                "Remove --message flag or stdin input to use editor",
-                file=sys.stderr
-            )
-            sys.exit(1)
-        
-        # Validate reply-to usage
-        if reply_to_id and not use_editor:
-            print(
-                "Error: --reply-to can only be used in editor mode\n"
-                "Remove --message flag or stdin input to use editor",
-                file=sys.stderr
-            )
-            sys.exit(1)
-        
-        # Cannot use both --template and --reply-to
-        if template_id and reply_to_id:
-            print(
-                "Error: Cannot use both --template and --reply-to\n"
-                "Choose one or the other",
-                file=sys.stderr
-            )
-            sys.exit(1)
+        if from_file:
+            # --from-file mode: import note from markdown file
+            template_id = getattr(args, 'template', None)
+            reply_to_id = getattr(args, 'reply_to', None)
+            
+            # Validate incompatibility
+            if template_id:
+                print(
+                    "Error: Cannot use both --from-file and --template\n"
+                    "Choose one or the other",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+            
+            if reply_to_id:
+                print(
+                    "Error: Cannot use both --from-file and --reply-to\n"
+                    "Choose one or the other",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+            
+            try:
+                # Process the file
+                frontmatter, body, resolved_template_id = self._process_from_file(
+                    from_file,
+                    manager,
+                    args,
+                    is_note=True
+                )
+                
+                # Reconstruct markdown and parse to get KV data
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                
+                # Use IncidentUpdate.from_markdown to parse
+                # Note: ID doesn't matter here, will be regenerated
+                temp_note = IncidentUpdate.from_markdown(
+                    processed_content,
+                    "TEMP",
+                    args.record_id
+                )
+                
+                file_kv_strings = temp_note.kv_strings or {}
+                file_kv_integers = temp_note.kv_integers or {}
+                file_kv_floats = temp_note.kv_floats or {}
+                
+                # Merge with CLI KV
+                cli_kv_strings = {}
+                cli_kv_integers = {}
+                cli_kv_floats = {}
+                
+                combined_kv = kv_single + kv_multi
+                if combined_kv:
+                    parsed = KVParser.parse_kv_list(combined_kv)
+                    for key, kvtype, op, value in parsed:
+                        if op != '-':
+                            if kvtype == KVParser.TYPE_STRING or kvtype is None:
+                                if key not in cli_kv_strings:
+                                    cli_kv_strings[key] = []
+                                cli_kv_strings[key].append(str(value))
+                            elif kvtype == KVParser.TYPE_INTEGER:
+                                if key not in cli_kv_integers:
+                                    cli_kv_integers[key] = []
+                                cli_kv_integers[key].append(int(value))
+                            elif kvtype == KVParser.TYPE_FLOAT:
+                                if key not in cli_kv_floats:
+                                    cli_kv_floats[key] = []
+                                cli_kv_floats[key].append(float(value))
+                
+                final_kv_strings = file_kv_strings.copy()
+                final_kv_integers = file_kv_integers.copy()
+                final_kv_floats = file_kv_floats.copy()
+                
+                final_kv_strings.update(cli_kv_strings)
+                final_kv_integers.update(cli_kv_integers)
+                final_kv_floats.update(cli_kv_floats)
+                
+                # Add the note (no editor, always generate new ID)
+                note_id = manager.add_update(
+                    args.record_id,
+                    message=body,
+                    use_stdin=False,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    kv_single=None,
+                    kv_multi=None,
+                    kv_strings=final_kv_strings,
+                    kv_integers=final_kv_integers,
+                    kv_floats=final_kv_floats,
+                    template_id=resolved_template_id,
+                    reply_to_id=None,
+                )
+                
+                print(f"✓ Added note from file: {note_id}")
+                
+            except (ValueError, RuntimeError) as e:
+                print(f"Error importing from file: {e}", file=sys.stderr)
+                sys.exit(1)
+                
+        else:
+            # Normal mode (existing code)
+            has_message = args.message is not None
+            has_stdin = StdinHandler.has_stdin_data()
+            use_editor = not (has_message or has_stdin)
+            use_yaml_editor = not getattr(args, 'no_yaml', False)
+            template_id = getattr(args, 'template', None)
+            reply_to_id = getattr(args, 'reply_to', None)
+            
+            # Validate template usage
+            if template_id and not use_editor:
+                print(
+                    "Error: --template can only be used in editor mode\n"
+                    "Remove --message flag or stdin input to use editor",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+            
+            # Validate reply-to usage
+            if reply_to_id and not use_editor:
+                print(
+                    "Error: --reply-to can only be used in editor mode\n"
+                    "Remove --message flag or stdin input to use editor",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+            
+            # Cannot use both --template and --reply-to
+            if template_id and reply_to_id:
+                print(
+                    "Error: Cannot use both --template and --reply-to\n"
+                    "Choose one or the other",
+                    file=sys.stderr
+                )
+                sys.exit(1)
 
-        try:
-            # For notes, combine both into kv_single parameter (legacy behavior preserved)
-            combined_kv = kv_single + kv_multi
-            
-            note_id = manager.add_update(
-                args.record_id,
-                message=args.message if has_message else None,
-                use_stdin=has_stdin and not has_message,
-                use_editor=use_editor,
-                use_yaml_editor=use_yaml_editor,
-                kv_single=combined_kv,
-                kv_multi=None,
-                template_id=template_id,
-                reply_to_id=reply_to_id,
-            )
-            
-            print(f"✓ Added note: {note_id}")
-        except RuntimeError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            try:
+                # For notes, combine both into kv_single parameter (legacy behavior preserved)
+                combined_kv = kv_single + kv_multi
+                
+                note_id = manager.add_update(
+                    args.record_id,
+                    message=args.message if has_message else None,
+                    use_stdin=has_stdin and not has_message,
+                    use_editor=use_editor,
+                    use_yaml_editor=use_yaml_editor,
+                    kv_single=combined_kv,
+                    kv_multi=None,
+                    template_id=template_id,
+                    reply_to_id=reply_to_id,
+                )
+                
+                print(f"✓ Added note: {note_id}")
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
 
     def _cmd_list_updates(self, args):
         """View all notes for record."""
