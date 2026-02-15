@@ -321,23 +321,6 @@ required = true
 accepted_values = ["new", "confirmed", "in_progress", "fixed", "verified", "closed"]
 default = "new"
 
-[template.bug.note_special_fields.category]
-type = "single"
-value_type = "string"
-editable = true
-enabled = true
-required = false
-accepted_values = ["investigation", "bugfix", "workaround", "regression", "documentation"]
-
-[template.bug.note_special_fields.priority]
-type = "single"
-value_type = "string"
-editable = true
-enabled = true
-required = false
-accepted_values = ["low", "medium", "high", "critical"]
-default = "medium"
-
 # Feature template
 [template.feature]
 record_prefix = "FEAT"
@@ -759,12 +742,12 @@ test_library_management() {
     python3 "$AVER_PATH" --override-repo-boundary --location "$db1" admin init > /dev/null 2>&1
     python3 "$AVER_PATH" --override-repo-boundary --location "$db2" admin init > /dev/null 2>&1
     python3 "$AVER_PATH" --override-repo-boundary --location "$db3" admin init > /dev/null 2>&1
-    set -e  # Re-enable exit on error
     
-    # Copy the test config to library databases so they have created_by, author, etc.
-    cp "$TEST_DIR/config.toml" "$db1/config.toml"
-    cp "$TEST_DIR/config.toml" "$db2/config.toml"
-    cp "$TEST_DIR/config.toml" "$db3/config.toml"
+    # Set user for each database
+    python3 "$AVER_PATH" --override-repo-boundary --location "$db1" admin config set-user --handle "user1" --email "user1@example.com" > /dev/null 2>&1
+    python3 "$AVER_PATH" --override-repo-boundary --location "$db2" admin config set-user --handle "user2" --email "user2@example.com" > /dev/null 2>&1
+    python3 "$AVER_PATH" --override-repo-boundary --location "$db3" admin config set-user --handle "user3" --email "user3@example.com" > /dev/null 2>&1
+    set -e  # Re-enable exit on error
     
     print_test "Add library alias 'work'"
     if python3 "$AVER_PATH" --override-repo-boundary admin config add-alias --alias work --path "$db1" > /dev/null 2>&1; then
@@ -799,17 +782,6 @@ test_library_management() {
         fail "add-alias command failed"
     fi
     
-    # Set per-library users (now that aliases exist)
-    print_test "Set per-library users"
-    if python3 "$AVER_PATH" --override-repo-boundary admin config set-user --library work --handle "work_user" --email "work@example.com" > /dev/null 2>&1 && \
-       python3 "$AVER_PATH" --override-repo-boundary admin config set-user --library personal --handle "personal_user" --email "personal@example.com" > /dev/null 2>&1 && \
-       python3 "$AVER_PATH" --override-repo-boundary admin config set-user --library archive --handle "archive_user" --email "archive@example.com" > /dev/null 2>&1; then
-        pass
-        echo "  Per-library users configured"
-    else
-        fail "Failed to set per-library users"
-    fi
-    
     print_test "List libraries"
     if output=$(python3 "$AVER_PATH" --override-repo-boundary admin config list-aliases 2>&1); then
         if echo "$output" | grep -q "work" && echo "$output" | grep -q "personal"; then
@@ -822,8 +794,8 @@ test_library_management() {
     fi
     
     print_test "Use library alias with --use flag (work)"
-    track_command "python3 \"$AVER_PATH\" --override-repo-boundary --use work record new --description \"\" --no-validation-editor --title \"Work Record\" --status \"open\""
-    if python3 "$AVER_PATH" --override-repo-boundary --use work record new --description "" --no-validation-editor --title "Work Record" --status "open" > /dev/null 2>&1; then
+    track_command "python3 \"$AVER_PATH\" --override-repo-boundary --use work record new --description \"\" --no-validation-editor --title \"Work Record\""
+    if python3 "$AVER_PATH" --override-repo-boundary --use work record new --description "" --no-validation-editor --title "Work Record" > /dev/null 2>&1; then
         # Check that record was created in db1
         if ls "$db1/records/"*.md > /dev/null 2>&1; then
             pass
@@ -835,8 +807,8 @@ test_library_management() {
     fi
     
     print_test "Use library alias with --use flag (personal)"
-    track_command "python3 \"$AVER_PATH\" --override-repo-boundary --use personal record new --description \"\" --no-validation-editor --title \"Personal Record\" --status \"open\""
-    if python3 "$AVER_PATH" --override-repo-boundary --use personal record new --description "" --no-validation-editor --title "Personal Record" --status "open" > /dev/null 2>&1; then
+    track_command "python3 \"$AVER_PATH\" --override-repo-boundary --use personal record new --description \"\" --no-validation-editor --title \"Personal Record\""
+    if python3 "$AVER_PATH" --override-repo-boundary --use personal record new --description "" --no-validation-editor --title "Personal Record" > /dev/null 2>&1; then
         # Check that record was created in db2
         if ls "$db2/records/"*.md > /dev/null 2>&1; then
             pass
@@ -859,38 +831,6 @@ test_library_management() {
         fail "Records not properly isolated (work: $work_count, personal: $personal_count, archive: $archive_count)"
     fi
     
-    print_test "Per-library user for record creation"
-    # Create a NEW record after per-library users are configured
-    local output=$(python3 "$AVER_PATH" --override-repo-boundary --use work record new --description "" --no-validation-editor --title "Work Record 2" --status "open" 2>&1)
-    local work_rec2=$(echo "$output" | grep -oE "REC-[A-Z0-9]+" || echo "")
-    
-    if [ -n "$work_rec2" ]; then
-        # Check if the record has work_user as created_by
-        if grep -q "work_user" "$db1/records/${work_rec2}.md"; then
-            pass
-            echo "  Work record created by work_user"
-        else
-            fail "Work record not created by work_user"
-        fi
-    else
-        fail "Failed to create second work record"
-    fi
-    
-    print_test "Per-library user for note creation"
-    # Add a note to the work record using the work library
-    if python3 "$AVER_PATH" --override-repo-boundary --use work note add "$work_rec2" --message "Work note" > /dev/null 2>&1; then
-        # Find the note file
-        local note_file=$(ls "$db1/updates/${work_rec2}/"*.md 2>/dev/null | head -1)
-        if [ -n "$note_file" ] && grep -q "work_user" "$note_file"; then
-            pass
-            echo "  Note created by work_user"
-        else
-            fail "Note not created by work_user"
-        fi
-    else
-        fail "Failed to create note in work library"
-    fi
-    
     print_test "Remove library alias"
     # Note: remove-alias command not implemented in aver.py yet
     # Skipping this test for now
@@ -911,14 +851,7 @@ test_library_management() {
     # fi
     
     # Cleanup library test databases
-    if [ "$KEEP_TEST_DIR" = true ]; then
-        echo "  Library databases preserved:"
-        echo "    work (db1): $db1"
-        echo "    personal (db2): $db2"
-        echo "    archive (db3): $db3"
-    else
-        rm -rf "$db1" "$db2" "$db3"
-    fi
+    rm -rf "$db1" "$db2" "$db3"
 }
 
 test_custom_locations() {
@@ -932,6 +865,8 @@ test_custom_locations() {
     track_command "python3 \"$AVER_PATH\" --override-repo-boundary --location \"$custom1\" admin init"
     if python3 "$AVER_PATH" --override-repo-boundary --location "$custom1" admin init > /dev/null 2>&1; then
         if [ -d "$custom1" ]; then
+            # Set user for this location
+            python3 "$AVER_PATH" --override-repo-boundary --location "$custom1" admin config set-user --handle "custom1_user" --email "custom1@example.com" > /dev/null 2>&1
             pass
         else
             fail "Custom directory not created"
@@ -944,6 +879,8 @@ test_custom_locations() {
     track_command "python3 \"$AVER_PATH\" --override-repo-boundary --location \"$custom2\" admin init"
     if python3 "$AVER_PATH" --override-repo-boundary --location "$custom2" admin init > /dev/null 2>&1; then
         if [ -d "$custom2" ]; then
+            # Set user for this location
+            python3 "$AVER_PATH" --override-repo-boundary --location "$custom2" admin config set-user --handle "custom2_user" --email "custom2@example.com" > /dev/null 2>&1
             pass
         else
             fail "Custom directory not created"
@@ -1183,6 +1120,7 @@ test_note_operations() {
             echo "  Author shown: testuser"
         else
             fail "Author not shown in notes"
+            echo "$output"
         fi
     else
         fail "Failed to list notes"
@@ -1270,168 +1208,6 @@ test_note_operations() {
         echo "  Correctly rejected invalid record ID"
     else
         fail "Should fail for non-existent record"
-    fi
-}
-
-#==============================================================================
-# Test: Note Special Fields
-#==============================================================================
-
-test_note_special_fields() {
-    print_section "Note Special Fields"
-    
-    # Create a record and manually set its template_id to "bug" so note special fields apply
-    local output=$(run_aver record new --description "" --no-validation-editor --title "Test Bug" --severity 3 --status "open" 2>&1)
-    local bug_rec=$(echo "$output" | grep -oE "REC-[A-Z0-9]+" || echo "")
-    
-    if [ -z "$bug_rec" ]; then
-        fail "Failed to create record for note special fields test"
-        echo "$output"
-        return
-    fi
-    
-    # Manually add template_id to the record so note special fields will be available
-    # This simulates what would happen if the record was created with --template bug
-    local rec_file="$TEST_DIR/records/${bug_rec}.md"
-    if [ -f "$rec_file" ]; then
-        # Use str_replace-like approach: read, modify frontmatter, write back
-        # Add template_id: bug to the YAML frontmatter
-        python3 << EOF
-import re
-with open("$rec_file", "r") as f:
-    content = f.read()
-
-# Find the frontmatter and add template_id after the first line
-lines = content.split("\n")
-new_lines = []
-in_frontmatter = False
-added = False
-for i, line in enumerate(lines):
-    if line == "---":
-        if not in_frontmatter:
-            in_frontmatter = True
-            new_lines.append(line)
-        else:
-            # End of frontmatter
-            if not added:
-                new_lines.append("template_id: bug")
-                added = True
-            new_lines.append(line)
-            in_frontmatter = False
-    else:
-        new_lines.append(line)
-        
-with open("$rec_file", "w") as f:
-    f.write("\n".join(new_lines))
-EOF
-    fi
-    
-    print_test "Add note with note special fields (category and priority)"
-    if run_aver note add "$bug_rec" --message "Investigating the issue" --category "investigation" --priority "high" > /dev/null 2>&1; then
-        pass
-    else
-        fail "Failed to add note with special fields"
-    fi
-    
-    print_test "Note special fields saved to markdown"
-    # Get the note file
-    local note_file=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
-    if [ -n "$note_file" ]; then
-        if grep -q "category" "$note_file" && grep -q "investigation" "$note_file" && grep -q "priority" "$note_file" && grep -q "high" "$note_file"; then
-            pass
-            echo "  Note special fields found in markdown"
-        else
-            fail "Note special fields not in markdown"
-            echo "  File contents:"
-            cat "$note_file"
-        fi
-    else
-        fail "Note file not found"
-    fi
-    
-    print_test "Note special fields displayed in list"
-    if output=$(run_aver note list "$bug_rec" 2>&1); then
-        if echo "$output" | grep -q "category" && echo "$output" | grep -q "investigation" && echo "$output" | grep -q "priority" && echo "$output" | grep -q "high"; then
-            pass
-            echo "  Special fields shown in note list"
-        else
-            fail "Special fields not shown in note list"
-        fi
-    else
-        fail "Failed to list notes"
-    fi
-    
-    print_test "Add second note with different special field values"
-    if run_aver note add "$bug_rec" --message "Applied fix" --category "bugfix" --priority "critical" > /dev/null 2>&1; then
-        pass
-    else
-        fail "Failed to add second note"
-    fi
-    
-    print_test "Search notes by special field (category)"
-    if output=$(run_aver note search --ksearch category=bugfix 2>&1); then
-        if echo "$output" | grep -q "$bug_rec"; then
-            pass
-            echo "  Found note by category search"
-        else
-            fail "Note not found by category search"
-        fi
-    else
-        fail "Note search by category failed"
-    fi
-    
-    print_test "Search notes by special field (priority)"
-    if output=$(run_aver note search --ksearch priority=critical 2>&1); then
-        if echo "$output" | grep -q "$bug_rec"; then
-            pass
-            echo "  Found note by priority search"
-        else
-            fail "Note not found by priority search"
-        fi
-    else
-        fail "Note search by priority failed"
-    fi
-    
-    print_test "Add note with default special field value"
-    # priority has default="medium" in config
-    if run_aver note add "$bug_rec" --message "Checking logs" --category "investigation" > /dev/null 2>&1; then
-        local note_file3=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | tail -1)
-        if [ -n "$note_file3" ] && grep -q "priority" "$note_file3" && grep -q "medium" "$note_file3"; then
-            pass
-            echo "  Default priority value applied"
-        else
-            fail "Default priority value not applied"
-        fi
-    else
-        fail "Failed to add note with default value"
-    fi
-    
-    print_test "Invalid special field value rejected"
-    set +e
-    output=$(run_aver note add "$bug_rec" --message "Test" --category "invalid_category" 2>&1)
-    exit_code=$?
-    set -e
-    
-    if [ $exit_code -ne 0 ]; then
-        pass
-        echo "  Correctly rejected invalid category value"
-    else
-        fail "Should reject invalid special field value"
-    fi
-    
-    print_test "Note special fields independent from record special fields"
-    # Create a note with category (note field) - record has severity (record field)
-    if run_aver note add "$bug_rec" --message "Note about severity" --category "documentation" > /dev/null 2>&1; then
-        local note_file4=$(ls "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | tail -1)
-        # Note should have category (note field) but NOT severity (record field)
-        if [ -n "$note_file4" ] && grep -q "category" "$note_file4" && ! grep -q "severity" "$note_file4"; then
-            pass
-            echo "  Note has note fields, not record fields"
-        else
-            fail "Note field isolation not working"
-        fi
-    else
-        fail "Failed to add note"
     fi
 }
 
@@ -1532,7 +1308,6 @@ main() {
     test_config_per_location
     test_listing_search
     test_note_operations
-    test_note_special_fields
     test_updates
     
     # Summary

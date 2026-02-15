@@ -563,27 +563,8 @@ class IncidentUpdate:
         except ValueError as e:
             raise ValueError(f"Invalid update file format: {e}")
 
-        # Parse ALL frontmatter fields as KV data (for display in $kv_all)
-        # Even IncidentUpdate's own properties (id, timestamp, etc.) should be in kv_all
-        kv_strings = {}
-        kv_integers = {}
-        kv_floats = {}
-        
-        for key_with_hint, value in frontmatter.items():
-            # Check for type hint
-            clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
-            
-            # Convert to list if single value
-            if not isinstance(value, list):
-                value = [value]
-            
-            # Store based on type
-            if value_type == "integer":
-                kv_integers[clean_key] = [int(v) for v in value]
-            elif value_type == "float":
-                kv_floats[clean_key] = [float(v) for v in value]
-            else:  # string or no type hint (default to string)
-                kv_strings[clean_key] = [str(v) for v in value]
+        # Parse KV data using KVStore helper
+        kv_strings, kv_integers, kv_floats = KVStore.parse_kv_from_dict(frontmatter)
 
         return cls(
             id=frontmatter.get("id", update_id),
@@ -4262,8 +4243,8 @@ class IncidentManager:
                         # Retry with user's edits (default)
                         # Try to preserve at least the content
                         try:
-                            if '---' in editor_result:
-                                parts = editor_result.split('---', 2)
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
                                 if len(parts) >= 3:
                                     initial_incident.content = parts[2].strip()
                         except:
@@ -4763,8 +4744,8 @@ class IncidentManager:
                         # We need to at least preserve the content part even if KV is broken
                         try:
                             # Try to extract just the content portion
-                            if '---' in editor_result:
-                                parts = editor_result.split('---', 2)
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
                                 if len(parts) >= 3:
                                     incident.content = parts[2].strip()
                         except:
@@ -5272,8 +5253,8 @@ class IncidentManager:
                     else:
                         # Retry with user's edits
                         try:
-                            if '---' in editor_result:
-                                parts = editor_result.split('---', 2)
+                            if '+++' in editor_result:
+                                parts = editor_result.split('+++', 2)
                                 if len(parts) >= 3:
                                     initial_message = parts[2].strip()
                         except:
@@ -5297,7 +5278,6 @@ class IncidentManager:
         kv_single: Optional[List[str]] = None,
         kv_multi: Optional[List[str]] = None,
         template_id: Optional[str] = None,
-        reply_to_id: Optional[str] = None,
     ) -> str:
         """
         Add update with optional independent KV data.
@@ -5403,11 +5383,6 @@ class IncidentManager:
                     # This means we won't use the template's note_special_fields
                     # (those come from parent_template_id via get_note_special_fields)
         
-        # --reply-to takes precedence over template_content from config
-        # (but not over explicit --template flag, which is already blocked by validation)
-        if reply_to_id:
-            template_content = None  # Ignore config template content
-        
         # Parse KV data for the UPDATE ONLY
         update_kv_strings = {}
         update_kv_integers = {}
@@ -5466,34 +5441,6 @@ class IncidentManager:
             # Config template with template_recordid - use that content
             if not message:
                 message = template_content
-        
-        # Handle --reply-to: quote the original note
-        if reply_to_id:
-            # Load the note being replied to directly from file
-            updates_dir = self.storage._get_updates_dir(incident_id)
-            note_filename = IDGenerator.generate_update_filename(reply_to_id)
-            note_file = updates_dir / note_filename
-            
-            if not note_file.exists():
-                raise RuntimeError(
-                    f"Note {reply_to_id} not found in record {incident_id}\n"
-                    f"Cannot reply to non-existent note"
-                )
-            
-            # Load and parse the note
-            with open(note_file, "r") as f:
-                note_content = f.read()
-            
-            original_note = IncidentUpdate.from_markdown(note_content, reply_to_id, incident_id)
-            
-            # Format the reply with quoted original text
-            quoted_lines = [f"> {line}" for line in original_note.message.split("\n")]
-            quoted_text = "\n".join(quoted_lines)
-            reply_content = f"REPLY TO {reply_to_id}:\n\n{quoted_text}\n\n"
-            
-            # Set as initial message
-            if not message:
-                message = reply_content
         
         # Determine message source
         final_message = None        
@@ -6304,12 +6251,7 @@ class IncidentCLI:
             "--template",
             metavar="RECORD_ID",
             help="Use existing record as template (editor mode only)",
-        )
-        note_add_parser.add_argument(
-            "--reply-to",
-            metavar="NOTE_ID",
-            help="Reply to an existing note (quotes original text in editor)",
-        )
+        )        
         self._add_kv_options(note_add_parser, include_old_style=True)
         
         # note list
@@ -6999,31 +6941,12 @@ $update_kv
         use_editor = not (has_message or has_stdin)
         use_yaml_editor = not getattr(args, 'no_yaml', False)
         template_id = getattr(args, 'template', None)
-        reply_to_id = getattr(args, 'reply_to', None)
         
         # Validate template usage
         if template_id and not use_editor:
             print(
                 "Error: --template can only be used in editor mode\n"
                 "Remove --message flag or stdin input to use editor",
-                file=sys.stderr
-            )
-            sys.exit(1)
-        
-        # Validate reply-to usage
-        if reply_to_id and not use_editor:
-            print(
-                "Error: --reply-to can only be used in editor mode\n"
-                "Remove --message flag or stdin input to use editor",
-                file=sys.stderr
-            )
-            sys.exit(1)
-        
-        # Cannot use both --template and --reply-to
-        if template_id and reply_to_id:
-            print(
-                "Error: Cannot use both --template and --reply-to\n"
-                "Choose one or the other",
                 file=sys.stderr
             )
             sys.exit(1)
@@ -7041,7 +6964,6 @@ $update_kv
                 kv_single=combined_kv,
                 kv_multi=None,
                 template_id=template_id,
-                reply_to_id=reply_to_id,
             )
             
             print(f"✓ Added note: {note_id}")
