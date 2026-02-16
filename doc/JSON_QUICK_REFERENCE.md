@@ -32,8 +32,14 @@ aver json export-record REC123 --include-notes
 # Search all
 aver json search-records
 
-# With filters
+# With single filter
 aver json search-records --ksearch "status=open" --limit 10
+
+# With multiple filters
+aver json search-records --ksearch "status=open" --ksearch "priority=high" --limit 10
+
+# With sorting
+aver json search-records --ksearch "status=open" --ksort "created_at-" --limit 10
 ```
 
 ### Create a Record
@@ -73,6 +79,9 @@ aver json schema-note REC123
 ```bash
 # Single command
 echo '{"command": "search-records", "params": {"limit": 5}}' | aver json io
+
+# Multiple filters and sorting
+echo '{"command": "search-records", "params": {"ksearch": ["status=open", "priority=high"], "ksort": ["created_at-"], "limit": 10}}' | aver json io
 
 # Multiple commands
 cat << EOF | aver json io
