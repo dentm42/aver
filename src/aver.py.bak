@@ -6171,7 +6171,7 @@ class IncidentCLI:
             interactive=interactive,
         )
     
-    def _setup_write_command(self, args, user_override=None) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
+    def _setup_write_command(self, args) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
         """
         Common setup for write commands (create, update, add_update).
         
@@ -6180,29 +6180,15 @@ class IncidentCLI:
         - Git identity checking and override
         - KV list building
         
-        Args:
-            args: Command arguments
-            user_override: Optional dict with 'handle' and 'email' for user identity override
-                          (used by JSON IO interface)
-        
         Returns:
             (manager, (kv_single, kv_multi))
         """
         manager = self._get_manager(args)
         
-        # Apply JSON IO user override if provided (takes precedence)
-        if user_override and isinstance(user_override, dict):
-            handle = user_override.get('handle')
-            email = user_override.get('email')
-            if handle and email:
-                manager.set_user_override(handle, email)
-            elif handle or email:
-                raise ValueError("User identity override requires both 'handle' and 'email'")
-        else:
-            # Check git identity and apply override if needed (normal flow)
-            identity_override = self._check_git_identity(args, manager)
-            if identity_override:
-                manager.set_user_override(identity_override["handle"], identity_override["email"])
+        # Check git identity and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
         
         # Process field assignments if present
         field_kv_single = []
@@ -9322,7 +9308,7 @@ $update_kv
         
         # Helper function to get manager and apply user override if provided
         def get_manager_with_override():
-            manager = self._get_manager(args)
+            manager = get_manager_with_override()
             if user_id and isinstance(user_id, dict):
                 handle = user_id.get('handle')
                 email = user_id.get('email')
@@ -9530,7 +9516,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -9578,7 +9564,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -9630,7 +9616,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 existing_record = manager.get_incident(args.record_id)
                 if not existing_record:

@@ -6171,7 +6171,7 @@ class IncidentCLI:
             interactive=interactive,
         )
     
-    def _setup_write_command(self, args, user_override=None) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
+    def _setup_write_command(self, args) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
         """
         Common setup for write commands (create, update, add_update).
         
@@ -6180,29 +6180,15 @@ class IncidentCLI:
         - Git identity checking and override
         - KV list building
         
-        Args:
-            args: Command arguments
-            user_override: Optional dict with 'handle' and 'email' for user identity override
-                          (used by JSON IO interface)
-        
         Returns:
             (manager, (kv_single, kv_multi))
         """
         manager = self._get_manager(args)
         
-        # Apply JSON IO user override if provided (takes precedence)
-        if user_override and isinstance(user_override, dict):
-            handle = user_override.get('handle')
-            email = user_override.get('email')
-            if handle and email:
-                manager.set_user_override(handle, email)
-            elif handle or email:
-                raise ValueError("User identity override requires both 'handle' and 'email'")
-        else:
-            # Check git identity and apply override if needed (normal flow)
-            identity_override = self._check_git_identity(args, manager)
-            if identity_override:
-                manager.set_user_override(identity_override["handle"], identity_override["email"])
+        # Check git identity and apply override if needed
+        identity_override = self._check_git_identity(args, manager)
+        if identity_override:
+            manager.set_user_override(identity_override["handle"], identity_override["email"])
         
         # Process field assignments if present
         field_kv_single = []
@@ -9275,11 +9261,10 @@ $update_kv
                 
                 command = request['command']
                 params = request.get('params', {})
-                user_id = request.get('id', {})  # Optional user identity override
                 
                 # Execute the command
                 try:
-                    result = self._execute_json_command(command, params, args, user_id)
+                    result = self._execute_json_command(command, params, args)
                     response = {
                         "success": True,
                         "result": result,
@@ -9304,7 +9289,7 @@ $update_kv
                 print(json.dumps(response))
                 sys.stdout.flush()
     
-    def _execute_json_command(self, command: str, params: dict, global_args, user_id: dict = None) -> dict:
+    def _execute_json_command(self, command: str, params: dict, global_args) -> dict:
         '''
         Execute a JSON command and return the result.
         
@@ -9312,25 +9297,12 @@ $update_kv
             command: Command name (e.g., 'export-record', 'search-records')
             params: Command parameters as dictionary
             global_args: Global args from argparse
-            user_id: Optional user identity override with 'handle' and 'email' keys
             
         Returns:
             Result dictionary
         '''
         # Create a namespace object to simulate argparse results
         args = SimpleNamespace(**vars(global_args))
-        
-        # Helper function to get manager and apply user override if provided
-        def get_manager_with_override():
-            manager = self._get_manager(args)
-            if user_id and isinstance(user_id, dict):
-                handle = user_id.get('handle')
-                email = user_id.get('email')
-                if handle and email:
-                    manager.set_user_override(handle, email)
-                elif handle or email:
-                    raise ValueError("User identity override requires both 'handle' and 'email'")
-            return manager
         
         # Route to appropriate command
         if command == 'export-record':
@@ -9342,7 +9314,7 @@ $update_kv
             args.record_id = params['record_id']
             args.include_notes = params.get('include_notes', False)
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             incident = manager.get_incident(args.record_id)
             if not incident:
                 raise RuntimeError(f"Record {args.record_id} not found")
@@ -9395,7 +9367,7 @@ $update_kv
             args.record_id = params['record_id']
             args.note_id = params['note_id']
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             notes = manager.get_updates(args.record_id)
             note = None
             for n in notes:
@@ -9440,7 +9412,7 @@ $update_kv
             args.ksort = ksort
             args.limit = params.get('limit', 100)
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             results = manager.list_incidents(
                 ksearch_list=ksearch,
                 ksort_list=ksort,
@@ -9476,7 +9448,7 @@ $update_kv
             args.ksearch = params.get('ksearch')
             args.limit = params.get('limit')
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             results = manager.search_updates(
                 ksearch=args.ksearch,
                 limit=args.limit,
@@ -9530,7 +9502,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -9578,7 +9550,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -9630,7 +9602,7 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
                 
                 existing_record = manager.get_incident(args.record_id)
                 if not existing_record:
@@ -9670,7 +9642,7 @@ $update_kv
             # Optional: template
             template = params.get('template')
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             
             if template:
                 special_fields = manager.project_config.get_special_fields_for_template(
@@ -9713,7 +9685,7 @@ $update_kv
             
             args.record_id = params['record_id']
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             incident = manager.get_incident(args.record_id)
             if not incident:
                 raise RuntimeError(f"Record {args.record_id} not found")
@@ -9762,7 +9734,7 @@ $update_kv
             args.record_id = params['record_id']
             args.note_id = params['note_id']
             
-            manager = get_manager_with_override()
+            manager = self._get_manager(args)
             
             notes = manager.get_updates(args.record_id)
             note = None

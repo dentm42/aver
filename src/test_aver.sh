@@ -91,9 +91,7 @@ done
 
 # Find aver.py
 AVER_PATH=""
-if [ -f "./aver.json.py" ]; then
-    AVER_PATH="./aver.json.py"
-elif [ -f "./aver.py" ]; then
+if [ -f "./aver.py" ]; then
     AVER_PATH="./aver.py"
 elif [ -f "/mnt/user-data/outputs/aver.py" ]; then
     AVER_PATH="/mnt/user-data/outputs/aver.py"
@@ -1819,10 +1817,8 @@ test_json_interface() {
     fi
     
     # Add a note to first record
-    local teststring=$(run_aver note add "$json_rec1" --message "Test note for JSON" 2>&1)
-    echo "TESTSTRING = $teststring"
-    local json_note1=$(echo "$teststring" | grep -oE "NT-[A-Z0-9]+" || echo "")
-    echo "NOTE1 = $json_note1"
+    local json_note1=$(run_aver note add "$json_rec1" --message "Test note for JSON" 2>&1 | grep -oE "NT-[A-Z0-9]+" || echo "")
+    
     # ========================================================================
     # Export Tests
     # ========================================================================
@@ -1861,17 +1857,14 @@ test_json_interface() {
                 pass
                 echo "  Note exported with correct IDs"
             else
-                echo "$output"
                 fail "Note JSON structure invalid"
             fi
         else
             fail "Export note failed"
         fi
     else
-        echo "aver json export-note $json_rec1 $json_note1"
-        #echo "$output"
-        #$(run_aver json export-note "$json_rec1" "$json_note1" 2>&1)
         fail "No note to export"
+        run_aver json export-note "$json_rec1" "$json_note1"
     fi
     
     print_test "json export-record non-existent record"
@@ -1995,7 +1988,6 @@ test_json_interface() {
         fi
     else
         fail "Import with template failed"
-        #run_aver json import-record --data '{"content": "Bug report", "fields": {"title": "Bug via JSON", "status": "new"}, "template": "bug"}' 2>&1
     fi
     
     print_test "json import-note"
@@ -2152,6 +2144,7 @@ test_json_io_mode() {
             echo "  IO command executed successfully"
         else
             fail "IO response invalid"
+            echo '{"command": "export-record", "params": {"record_id": "'$io_rec'"}}' | run_aver json io 2>&1
         fi
     else
         fail "IO command failed"
@@ -2281,6 +2274,55 @@ EOF
         fi
     else
         fail "IO schema commands failed"
+    fi
+    
+    print_test "json io user identity override - create record"
+    track_command "json io with id field"
+    if output=$(echo '{"command": "import-record", "params": {"content": "Record with override", "fields": {"title": "Override Test", "status": "open"}}, "id": {"handle": "test-override", "email": "override@test.com"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'record_id' in data['result']" 2>/dev/null; then
+            local override_rec=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['record_id'])" 2>/dev/null)
+            if [ -n "$override_rec" ]; then
+                # Check that the record has the override user in created_by field
+                if check_content_contains "$TEST_DIR/records/${override_rec}.md" "test-override"; then
+                    pass
+                    echo "  User identity override applied: $override_rec"
+                else
+                    fail "User identity override not reflected in record"
+                fi
+            else
+                fail "Record ID not returned"
+            fi
+        else
+            fail "Import with user override failed"
+        fi
+    else
+        fail "IO user override command failed"
+    fi
+    
+    print_test "json io user identity override - validation error"
+    set +e
+    track_command "json io with incomplete id field"
+    output=$(echo '{"command": "import-record", "params": {"content": "Test", "fields": {"title": "Test", "status": "open"}}, "id": {"handle": "only-handle"}}' | run_aver json io 2>&1)
+    set -e
+    
+    if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'both' in data.get('error', '').lower()" 2>/dev/null; then
+        pass
+        echo "  Correctly rejected incomplete user identity"
+    else
+        fail "Should reject user override with only handle or email"
+    fi
+    
+    print_test "json io user identity override - read operations"
+    # User override should work but have no effect on read operations
+    if output=$(echo '{"command": "search-records", "params": {"limit": 1}, "id": {"handle": "reader", "email": "reader@test.com"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True" 2>/dev/null; then
+            pass
+            echo "  User override accepted on read operation"
+        else
+            fail "Read operation with user override failed"
+        fi
+    else
+        fail "IO read with user override failed"
     fi
 }
 

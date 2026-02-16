@@ -83,6 +83,9 @@ echo '{"command": "search-records", "params": {"limit": 5}}' | aver json io
 # Multiple filters and sorting
 echo '{"command": "search-records", "params": {"ksearch": ["status=open", "priority=high"], "ksort": ["created_at-"], "limit": 10}}' | aver json io
 
+# With user identity override
+echo '{"command": "import-record", "params": {"content": "New record", "fields": {"title": "Test", "status": "open"}}, "id": {"handle": "bot", "email": "bot@example.com"}}' | aver json io
+
 # Multiple commands
 cat << EOF | aver json io
 {"command": "search-records", "params": {"limit": 2}}
@@ -90,6 +93,32 @@ cat << EOF | aver json io
 
 EOF
 ```
+
+## User Identity Override (IO Mode Only)
+
+Commands in IO mode can optionally override the user identity by including an `id` field:
+
+```json
+{
+  "command": "import-record",
+  "params": {...},
+  "id": {
+    "handle": "username",
+    "email": "user@example.com"
+  }
+}
+```
+
+**Requirements:**
+- Both `handle` and `email` must be provided
+- Only applies to that specific command
+- Useful for multi-user systems and automation
+
+**Use Cases:**
+- Service accounts creating records on behalf of users
+- Multi-tenant systems with different users
+- Testing with different user identities
+- Automated workflows attributing actions correctly
 
 ## JSON Formats
 

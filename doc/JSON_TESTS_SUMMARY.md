@@ -62,11 +62,16 @@ Tests the persistent JSON IO mode that reads commands from STDIN and writes resp
 - ✓ `json io error handling` - Invalid command returns proper error JSON
 - ✓ `json io invalid JSON handling` - Malformed JSON returns error
 
-**Subtotal: 8 tests**
+#### User Identity Override Tests (3 tests)
+- ✓ `json io user identity override - create record` - Records created with custom user
+- ✓ `json io user identity override - validation error` - Rejects incomplete user identity
+- ✓ `json io user identity override - read operations` - Accepts but doesn't affect read ops
+
+**Subtotal: 11 tests**
 
 ## Total JSON Tests Added
 
-**28 new tests** covering:
+**31 new tests** covering:
 - All 10 direct JSON commands
 - JSON IO mode functionality
 - Error handling and edge cases

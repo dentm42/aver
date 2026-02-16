@@ -25,6 +25,44 @@ Each response is a single line containing a JSON object:
 {"success": false, "error": "error description"}
 ```
 
+### User Identity Override
+Commands can optionally include an `id` field to override the user identity for that specific command. This is useful for:
+- Multi-user systems where different commands should be attributed to different users
+- Service accounts or automated systems that act on behalf of users
+- Testing with different user identities
+
+**Format:**
+```json
+{
+  "command": "import-record",
+  "params": {...},
+  "id": {
+    "handle": "username",
+    "email": "user@example.com"
+  }
+}
+```
+
+**Requirements:**
+- Both `handle` and `email` must be provided if `id` is present
+- Omitting `id` uses the default user identity from config
+- The override applies only to that single command
+
+**Example:**
+```json
+{
+  "command": "import-record",
+  "params": {
+    "content": "Bug reported by customer",
+    "fields": {"title": "Customer Bug", "status": "open"}
+  },
+  "id": {
+    "handle": "customer-support-bot",
+    "email": "support@example.com"
+  }
+}
+```
+
 ### Session Management
 - Send commands one per line
 - Read responses one per line (line-delimited JSON)
@@ -291,8 +329,11 @@ class AverClient:
             bufsize=1
         )
     
-    def execute(self, command, params=None):
+    def execute(self, command, params=None, user_id=None):
         request = {'command': command, 'params': params or {}}
+        if user_id:
+            request['id'] = user_id
+        
         self.proc.stdin.write(json.dumps(request) + '\n')
         self.proc.stdin.flush()
         
@@ -308,8 +349,13 @@ class AverClient:
 # Usage
 client = AverClient()
 try:
-    records = client.execute('search-records', {'limit': 5})
-    print(f"Found {records['count']} records")
+    # Create record as different user
+    result = client.execute(
+        'import-record',
+        {'content': 'New bug', 'fields': {'title': 'Bug', 'status': 'open'}},
+        user_id={'handle': 'bot-user', 'email': 'bot@example.com'}
+    )
+    print(f"Created: {result['record_id']}")
 finally:
     client.close()
 ```
