@@ -91,7 +91,9 @@ done
 
 # Find aver.py
 AVER_PATH=""
-if [ -f "./aver.py" ]; then
+if [ -f "./aver.json.py" ]; then
+    AVER_PATH="./aver.json.py"
+elif [ -f "./aver.py" ]; then
     AVER_PATH="./aver.py"
 elif [ -f "/mnt/user-data/outputs/aver.py" ]; then
     AVER_PATH="/mnt/user-data/outputs/aver.py"
@@ -1801,6 +1803,488 @@ test_updates() {
 }
 
 #==============================================================================
+# Test: JSON Interface
+#==============================================================================
+
+test_json_interface() {
+    print_section "JSON Interface"
+    
+    # Create some test data first
+    local json_rec1=$(run_aver record new --description "" --no-validation-editor --title "JSON Test 1" --status open 2>&1 | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local json_rec2=$(run_aver record new --description "" --no-validation-editor --title "JSON Test 2" --status in_progress 2>&1 | grep -oE "REC-[A-Z0-9]+" || echo "")
+    
+    if [ -z "$json_rec1" ] || [ -z "$json_rec2" ]; then
+        echo -e "${RED}Setup failed: Could not create test records for JSON tests${NC}"
+        return
+    fi
+    
+    # Add a note to first record
+    local teststring=$(run_aver note add "$json_rec1" --message "Test note for JSON" 2>&1)
+    echo "TESTSTRING = $teststring"
+    local json_note1=$(echo "$teststring" | grep -oE "NT-[A-Z0-9]+" || echo "")
+    echo "NOTE1 = $json_note1"
+    # ========================================================================
+    # Export Tests
+    # ========================================================================
+    
+    print_test "json export-record basic"
+    track_command "aver json export-record $json_rec1"
+    if output=$(run_aver json export-record "$json_rec1" 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['id'] == '$json_rec1'; assert 'content' in data; assert 'fields' in data" 2>/dev/null; then
+            pass
+            echo "  Valid JSON with expected structure"
+        else
+            fail "JSON structure invalid or missing required fields"
+        fi
+    else
+        fail "Export command failed"
+    fi
+    
+    print_test "json export-record with notes"
+    track_command "aver json export-record $json_rec1 --include-notes"
+    if output=$(run_aver json export-record "$json_rec1" --include-notes 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'notes' in data; assert len(data['notes']) > 0" 2>/dev/null; then
+            pass
+            echo "  Notes included in export"
+        else
+            fail "Notes not included or JSON invalid"
+        fi
+    else
+        fail "Export with notes failed"
+    fi
+    
+    print_test "json export-note"
+    if [ -n "$json_note1" ]; then
+        track_command "aver json export-note $json_rec1 $json_note1"
+        if output=$(run_aver json export-note "$json_rec1" "$json_note1" 2>&1); then
+            if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['id'] == '$json_note1'; assert data['record_id'] == '$json_rec1'; assert 'content' in data" 2>/dev/null; then
+                pass
+                echo "  Note exported with correct IDs"
+            else
+                echo "$output"
+                fail "Note JSON structure invalid"
+            fi
+        else
+            fail "Export note failed"
+        fi
+    else
+        echo "aver json export-note $json_rec1 $json_note1"
+        #echo "$output"
+        #$(run_aver json export-note "$json_rec1" "$json_note1" 2>&1)
+        fail "No note to export"
+    fi
+    
+    print_test "json export-record non-existent record"
+    set +e
+    track_command "aver json export-record NONEXISTENT"
+    output=$(run_aver json export-record "NONEXISTENT" 2>&1)
+    exit_code=$?
+    set -e
+    
+    if [ $exit_code -ne 0 ] && echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'error' in data" 2>/dev/null; then
+        pass
+        echo "  Correctly reported error in JSON"
+    else
+        fail "Should return error JSON for non-existent record"
+    fi
+    
+    # ========================================================================
+    # Search Tests
+    # ========================================================================
+    
+    print_test "json search-records no filters"
+    track_command "aver json search-records"
+    if output=$(run_aver json search-records 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'count' in data; assert 'records' in data; assert data['count'] >= 2" 2>/dev/null; then
+            pass
+            echo "  Found multiple records"
+        else
+            fail "Search results invalid"
+        fi
+    else
+        fail "Search command failed"
+    fi
+    
+    print_test "json search-records with limit"
+    track_command "aver json search-records --limit 1"
+    if output=$(run_aver json search-records --limit 1 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['count'] <= 1" 2>/dev/null; then
+            pass
+            echo "  Limit respected"
+        else
+            fail "Limit not respected"
+        fi
+    else
+        fail "Search with limit failed"
+    fi
+    
+    print_test "json search-records with ksearch"
+    track_command "aver json search-records --ksearch 'status=open'"
+    if output=$(run_aver json search-records --ksearch "status=open" 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'records' in data" 2>/dev/null; then
+            pass
+            echo "  Search query executed"
+        else
+            fail "Search query failed"
+        fi
+    else
+        fail "Search with ksearch failed"
+    fi
+    
+    print_test "json search-notes"
+    track_command "aver json search-notes --limit 10"
+    if output=$(run_aver json search-notes --limit 10 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'count' in data; assert 'notes' in data" 2>/dev/null; then
+            pass
+            echo "  Notes search returned valid JSON"
+        else
+            fail "Notes search invalid"
+        fi
+    else
+        fail "Search notes failed"
+    fi
+    
+    # ========================================================================
+    # Import Tests
+    # ========================================================================
+    
+    print_test "json import-record from command line"
+    track_command "aver json import-record --data '{...}'"
+    if output=$(run_aver json import-record --data '{"content": "Imported via JSON", "fields": {"title": "JSON Import Test", "status": "open"}}' 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'record_id' in data" 2>/dev/null; then
+            local new_rec=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin)['record_id'])" 2>/dev/null)
+            if [ -n "$new_rec" ] && [ -f "$TEST_DIR/records/${new_rec}.md" ]; then
+                pass
+                echo "  Created record: $new_rec"
+            else
+                fail "Record not created on disk"
+            fi
+        else
+            fail "Import response invalid"
+        fi
+    else
+        fail "Import command failed"
+    fi
+    
+    print_test "json import-record from stdin"
+    track_command "echo '{...}' | aver json import-record --data -"
+    if output=$(echo '{"content": "Imported via stdin", "fields": {"title": "STDIN Import", "status": "open"}}' | run_aver json import-record --data - 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'record_id' in data" 2>/dev/null; then
+            pass
+            echo "  Created record from stdin"
+        else
+            fail "STDIN import response invalid"
+        fi
+    else
+        fail "STDIN import failed"
+    fi
+    
+    print_test "json import-record with template"
+    track_command "aver json import-record --data '{...template...}'"
+    if output=$(run_aver json import-record --data '{"content": "Bug report", "fields": {"title": "Bug via JSON", "status": "new"}, "template": "bug"}' 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'record_id' in data" 2>/dev/null; then
+            local bug_rec=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin)['record_id'])" 2>/dev/null)
+            if [ -n "$bug_rec" ]; then
+                pass
+                echo "  Created bug record: $bug_rec"
+            else
+                fail "Bug record ID not returned"
+            fi
+        else
+            fail "Template import response invalid"
+        fi
+    else
+        fail "Import with template failed"
+        #run_aver json import-record --data '{"content": "Bug report", "fields": {"title": "Bug via JSON", "status": "new"}, "template": "bug"}' 2>&1
+    fi
+    
+    print_test "json import-note"
+    track_command "aver json import-note $json_rec1 --data '{...}'"
+    if output=$(run_aver json import-note "$json_rec1" --data '{"content": "Note via JSON", "fields": {"category": "testing"}}' 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'note_id' in data; assert data['record_id'] == '$json_rec1'" 2>/dev/null; then
+            pass
+            echo "  Added note via JSON"
+        else
+            fail "Import note response invalid"
+        fi
+    else
+        fail "Import note failed"
+    fi
+    
+    print_test "json import-record invalid JSON"
+    set +e
+    track_command "aver json import-record --data 'invalid'"
+    output=$(run_aver json import-record --data "invalid json" 2>&1)
+    exit_code=$?
+    set -e
+    
+    if [ $exit_code -ne 0 ] && echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'error' in data" 2>/dev/null; then
+        pass
+        echo "  Correctly rejected invalid JSON"
+    else
+        fail "Should reject invalid JSON"
+    fi
+    
+    # ========================================================================
+    # Update Tests
+    # ========================================================================
+    
+    print_test "json update-record fields only"
+    track_command "aver json update-record $json_rec1 --data '{...}'"
+    if output=$(run_aver json update-record "$json_rec1" --data '{"fields": {"status": "resolved"}}' 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert data['record_id'] == '$json_rec1'" 2>/dev/null; then
+            if check_content_contains "$TEST_DIR/records/${json_rec1}.md" "resolved"; then
+                pass
+                echo "  Status updated via JSON"
+            else
+                fail "Status not updated in file"
+            fi
+        else
+            fail "Update response invalid"
+        fi
+    else
+        fail "Update fields failed"
+    fi
+    
+    print_test "json update-record content and fields"
+    track_command "aver json update-record $json_rec2 --data '{...}'"
+    if output=$(run_aver json update-record "$json_rec2" --data '{"content": "Updated content via JSON", "fields": {"status": "closed"}}' 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True" 2>/dev/null; then
+            if check_content_contains "$TEST_DIR/records/${json_rec2}.md" "Updated content via JSON" && \
+               check_content_contains "$TEST_DIR/records/${json_rec2}.md" "closed"; then
+                pass
+                echo "  Content and status updated"
+            else
+                fail "Update not reflected in file"
+            fi
+        else
+            fail "Update response invalid"
+        fi
+    else
+        fail "Update content and fields failed"
+    fi
+    
+    # ========================================================================
+    # Schema Tests
+    # ========================================================================
+    
+    print_test "json schema-record default"
+    track_command "aver json schema-record"
+    if output=$(run_aver json schema-record 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert 'fields' in data; assert 'status' in data['fields']" 2>/dev/null; then
+            pass
+            echo "  Schema returned with fields"
+        else
+            fail "Schema structure invalid"
+        fi
+    else
+        fail "Schema command failed"
+    fi
+    
+    print_test "json schema-record with template"
+    track_command "aver json schema-record --template bug"
+    if output=$(run_aver json schema-record --template bug 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('template') == 'bug'; assert 'fields' in data" 2>/dev/null; then
+            pass
+            echo "  Bug template schema returned"
+        else
+            fail "Template schema invalid"
+        fi
+    else
+        fail "Template schema failed"
+    fi
+    
+    print_test "json schema-note"
+    track_command "aver json schema-note $json_rec1"
+    if output=$(run_aver json schema-note "$json_rec1" 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['record_id'] == '$json_rec1'; assert 'fields' in data" 2>/dev/null; then
+            pass
+            echo "  Note schema returned"
+        else
+            fail "Note schema invalid"
+        fi
+    else
+        fail "Note schema failed"
+    fi
+    
+    # ========================================================================
+    # Reply Template Tests
+    # ========================================================================
+    
+    print_test "json reply-template"
+    if [ -n "$json_note1" ]; then
+        track_command "aver json reply-template $json_rec1 $json_note1"
+        if output=$(run_aver json reply-template "$json_rec1" "$json_note1" 2>&1); then
+            if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['record_id'] == '$json_rec1'; assert data['reply_to'] == '$json_note1'; assert 'quoted_content' in data; assert 'fields' in data" 2>/dev/null; then
+                pass
+                echo "  Reply template generated"
+            else
+                fail "Reply template structure invalid"
+            fi
+        else
+            fail "Reply template failed"
+        fi
+    else
+        fail "No note for reply test"
+    fi
+}
+
+#==============================================================================
+# Test: JSON IO Mode
+#==============================================================================
+
+test_json_io_mode() {
+    print_section "JSON IO Mode"
+    
+    # Create test data
+    local io_rec=$(run_aver record new --description "" --no-validation-editor --title "IO Test" --status open 2>&1 | grep -oE "REC-[A-Z0-9]+" || echo "")
+    
+    if [ -z "$io_rec" ]; then
+        echo -e "${RED}Setup failed: Could not create test record for IO tests${NC}"
+        return
+    fi
+    
+    print_test "json io basic command"
+    track_command "echo '{...}' | aver json io"
+    if output=$(echo '{"command": "export-record", "params": {"record_id": "'$io_rec'"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'result' in data; assert data['result']['id'] == '$io_rec'" 2>/dev/null; then
+            pass
+            echo "  IO command executed successfully"
+        else
+            fail "IO response invalid"
+        fi
+    else
+        fail "IO command failed"
+    fi
+    
+    print_test "json io multiple commands"
+    track_command "cat ... | aver json io"
+    # Create a multi-line input
+    cat > "$TEST_DIR/io_commands.txt" << EOF
+{"command": "search-records", "params": {"limit": 2}}
+{"command": "schema-record", "params": {}}
+
+EOF
+    
+    if output=$(cat "$TEST_DIR/io_commands.txt" | run_aver json io 2>&1); then
+        # Should have two JSON responses (one per line)
+        local line_count=$(echo "$output" | grep -c "success" || echo "0")
+        if [ "$line_count" -ge 2 ]; then
+            pass
+            echo "  Multiple commands executed"
+        else
+            fail "Expected multiple response lines"
+        fi
+    else
+        fail "Multiple commands failed"
+    fi
+    
+    print_test "json io import and export round-trip"
+    track_command "json io import then export"
+    cat > "$TEST_DIR/io_roundtrip.txt" << 'EOF'
+{"command": "import-record", "params": {"content": "Round-trip test", "fields": {"title": "IO Round-trip", "status": "open"}}}
+
+EOF
+    
+    if output=$(cat "$TEST_DIR/io_roundtrip.txt" | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; rec_id=data['result']['record_id']; print(rec_id)" 2>/dev/null > "$TEST_DIR/new_rec_id.txt"; then
+            local new_io_rec=$(cat "$TEST_DIR/new_rec_id.txt")
+            # Now export it
+            if export_output=$(echo '{"command": "export-record", "params": {"record_id": "'$new_io_rec'"}}' | run_aver json io 2>&1); then
+                if echo "$export_output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['success'] == True; assert 'Round-trip test' in data['result']['content']" 2>/dev/null; then
+                    pass
+                    echo "  Import and export verified"
+                else
+                    fail "Export validation failed"
+                fi
+            else
+                fail "Export after import failed"
+            fi
+        else
+            fail "Import in IO mode failed"
+        fi
+    else
+        fail "IO import command failed"
+    fi
+    
+    print_test "json io search and count"
+    track_command "json io search"
+    if output=$(echo '{"command": "search-records", "params": {"limit": 100}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['success'] == True; assert data['result']['count'] >= 1" 2>/dev/null; then
+            pass
+            echo "  Search via IO successful"
+        else
+            fail "Search response invalid"
+        fi
+    else
+        fail "IO search failed"
+    fi
+    
+    print_test "json io update record"
+    track_command "json io update-record"
+    if output=$(echo '{"command": "update-record", "params": {"record_id": "'$io_rec'", "fields": {"status": "resolved"}}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data['success'] == True" 2>/dev/null; then
+            if check_content_contains "$TEST_DIR/records/${io_rec}.md" "resolved"; then
+                pass
+                echo "  Update via IO successful"
+            else
+                fail "Update not reflected in file"
+            fi
+        else
+            fail "Update response invalid"
+        fi
+    else
+        fail "IO update failed"
+    fi
+    
+    print_test "json io error handling"
+    set +e
+    track_command "json io with invalid command"
+    output=$(echo '{"command": "invalid-command", "params": {}}' | run_aver json io 2>&1)
+    set -e
+    
+    if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'error' in data" 2>/dev/null; then
+        pass
+        echo "  Error properly returned as JSON"
+    else
+        fail "Should return error JSON for invalid command"
+    fi
+    
+    print_test "json io invalid JSON handling"
+    set +e
+    track_command "json io with invalid JSON"
+    output=$(echo 'not valid json' | run_aver json io 2>&1)
+    set -e
+    
+    if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'Invalid JSON' in data.get('error', '')" 2>/dev/null; then
+        pass
+        echo "  Invalid JSON properly rejected"
+    else
+        fail "Should return error for invalid JSON"
+    fi
+    
+    print_test "json io schema commands"
+    cat > "$TEST_DIR/io_schema.txt" << EOF
+{"command": "schema-record", "params": {}}
+{"command": "schema-note", "params": {"record_id": "$io_rec"}}
+
+EOF
+    
+    if output=$(cat "$TEST_DIR/io_schema.txt" | run_aver json io 2>&1); then
+        # Should have two successful responses
+        local success_count=$(echo "$output" | grep -c '"success": true' || echo "0")
+        if [ "$success_count" -ge 2 ]; then
+            pass
+            echo "  Schema commands via IO successful"
+        else
+            fail "Schema commands didn't return expected responses"
+        fi
+    else
+        fail "IO schema commands failed"
+    fi
+}
+
+#==============================================================================
 # Cleanup
 #==============================================================================
 
@@ -1857,6 +2341,8 @@ main() {
     test_note_special_fields
     test_from_file
     test_updates
+    test_json_interface
+    test_json_io_mode
     
     # Summary
     print_section "Test Summary"

@@ -7178,6 +7178,172 @@ class IncidentCLI:
 
         
         # ====================================================================
+        # JSON INTERFACE
+        # ====================================================================
+        json_parser = self.subparsers.add_parser(
+            "json",
+            help="JSON interface for scripting and integration",
+        )
+        json_subparsers = json_parser.add_subparsers(dest="json_command", required=True)
+        
+        # json import-record
+        json_import_record_parser = json_subparsers.add_parser(
+            "import-record",
+            help="Import a record from JSON",
+        )
+        json_import_record_parser.add_argument(
+            "--data",
+            required=True,
+            help="JSON data as string, or '-' to read from stdin",
+        )
+        
+        # json import-note  
+        json_import_note_parser = json_subparsers.add_parser(
+            "import-note",
+            help="Import a note from JSON",
+        )
+        json_import_note_parser.add_argument(
+            "record_id",
+            help="Record ID to add note to",
+        )
+        json_import_note_parser.add_argument(
+            "--data",
+            required=True,
+            help="JSON data as string, or '-' to read from stdin",
+        )
+        
+        # json update-record
+        json_update_record_parser = json_subparsers.add_parser(
+            "update-record",
+            help="Update a record from JSON",
+        )
+        json_update_record_parser.add_argument(
+            "record_id",
+            help="Record ID to update",
+        )
+        json_update_record_parser.add_argument(
+            "--data",
+            required=True,
+            help="JSON data as string, or '-' to read from stdin",
+        )
+        
+        # json export-record
+        json_export_record_parser = json_subparsers.add_parser(
+            "export-record",
+            help="Export a record as JSON",
+        )
+        json_export_record_parser.add_argument(
+            "record_id",
+            help="Record ID to export",
+        )
+        json_export_record_parser.add_argument(
+            "--include-notes",
+            action="store_true",
+            help="Include all notes for this record",
+        )
+        
+        # json export-note
+        json_export_note_parser = json_subparsers.add_parser(
+            "export-note",
+            help="Export a note as JSON",
+        )
+        json_export_note_parser.add_argument(
+            "record_id",
+            help="Record ID containing the note",
+        )
+        json_export_note_parser.add_argument(
+            "note_id",
+            help="Note ID to export",
+        )
+        
+        # json search-records
+        json_search_records_parser = json_subparsers.add_parser(
+            "search-records",
+            help="Search records and output as JSON array",
+        )
+        json_search_records_parser.add_argument(
+            "--ksearch",
+            action="append",
+            dest="ksearch",
+            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
+        )
+        json_search_records_parser.add_argument(
+            "--ksort",
+            action="append",
+            dest="ksort",
+            help="Sort by key-values: 'key1', 'key2-' (- = desc, default = asc, can use multiple)",
+        )
+        json_search_records_parser.add_argument(
+            "--limit",
+            type=int,
+            default=100,
+            help="Limit number of results (default: 100)",
+        )
+        
+        # json search-notes
+        json_search_notes_parser = json_subparsers.add_parser(
+            "search-notes",
+            help="Search notes and output as JSON array",
+        )
+        json_search_notes_parser.add_argument(
+            "--ksearch",
+            help="Search query (e.g., 'category=bugfix')",
+        )
+        json_search_notes_parser.add_argument(
+            "--limit",
+            type=int,
+            help="Limit number of results",
+        )
+        
+        # json schema-record
+        json_schema_record_parser = json_subparsers.add_parser(
+            "schema-record",
+            help="Get field schema for records as JSON",
+        )
+        json_schema_record_parser.add_argument(
+            "--template",
+            help="Optional template name for template-specific schema",
+        )
+        
+        # json schema-note
+        json_schema_note_parser = json_subparsers.add_parser(
+            "schema-note",
+            help="Get field schema for notes as JSON",
+        )
+        json_schema_note_parser.add_argument(
+            "record_id",
+            help="Record ID (to get template-specific note schema)",
+        )
+        
+        # json reply-template
+        json_reply_template_parser = json_subparsers.add_parser(
+            "reply-template",
+            help="Get a reply template with quoted note text as JSON",
+        )
+        json_reply_template_parser.add_argument(
+            "record_id",
+            help="Record ID containing the note",
+        )
+        json_reply_template_parser.add_argument(
+            "note_id",
+            help="Note ID to reply to",
+        )
+        
+        # json io
+        json_io_parser = json_subparsers.add_parser(
+            "io",
+            help="Interactive JSON interface via STDIN/STDOUT",
+            description=(
+                "Read JSON commands from STDIN and write JSON responses to STDOUT.\n"
+                "Each line of input should be a JSON object with 'command' and 'params' fields.\n"
+                "Send an empty line or EOF to exit.\n\n"
+                "Example input:\n"
+                '{"command": "export-record", "params": {"record_id": "REC123"}}\n'
+                '{"command": "search-records", "params": {"ksearch": "status=open", "limit": 5}}'
+            ),
+        )
+        
+        # ====================================================================
         # ADMIN COMMANDS
         # ====================================================================
         admin_parser = self.subparsers.add_parser(
@@ -7337,6 +7503,30 @@ class IncidentCLI:
                     self._cmd_list_updates(parsed)
                 elif parsed.note_command == "search":
                     self._cmd_search_updates(parsed)
+                    
+            elif parsed.command == "json":
+                if parsed.json_command == "import-record":
+                    self._cmd_json_import_record(parsed)
+                elif parsed.json_command == "import-note":
+                    self._cmd_json_import_note(parsed)
+                elif parsed.json_command == "update-record":
+                    self._cmd_json_update_record(parsed)
+                elif parsed.json_command == "export-record":
+                    self._cmd_json_export_record(parsed)
+                elif parsed.json_command == "export-note":
+                    self._cmd_json_export_note(parsed)
+                elif parsed.json_command == "search-records":
+                    self._cmd_json_search_records(parsed)
+                elif parsed.json_command == "search-notes":
+                    self._cmd_json_search_notes(parsed)
+                elif parsed.json_command == "schema-record":
+                    self._cmd_json_schema_record(parsed)
+                elif parsed.json_command == "schema-note":
+                    self._cmd_json_schema_note(parsed)
+                elif parsed.json_command == "reply-template":
+                    self._cmd_json_reply_template(parsed)
+                elif parsed.json_command == "io":
+                    self._cmd_json_io(parsed)
                     
             elif parsed.command == "admin":
                 if parsed.admin_command == "init":
@@ -8425,6 +8615,1176 @@ $update_kv
         print("     --choose to select interactively")
         print("     --location PATH to specify explicitly")
         print("="*70 + "\n")
+
+    # ====================================================================
+    # JSON INTERFACE COMMANDS
+    # ====================================================================
+
+    def _read_json_data(self, data_arg: str) -> dict:
+        '''
+        Read JSON data from argument or stdin.
+        
+        Args:
+            data_arg: JSON string or '-' for stdin
+            
+        Returns:
+            Parsed JSON as dictionary
+        '''
+        if data_arg == '-':
+            # Read from stdin
+            try:
+                json_str = sys.stdin.read()
+            except Exception as e:
+                raise RuntimeError(f"Failed to read from stdin: {e}")
+        else:
+            json_str = data_arg
+        
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Invalid JSON: {e}")
+    
+    def _cmd_json_import_record(self, args):
+        '''Import a record from JSON.'''
+        try:
+            data = self._read_json_data(args.data)
+            
+            # Validate JSON structure
+            if not isinstance(data, dict):
+                raise RuntimeError("JSON must be an object with 'fields' and 'content' keys")
+            
+            if 'content' not in data:
+                raise RuntimeError("JSON must have 'content' field")
+            
+            fields = data.get('fields', {})
+            content = data['content']
+            template_id = data.get('template')
+            
+            # Create markdown content
+            frontmatter = fields
+            markdown_content = MarkdownDocument.create(frontmatter, content)
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                # Use the existing from-file machinery
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                frontmatter, body, resolved_template_id = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=False,
+                )
+                
+                # Parse to get KV data
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_incident = Incident.from_markdown(processed_content, "TEMP", manager.project_config)
+                
+                # Create record
+                record_id = manager.create_incident(
+                    kv_strings=temp_incident.kv_strings,
+                    kv_integers=temp_incident.kv_integers,
+                    kv_floats=temp_incident.kv_floats,
+                    description=body,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    template_id=template_id or resolved_template_id,
+                )
+                
+                # Output JSON response
+                result = {
+                    "success": True,
+                    "record_id": record_id,
+                }
+                print(json.dumps(result, indent=2))
+                
+            finally:
+                os.unlink(temp_file)
+                
+        except (RuntimeError, ValueError) as e:
+            result = {
+                "success": False,
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_import_note(self, args):
+        '''Import a note from JSON.'''
+        try:
+            data = self._read_json_data(args.data)
+            
+            # Validate JSON structure
+            if not isinstance(data, dict):
+                raise RuntimeError("JSON must be an object with 'fields' and 'content' keys")
+            
+            if 'content' not in data:
+                raise RuntimeError("JSON must have 'content' field")
+            
+            fields = data.get('fields', {})
+            content = data['content']
+            
+            # Create markdown content
+            frontmatter = fields
+            markdown_content = MarkdownDocument.create(frontmatter, content)
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                # Use existing from-file machinery
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                frontmatter, body, resolved_template_id = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=True,
+                )
+                
+                # Parse to get KV data
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_note = IncidentUpdate.from_markdown(processed_content, "TEMP", args.record_id)
+                
+                # Add note
+                note_id = manager.add_update(
+                    args.record_id,
+                    message=body,
+                    use_stdin=False,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    kv_single=None,
+                    kv_multi=None,
+                    kv_strings=temp_note.kv_strings,
+                    kv_integers=temp_note.kv_integers,
+                    kv_floats=temp_note.kv_floats,
+                    template_id=resolved_template_id,
+                    reply_to_id=None,
+                )
+                
+                # Output JSON response
+                result = {
+                    "success": True,
+                    "note_id": note_id,
+                    "record_id": args.record_id,
+                }
+                print(json.dumps(result, indent=2))
+                
+            finally:
+                os.unlink(temp_file)
+                
+        except (RuntimeError, ValueError) as e:
+            result = {
+                "success": False,
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_update_record(self, args):
+        '''Update a record from JSON.'''
+        try:
+            data = self._read_json_data(args.data)
+            
+            # Validate JSON structure
+            if not isinstance(data, dict):
+                raise RuntimeError("JSON must be an object")
+            
+            fields = data.get('fields', {})
+            content = data.get('content')
+            
+            # Create markdown content
+            frontmatter = fields
+            markdown_content = MarkdownDocument.create(frontmatter, content or "")
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                # Load existing record
+                existing_record = manager.get_incident(args.record_id)
+                if not existing_record:
+                    raise RuntimeError(f"Record {args.record_id} not found")
+                
+                frontmatter, body, _ = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=False,
+                    existing_record=existing_record,
+                )
+                
+                # Parse to get KV data
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_incident = Incident.from_markdown(processed_content, args.record_id, manager.project_config)
+                
+                # Update record
+                manager.update_incident_info(
+                    args.record_id,
+                    kv_strings=temp_incident.kv_strings,
+                    kv_integers=temp_incident.kv_integers,
+                    kv_floats=temp_incident.kv_floats,
+                    description=body if content else None,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    metadata_only=content is None,
+                    allow_validation_editor=False,
+                )
+                
+                # Output JSON response
+                result = {
+                    "success": True,
+                    "record_id": args.record_id,
+                }
+                print(json.dumps(result, indent=2))
+                
+            finally:
+                os.unlink(temp_file)
+                
+        except (RuntimeError, ValueError) as e:
+            result = {
+                "success": False,
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_export_record(self, args):
+        '''Export a record as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            incident = manager.get_incident(args.record_id)
+            if not incident:
+                raise RuntimeError(f"Record {args.record_id} not found")
+            
+            # Build result
+            result = {
+                "id": incident.id,
+                "content": incident.content,
+                "fields": {},
+            }
+            
+            # Add all KV data
+            if incident.kv_strings:
+                for key, values in incident.kv_strings.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if incident.kv_integers:
+                for key, values in incident.kv_integers.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if incident.kv_floats:
+                for key, values in incident.kv_floats.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            
+            # Include notes if requested
+            if args.include_notes:
+                notes = manager.get_updates(args.record_id)
+                result["notes"] = []
+                for note in notes:
+                    note_data = {
+                        "id": note.id,
+                        "content": note.message,
+                        "fields": {},
+                    }
+                    if note.kv_strings:
+                        for key, values in note.kv_strings.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_integers:
+                        for key, values in note.kv_integers.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_floats:
+                        for key, values in note.kv_floats.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    result["notes"].append(note_data)
+            
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_export_note(self, args):
+        '''Export a note as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            notes = manager.get_updates(args.record_id)
+            note = None
+            for n in notes:
+                if n.id == args.note_id:
+                    note = n
+                    break
+            
+            if not note:
+                raise RuntimeError(f"Note {args.note_id} not found in record {args.record_id}")
+            
+            # Build result
+            result = {
+                "id": note.id,
+                "record_id": args.record_id,
+                "content": note.message,
+                "fields": {},
+            }
+            
+            # Add all KV data
+            if note.kv_strings:
+                for key, values in note.kv_strings.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if note.kv_integers:
+                for key, values in note.kv_integers.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if note.kv_floats:
+                for key, values in note.kv_floats.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_search_records(self, args):
+        '''Search records and output as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            results = manager.list_incidents(
+                ksearch_list=getattr(args, 'ksearch', None),
+                ksort_list=getattr(args, 'ksort', None),
+                limit=args.limit,
+                ids_only=False,
+            )
+            
+            records = []
+            for incident in results:
+                record_data = {
+                    "id": incident.id,
+                    "content": incident.content,
+                    "fields": {},
+                }
+                if incident.kv_strings:
+                    for key, values in incident.kv_strings.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_integers:
+                    for key, values in incident.kv_integers.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_floats:
+                    for key, values in incident.kv_floats.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                records.append(record_data)
+            
+            result = {
+                "count": len(records),
+                "records": records,
+            }
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_search_notes(self, args):
+        '''Search notes and output as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            results = manager.search_updates(
+                ksearch=args.ksearch,
+                limit=args.limit,
+                ids_only=False,
+            )
+            
+            notes = []
+            for incident_id, update_id in results:
+                updates = manager.get_updates(incident_id)
+                for note in updates:
+                    if note.id == update_id:
+                        note_data = {
+                            "id": note.id,
+                            "record_id": incident_id,
+                            "content": note.message,
+                            "fields": {},
+                        }
+                        if note.kv_strings:
+                            for key, values in note.kv_strings.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_integers:
+                            for key, values in note.kv_integers.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_floats:
+                            for key, values in note.kv_floats.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        notes.append(note_data)
+                        break
+            
+            result = {
+                "count": len(notes),
+                "notes": notes,
+            }
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_schema_record(self, args):
+        '''Get field schema for records as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            if args.template:
+                special_fields = manager.project_config.get_special_fields_for_template(
+                    args.template,
+                    for_record=True,
+                )
+                template_info = {
+                    "template": args.template,
+                }
+            else:
+                special_fields = manager.project_config.get_special_fields()
+                template_info = {
+                    "template": None,
+                }
+            
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+                if field_def.system_value:
+                    fields[field_name]["system_value"] = field_def.system_value
+            
+            result = {
+                **template_info,
+                "fields": fields,
+            }
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_schema_note(self, args):
+        '''Get field schema for notes as JSON.'''
+        try:
+            manager = self._get_manager(args)
+            
+            # Load the record to get its template
+            incident = manager.get_incident(args.record_id)
+            if not incident:
+                raise RuntimeError(f"Record {args.record_id} not found")
+            
+            # Get template
+            template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            special_fields = manager.project_config.get_special_fields_for_template(
+                template_id,
+                for_record=False,  # Get note fields
+            )
+            
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+                if field_def.system_value:
+                    fields[field_name]["system_value"] = field_def.system_value
+            
+            result = {
+                "record_id": args.record_id,
+                "template": template_id,
+                "fields": fields,
+            }
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+    
+    def _cmd_json_reply_template(self, args):
+        '''Get a reply template with quoted note text.'''
+        try:
+            manager = self._get_manager(args)
+            
+            # Load the note
+            notes = manager.get_updates(args.record_id)
+            note = None
+            for n in notes:
+                if n.id == args.note_id:
+                    note = n
+                    break
+            
+            if not note:
+                raise RuntimeError(f"Note {args.note_id} not found in record {args.record_id}")
+            
+            # Format the reply with quoted original text
+            quoted_lines = [f"> {line}" for line in note.message.split("\n")]
+            quoted_text = "\n".join(quoted_lines)
+            reply_content = f"REPLY TO {args.note_id}:\n\n{quoted_text}\n\n"
+            
+            # Get note schema for this record
+            incident = manager.get_incident(args.record_id)
+            template_id = None
+            if incident and incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            special_fields = manager.project_config.get_special_fields_for_template(
+                template_id,
+                for_record=False,
+            )
+            
+            # Build schema
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled or not field_def.editable:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "required": field_def.required,
+                }
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+            
+            result = {
+                "record_id": args.record_id,
+                "reply_to": args.note_id,
+                "template": template_id,
+                "quoted_content": reply_content,
+                "fields": fields,
+            }
+            print(json.dumps(result, indent=2))
+            
+        except RuntimeError as e:
+            result = {
+                "error": str(e),
+            }
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
+
+    def _cmd_json_io(self, args):
+        '''Interactive JSON interface via STDIN/STDOUT.'''
+        while True:
+            try:
+                # Read one line from stdin
+                line = sys.stdin.readline()
+                
+                # Empty line or EOF - exit gracefully
+                if not line or line.strip() == '':
+                    break
+                
+                # Parse the JSON command
+                try:
+                    request = json.loads(line)
+                except json.JSONDecodeError as e:
+                    response = {
+                        "success": False,
+                        "error": f"Invalid JSON: {e}",
+                    }
+                    print(json.dumps(response))
+                    sys.stdout.flush()
+                    continue
+                
+                # Validate request structure
+                if not isinstance(request, dict):
+                    response = {
+                        "success": False,
+                        "error": "Request must be a JSON object",
+                    }
+                    print(json.dumps(response))
+                    sys.stdout.flush()
+                    continue
+                
+                if 'command' not in request:
+                    response = {
+                        "success": False,
+                        "error": "Request must have 'command' field",
+                    }
+                    print(json.dumps(response))
+                    sys.stdout.flush()
+                    continue
+                
+                command = request['command']
+                params = request.get('params', {})
+                
+                # Execute the command
+                try:
+                    result = self._execute_json_command(command, params, args)
+                    response = {
+                        "success": True,
+                        "result": result,
+                    }
+                except Exception as e:
+                    response = {
+                        "success": False,
+                        "error": str(e),
+                    }
+                
+                # Output response
+                print(json.dumps(response))
+                sys.stdout.flush()
+                
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                response = {
+                    "success": False,
+                    "error": f"Unexpected error: {e}",
+                }
+                print(json.dumps(response))
+                sys.stdout.flush()
+    
+    def _execute_json_command(self, command: str, params: dict, global_args) -> dict:
+        '''
+        Execute a JSON command and return the result.
+        
+        Args:
+            command: Command name (e.g., 'export-record', 'search-records')
+            params: Command parameters as dictionary
+            global_args: Global args from argparse
+            
+        Returns:
+            Result dictionary
+        '''
+        # Create a namespace object to simulate argparse results
+        args = SimpleNamespace(**vars(global_args))
+        
+        # Route to appropriate command
+        if command == 'export-record':
+            # Required: record_id
+            # Optional: include_notes
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            
+            args.record_id = params['record_id']
+            args.include_notes = params.get('include_notes', False)
+            
+            manager = self._get_manager(args)
+            incident = manager.get_incident(args.record_id)
+            if not incident:
+                raise RuntimeError(f"Record {args.record_id} not found")
+            
+            result = {
+                "id": incident.id,
+                "content": incident.content,
+                "fields": {},
+            }
+            
+            if incident.kv_strings:
+                for key, values in incident.kv_strings.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if incident.kv_integers:
+                for key, values in incident.kv_integers.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if incident.kv_floats:
+                for key, values in incident.kv_floats.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            
+            if args.include_notes:
+                notes = manager.get_updates(args.record_id)
+                result["notes"] = []
+                for note in notes:
+                    note_data = {
+                        "id": note.id,
+                        "content": note.message,
+                        "fields": {},
+                    }
+                    if note.kv_strings:
+                        for key, values in note.kv_strings.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_integers:
+                        for key, values in note.kv_integers.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_floats:
+                        for key, values in note.kv_floats.items():
+                            note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    result["notes"].append(note_data)
+            
+            return result
+            
+        elif command == 'export-note':
+            # Required: record_id, note_id
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            if 'note_id' not in params:
+                raise ValueError("Missing required parameter: note_id")
+            
+            args.record_id = params['record_id']
+            args.note_id = params['note_id']
+            
+            manager = self._get_manager(args)
+            notes = manager.get_updates(args.record_id)
+            note = None
+            for n in notes:
+                if n.id == args.note_id:
+                    note = n
+                    break
+            
+            if not note:
+                raise RuntimeError(f"Note {args.note_id} not found in record {args.record_id}")
+            
+            result = {
+                "id": note.id,
+                "record_id": args.record_id,
+                "content": note.message,
+                "fields": {},
+            }
+            
+            if note.kv_strings:
+                for key, values in note.kv_strings.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if note.kv_integers:
+                for key, values in note.kv_integers.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            if note.kv_floats:
+                for key, values in note.kv_floats.items():
+                    result["fields"][key] = values[0] if len(values) == 1 else values
+            
+            return result
+            
+        elif command == 'search-records':
+            # Optional: ksearch (list), ksort (list), limit
+            ksearch = params.get('ksearch')
+            ksort = params.get('ksort')
+            
+            # Convert single values to lists for consistency
+            if ksearch is not None and not isinstance(ksearch, list):
+                ksearch = [ksearch] if ksearch else None
+            if ksort is not None and not isinstance(ksort, list):
+                ksort = [ksort] if ksort else None
+            
+            args.ksearch = ksearch
+            args.ksort = ksort
+            args.limit = params.get('limit', 100)
+            
+            manager = self._get_manager(args)
+            results = manager.list_incidents(
+                ksearch_list=ksearch,
+                ksort_list=ksort,
+                limit=args.limit,
+                ids_only=False,
+            )
+            
+            records = []
+            for incident in results:
+                record_data = {
+                    "id": incident.id,
+                    "content": incident.content,
+                    "fields": {},
+                }
+                if incident.kv_strings:
+                    for key, values in incident.kv_strings.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_integers:
+                    for key, values in incident.kv_integers.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_floats:
+                    for key, values in incident.kv_floats.items():
+                        record_data["fields"][key] = values[0] if len(values) == 1 else values
+                records.append(record_data)
+            
+            return {
+                "count": len(records),
+                "records": records,
+            }
+            
+        elif command == 'search-notes':
+            # Optional: ksearch, limit
+            args.ksearch = params.get('ksearch')
+            args.limit = params.get('limit')
+            
+            manager = self._get_manager(args)
+            results = manager.search_updates(
+                ksearch=args.ksearch,
+                limit=args.limit,
+                ids_only=False,
+            )
+            
+            notes = []
+            for incident_id, update_id in results:
+                updates = manager.get_updates(incident_id)
+                for note in updates:
+                    if note.id == update_id:
+                        note_data = {
+                            "id": note.id,
+                            "record_id": incident_id,
+                            "content": note.message,
+                            "fields": {},
+                        }
+                        if note.kv_strings:
+                            for key, values in note.kv_strings.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_integers:
+                            for key, values in note.kv_integers.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_floats:
+                            for key, values in note.kv_floats.items():
+                                note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        notes.append(note_data)
+                        break
+            
+            return {
+                "count": len(notes),
+                "notes": notes,
+            }
+            
+        elif command == 'import-record':
+            # Required: content
+            # Optional: fields, template
+            if 'content' not in params:
+                raise ValueError("Missing required parameter: content")
+            
+            fields = params.get('fields', {})
+            content = params['content']
+            template_id = params.get('template')
+            
+            # Create markdown content
+            markdown_content = MarkdownDocument.create(fields, content)
+            
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                frontmatter, body, resolved_template_id = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=False,
+                )
+                
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_incident = Incident.from_markdown(processed_content, "TEMP", manager.project_config)
+                
+                record_id = manager.create_incident(
+                    kv_strings=temp_incident.kv_strings,
+                    kv_integers=temp_incident.kv_integers,
+                    kv_floats=temp_incident.kv_floats,
+                    description=body,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    template_id=template_id or resolved_template_id,
+                )
+                
+                return {
+                    "record_id": record_id,
+                }
+                
+            finally:
+                os.unlink(temp_file)
+                
+        elif command == 'import-note':
+            # Required: record_id, content
+            # Optional: fields
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            if 'content' not in params:
+                raise ValueError("Missing required parameter: content")
+            
+            args.record_id = params['record_id']
+            fields = params.get('fields', {})
+            content = params['content']
+            
+            markdown_content = MarkdownDocument.create(fields, content)
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                frontmatter, body, resolved_template_id = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=True,
+                )
+                
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_note = IncidentUpdate.from_markdown(processed_content, "TEMP", args.record_id)
+                
+                note_id = manager.add_update(
+                    args.record_id,
+                    message=body,
+                    use_stdin=False,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    kv_single=None,
+                    kv_multi=None,
+                    kv_strings=temp_note.kv_strings,
+                    kv_integers=temp_note.kv_integers,
+                    kv_floats=temp_note.kv_floats,
+                    template_id=resolved_template_id,
+                    reply_to_id=None,
+                )
+                
+                return {
+                    "note_id": note_id,
+                    "record_id": args.record_id,
+                }
+                
+            finally:
+                os.unlink(temp_file)
+                
+        elif command == 'update-record':
+            # Required: record_id
+            # Optional: fields, content
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            
+            args.record_id = params['record_id']
+            fields = params.get('fields', {})
+            content = params.get('content')
+            
+            markdown_content = MarkdownDocument.create(fields, content or "")
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+                f.write(markdown_content)
+                temp_file = f.name
+            
+            try:
+                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                
+                existing_record = manager.get_incident(args.record_id)
+                if not existing_record:
+                    raise RuntimeError(f"Record {args.record_id} not found")
+                
+                frontmatter, body, _ = self._process_from_file(
+                    temp_file,
+                    manager,
+                    args,
+                    is_note=False,
+                    existing_record=existing_record,
+                )
+                
+                processed_content = MarkdownDocument.create(frontmatter, body)
+                temp_incident = Incident.from_markdown(processed_content, args.record_id, manager.project_config)
+                
+                manager.update_incident_info(
+                    args.record_id,
+                    kv_strings=temp_incident.kv_strings,
+                    kv_integers=temp_incident.kv_integers,
+                    kv_floats=temp_incident.kv_floats,
+                    description=body if content else None,
+                    use_editor=False,
+                    use_yaml_editor=False,
+                    metadata_only=content is None,
+                    allow_validation_editor=False,
+                )
+                
+                return {
+                    "record_id": args.record_id,
+                }
+                
+            finally:
+                os.unlink(temp_file)
+                
+        elif command == 'schema-record':
+            # Optional: template
+            template = params.get('template')
+            
+            manager = self._get_manager(args)
+            
+            if template:
+                special_fields = manager.project_config.get_special_fields_for_template(
+                    template,
+                    for_record=True,
+                )
+                template_info = {"template": template}
+            else:
+                special_fields = manager.project_config.get_special_fields()
+                template_info = {"template": None}
+            
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+                if field_def.system_value:
+                    fields[field_name]["system_value"] = field_def.system_value
+            
+            return {
+                **template_info,
+                "fields": fields,
+            }
+            
+        elif command == 'schema-note':
+            # Required: record_id
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            
+            args.record_id = params['record_id']
+            
+            manager = self._get_manager(args)
+            incident = manager.get_incident(args.record_id)
+            if not incident:
+                raise RuntimeError(f"Record {args.record_id} not found")
+            
+            template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            special_fields = manager.project_config.get_special_fields_for_template(
+                template_id,
+                for_record=False,
+            )
+            
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+                if field_def.system_value:
+                    fields[field_name]["system_value"] = field_def.system_value
+            
+            return {
+                "record_id": args.record_id,
+                "template": template_id,
+                "fields": fields,
+            }
+            
+        elif command == 'reply-template':
+            # Required: record_id, note_id
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            if 'note_id' not in params:
+                raise ValueError("Missing required parameter: note_id")
+            
+            args.record_id = params['record_id']
+            args.note_id = params['note_id']
+            
+            manager = self._get_manager(args)
+            
+            notes = manager.get_updates(args.record_id)
+            note = None
+            for n in notes:
+                if n.id == args.note_id:
+                    note = n
+                    break
+            
+            if not note:
+                raise RuntimeError(f"Note {args.note_id} not found in record {args.record_id}")
+            
+            quoted_lines = [f"> {line}" for line in note.message.split("\n")]
+            quoted_text = "\n".join(quoted_lines)
+            reply_content = f"REPLY TO {args.note_id}:\n\n{quoted_text}\n\n"
+            
+            incident = manager.get_incident(args.record_id)
+            template_id = None
+            if incident and incident.kv_strings and 'template_id' in incident.kv_strings:
+                template_id = incident.kv_strings['template_id'][0]
+            
+            special_fields = manager.project_config.get_special_fields_for_template(
+                template_id,
+                for_record=False,
+            )
+            
+            fields = {}
+            for field_name, field_def in special_fields.items():
+                if not field_def.enabled or not field_def.editable:
+                    continue
+                
+                fields[field_name] = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "required": field_def.required,
+                }
+                if field_def.accepted_values:
+                    fields[field_name]["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    fields[field_name]["default"] = field_def.default
+            
+            return {
+                "record_id": args.record_id,
+                "reply_to": args.note_id,
+                "template": template_id,
+                "quoted_content": reply_content,
+                "fields": fields,
+            }
+            
+        else:
+            raise ValueError(f"Unknown command: {command}")
 
 
 
