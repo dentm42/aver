@@ -52,7 +52,7 @@ class YAMLSerializer:
     """
     
     # Type hint suffixes for custom fields
-    TYPE_HINT_STRING = "$"
+    TYPE_HINT_STRING = "="
     TYPE_HINT_INTEGER = "#"
     TYPE_HINT_FLOAT = "%"
     
@@ -2533,7 +2533,7 @@ class KVParser:
     """Parse and validate key-value format strings."""
     
     # Type indicators
-    TYPE_STRING = '$'
+    TYPE_STRING = '='
     TYPE_INTEGER = '#'
     TYPE_FLOAT = '%'
     VALID_OPERATORS = {TYPE_STRING, TYPE_INTEGER, TYPE_FLOAT}
@@ -2544,7 +2544,7 @@ class KVParser:
         Parse a key-value format string.
         
         Format: {key}{type}{value}
-        - $ = string
+        - = = string
         - # = integer  
         - % = float
         
@@ -2600,10 +2600,13 @@ class KVParser:
         # Escape operators for regex (in case any are regex special chars)
         escaped_ops = [re.escape(op) for op in KVParser.VALID_OPERATORS]
         ops_pattern = '|'.join(escaped_ops)
-        
+        print (f"OPS PATTERN: {ops_pattern}")
         pattern = rf'^([a-zA-Z0-9_-]+)({ops_pattern})(.*)$'
-        match = re.match(pattern, kv_str)
-        
+        print (f"REGEX: {pattern}")
+        print(f"String: '{kv_str}' (length: {len(kv_str)})")
+        print(f"Repr: {repr(kv_str)}")  # Shows hidden characters
+        match = re.match(pattern, kv_str.strip())
+         
         if match:
             key = match.group(1)
             kvtype = match.group(2)
@@ -2660,7 +2663,7 @@ class KVParser:
                         )
                 else:
                     value = None
-            
+            print (f"{key} {kvtype} {'+' if not is_removal else '-'} {value}")
             return (key, kvtype, '+' if not is_removal else '-', value)
         
         # Check for kv mode removal (key-)
@@ -2678,8 +2681,8 @@ class KVParser:
         raise ValueError(
             f"Invalid key-value format: '{kv_str}'\n"
             f"Expected: '{{key}}${{string}}', '{{key}}#{{int}}', or '{{key}}%{{float}}'\n"
-            f"For removal: '{{key}}-' (kv mode) or '{{key}}${{val}}-' (kmv mode)\n"
-            f"Keys must contain only alphanumeric characters, underscores, and hyphens"
+	    f"For removal: '{{key}}-' (kv mode) or '{{key}}${{val}}-' (kmv mode)\n"
+	    f"Keys must contain only alphanumeric characters, underscores, and hyphens"
         )
     
     @staticmethod
@@ -2696,7 +2699,9 @@ class KVParser:
         if not key:
             return False
         # Allow alphanumeric, underscores, and hyphens
-        return all(c.isalnum() or c in ('_', '-') for c in key)
+        # return all(c.isalnum() or c in ('_', '-') for c in key)
+        print (f"TEST KEY: |{key}|")
+        return bool(re.match(r'^[a-zA-Z0-9_-]+$', key))
     
     @staticmethod
     def parse_kv_list(kv_list: List[str]) -> List[tuple]:
@@ -6572,7 +6577,7 @@ class IncidentCLI:
         
         Args:
             raw_values: List of "key=value" strings
-            type_marker: "$" for string, "#" for int, "%" for float
+            type_marker: "=" for string, "#" for int, "%" for float
         
         Returns:
             List of "key<marker>value" strings
@@ -6807,7 +6812,7 @@ class IncidentCLI:
                 
                 # Determine type marker from config
                 if field.value_type == "integer":
-                    type_marker = "#"
+                    type_marker = KVParser.TYPE_INTEGER
                     try:
                         int(value)  # Validate it's an integer
                     except ValueError:
@@ -6815,7 +6820,7 @@ class IncidentCLI:
                             f"Field '{key}' requires an integer value, got: {value}"
                         )
                 elif field.value_type == "float":
-                    type_marker = "%"
+                    type_marker = KVParser.TYPE_FLOAT
                     try:
                         float(value)  # Validate it's a float
                     except ValueError:
@@ -6823,7 +6828,7 @@ class IncidentCLI:
                             f"Field '{key}' requires a float value, got: {value}"
                         )
                 else:
-                    type_marker = "$"
+                    type_marker = KVParser.TYPE_STRING
                 
                 # Add to appropriate list based on field type
                 target = kv_multi if field.field_type == "multi" else kv_single
@@ -6912,11 +6917,11 @@ class IncidentCLI:
                 
                 # Determine type prefix based on field definition
                 if field_def.value_type == "integer":
-                    type_prefix = "#"
+                    type_prefix = KVParser.TYPE_INTEGER
                 elif field_def.value_type == "float":
-                    type_prefix = "%"
+                    type_prefix = KVParser.TYPE_FLOAT
                 else:
-                    type_prefix = "$"
+                    type_prefix = KVParser.TYPE_STRING
                 
                 # Route to single or multi based on field definition
                 target_list = kv_single if field_def.field_type == "single" else kv_multi
@@ -6932,23 +6937,23 @@ class IncidentCLI:
         try:
             # Single-value options
             if getattr(args, 'text', None):
-                kv_single.extend(self._parse_and_convert_kv(args.text, "$"))
+                kv_single.extend(self._parse_and_convert_kv(args.text, KVParser.TYPE_STRING))
             
             if getattr(args, 'number', None):
-                kv_single.extend(self._parse_and_convert_kv(args.number, "#"))
+                kv_single.extend(self._parse_and_convert_kv(args.number, KVParser.TYPE_INTEGER))
             
             if getattr(args, 'decimal', None):
-                kv_single.extend(self._parse_and_convert_kv(args.decimal, "%"))
+                kv_single.extend(self._parse_and_convert_kv(args.decimal, KVParser.TYPE_FLOAT))
             
             # Multi-value options
             if getattr(args, 'text_multi', None):
-                kv_multi.extend(self._parse_and_convert_kv(args.text_multi, "$"))
+                kv_multi.extend(self._parse_and_convert_kv(args.text_multi, KVParser.TYPE_STRING))
             
             if getattr(args, 'number_multi', None):
-                kv_multi.extend(self._parse_and_convert_kv(args.number_multi, "#"))
+                kv_multi.extend(self._parse_and_convert_kv(args.number_multi, KVParser.TYPE_INTEGER))
             
             if getattr(args, 'decimal_multi', None):
-                kv_multi.extend(self._parse_and_convert_kv(args.decimal_multi, "%"))
+                kv_multi.extend(self._parse_and_convert_kv(args.decimal_multi, KVParser.TYPE_FLOAT))
         
         except ValueError as e:
             raise RuntimeError(str(e))
@@ -7912,8 +7917,8 @@ $update_kv
                 cli_kv_strings = {}
                 cli_kv_integers = {}
                 cli_kv_floats = {}
-                
                 if kv_single:
+                    print (f"KVLIST-SINGLE: {kv_single}")
                     parsed = KVParser.parse_kv_list(kv_single)
                     for key, kvtype, op, value in parsed:
                         if op != '-':
@@ -7925,6 +7930,7 @@ $update_kv
                                 cli_kv_floats[key] = [float(value)]
                 
                 if kv_multi:
+                    print (f"KVLIST-MULTI: {kv_multi}")
                     parsed = KVParser.parse_kv_list(kv_multi)
                     for key, kvtype, op, value in parsed:
                         if op != '-':
@@ -9809,6 +9815,45 @@ $update_kv
                 "template": template_id,
                 "quoted_content": reply_content,
                 "fields": fields,
+            }
+            
+        elif command == 'list-templates':
+            # No parameters required
+            manager = get_manager_with_override()
+            
+            templates = []
+            
+            # Add "Default" template (no template)
+            templates.append({
+                "id": None,
+                "name": "Default",
+                "description": "Default record with standard fields",
+            })
+            
+            # Add configured templates
+            for template_name, template_obj in manager.project_config._templates.items():
+                template_info = {
+                    "id": template_name,
+                    "name": template_name,
+                }
+                
+                # Add description if template has special characteristics
+                description_parts = []
+                if template_obj.record_prefix:
+                    description_parts.append(f"Prefix: {template_obj.record_prefix}")
+                if template_obj.has_record_special_fields():
+                    field_count = len(template_obj.record_special_fields)
+                    description_parts.append(f"{field_count} custom field(s)")
+                
+                if description_parts:
+                    template_info["description"] = ", ".join(description_parts)
+                else:
+                    template_info["description"] = "Custom template"
+                
+                templates.append(template_info)
+            
+            return {
+                "templates": templates,
             }
             
         else:
