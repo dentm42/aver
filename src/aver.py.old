@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.9"
-# dependencies = [
-#   "pyyaml>=6.0",
-#   "tomli>=2.0.0; python_version < '3.11'",
-#   "tomli-w>=1.0.0",
-# ]
-# ///
 """
 aver: a verified knowledge tracking tool
 
@@ -42,24 +34,13 @@ try:
     import tomli_w
 except ImportError:
     tomli_w = None
-    raise RuntimeError(
-        "tomli_w not available. Cannot write TOML config.\n"
-        "Install with: pip install tomli_w"
-    )
 
-try:
-    import yaml
-except ImportError:
-    yaml = None
-    raise RuntimeError(
-        "pyyaml not available. Required for Markdown Frontmatter.\n"
-        "Install with: pip install pyyaml"
-    )
 
 """
 YAMLSerializer
 """
 
+import yaml
 from typing import Optional, Any
 
 
@@ -337,7 +318,7 @@ class Incident:
         default: Any = None,
     ) -> Any:
         """Get field value, respecting config type."""
-        field = project_config.get_special_field(field_name, for_record=True)
+        field = project_config.get_special_field(field_name)
         if not field:
             return default
         
@@ -358,7 +339,7 @@ class Incident:
         
         frontmatter = {}
         for field_name in project_config.get_enabled_special_fields().keys():
-            field = project_config.get_special_field(field_name, for_record=True)
+            field = project_config.get_special_field(field_name)
             
             if field.field_type == "single":
                 if field.value_type == "string":
@@ -810,7 +791,6 @@ class SpecialField:
         required: bool = False,
         system_value: Optional[str] = None,
         default: Optional[str] = None,
-        index_values: bool = True,
     ):
         self.name = name
         self.field_type = field_type  # single vs multi-value
@@ -821,7 +801,6 @@ class SpecialField:
         self.required = required
         self.system_value = system_value  # e.g., "datetime", "user_email", "${datetime}"
         self.default = default
-        self.index_values = index_values
     
     def validate(self, value: Any) -> bool:
         """Check if value is acceptable."""
@@ -989,7 +968,6 @@ class ProjectConfig:
             required = field_def.get("required", False)
             system_value = field_def.get("system_value", None)
             default = field_def.get("default", None)
-            index_values = field_def.get("index_values", True)
             
             self._record_special_fields[field_name] = SpecialField(
                 name=field_name,
@@ -1001,7 +979,6 @@ class ProjectConfig:
                 required=required,
                 system_value=system_value,
                 default=default,
-                index_values=index_values,
             )
         
         # Parse note special fields
@@ -1014,7 +991,6 @@ class ProjectConfig:
             required = field_def.get("required", False)
             system_value = field_def.get("system_value", None)
             default = field_def.get("default", None)
-            index_values = field_def.get("index_values", True)
             
             self._note_special_fields[field_name] = SpecialField(
                 name=field_name,
@@ -1026,7 +1002,6 @@ class ProjectConfig:
                 required=required,
                 system_value=system_value,
                 default=default,
-                index_values=index_values,
             )
     
     def _parse_templates(self):
@@ -1303,21 +1278,16 @@ class ProjectConfig:
             if field.enabled
         }
     
-    def get_special_field(self, name: str, for_record: bool = True) -> Optional[SpecialField]:
+    def get_special_field(self, name: str) -> Optional[SpecialField]:
         """
-        Get specific special field definition.
+        Get specific special field definition (searches both record and note fields).
         
-        Args:
-            name: Field name to look up
-            for_record: If True, search record fields; if False, search note fields
-            
-        Returns:
-            SpecialField if found, None otherwise
+        Searches record fields first, then note fields.
         """
-        if for_record:
-            return self._record_special_fields.get(name)
-        else:
-            return self._note_special_fields.get(name)
+        field = self._record_special_fields.get(name)
+        if field:
+            return field
+        return self._note_special_fields.get(name)
     
     def is_special_field(self, name: str) -> bool:
         """Check if field is a special field (in either record or note fields)."""
@@ -1331,19 +1301,16 @@ class ProjectConfig:
         field = self._note_special_fields.get(name)
         return field is not None and field.enabled
     
-    def validate_field(self, name: str, value: Any, for_record: bool = True) -> tuple[bool, Optional[str]]:
+    def validate_field(self, name: str, value: Any) -> tuple[bool, Optional[str]]:
         """
         Validate a field value.
         
-        Args:
-            name: Field name
-            value: Field value to validate
-            for_record: If True, validate against record fields; if False, validate against note fields
+        Searches both record and note fields.
         
         Returns:
             (is_valid, error_message)
         """
-        field = self.get_special_field(name, for_record=for_record)
+        field = self.get_special_field(name)
         if not field:
             return False, f"Unknown field: {name}"
         
@@ -3117,7 +3084,7 @@ class IncidentIndexDatabase:
         # Apply special field filters
         if filters:
             for field_name, value in filters.items():
-                field = project_config.get_special_field(field_name, for_record=True)
+                field = project_config.get_special_field(field_name)
                 if not field:
                     continue  # Skip unknown fields
             
@@ -3211,7 +3178,7 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
-    def index_kv_data(self, incident: Incident, project_config: Optional[ProjectConfig] = None):
+    def index_kv_data(self, incident: Incident):
         """Index key-value data for incident (update_id = NULL)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
@@ -3222,12 +3189,6 @@ class IncidentIndexDatabase:
     
         # Insert string KV data
         for key, values in (incident.kv_strings or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=True)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3241,12 +3202,6 @@ class IncidentIndexDatabase:
     
         # Insert integer KV data
         for key, values in (incident.kv_integers or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=True)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3260,12 +3215,6 @@ class IncidentIndexDatabase:
     
         # Insert float KV data
         for key, values in (incident.kv_floats or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=True)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3283,8 +3232,7 @@ class IncidentIndexDatabase:
     def index_update_kv_data(self, incident_id: str, update_id: str, 
                             kv_strings: Optional[Dict] = None,
                             kv_integers: Optional[Dict] = None,
-                            kv_floats: Optional[Dict] = None,
-                            project_config: Optional[ProjectConfig] = None):
+                            kv_floats: Optional[Dict] = None):
         """Index key-value data for update (update_id is NOT NULL)."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
@@ -3292,12 +3240,6 @@ class IncidentIndexDatabase:
     
         # Insert string KV data for update
         for key, values in (kv_strings or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=False)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3311,12 +3253,6 @@ class IncidentIndexDatabase:
     
         # Insert integer KV data for update
         for key, values in (kv_integers or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=False)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3330,12 +3266,6 @@ class IncidentIndexDatabase:
     
         # Insert float KV data for update
         for key, values in (kv_floats or {}).items():
-            # Check if field should be indexed
-            if project_config:
-                field = project_config.get_special_field(key, for_record=False)
-                if field and not field.index_values:
-                    continue  # Skip indexing this field
-            
             for value in values:
                 try:
                     cursor.execute(
@@ -3346,6 +3276,73 @@ class IncidentIndexDatabase:
                     )
                 except sqlite3.IntegrityError:
                     pass
+    
+        conn.commit()
+        conn.close()
+    
+    def set_kv_single(self, incident_id: str, key: str, op: str, value: Any, update_id: Optional[str] = None):
+        """Set single-value KV (replaces existing)."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        now = self._generate_timestamp()
+    
+        if op == KVParser.TYPE_STRING:
+            value_column = "value_string"
+        elif op == KVParser.TYPE_INTEGER:
+            value_column = "value_integer"
+        elif op == KVParser.TYPE_FLOAT:
+            value_column = "value_float"
+        else:
+            raise ValueError(f"Invalid operator: {op}")
+    
+        # Delete existing values for this key
+        if update_id:
+            cursor.execute(
+                "DELETE FROM kv_store WHERE incident_id = ? AND update_id = ? AND key = ?", 
+                (incident_id, update_id, key)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM kv_store WHERE incident_id = ? AND update_id IS NULL AND key = ?", 
+                (incident_id, key)
+            )
+        
+        # Insert new value
+        cursor.execute(
+            f"""INSERT INTO kv_store 
+               (incident_id, update_id, key, {value_column}, created_at) 
+               VALUES (?, ?, ?, ?, ?)""",
+            (incident_id, update_id, key, value, now)
+        )
+    
+        conn.commit()
+        conn.close()
+    
+    def add_kv_multi(self, incident_id: str, key: str, op: str, value: Any, update_id: Optional[str] = None):
+        """Add multi-value KV (keeps existing)."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        now = self._generate_timestamp()
+    
+        if op == KVParser.TYPE_STRING:
+            value_column = "value_string"
+        elif op == KVParser.TYPE_INTEGER:
+            value_column = "value_integer"
+        elif op == KVParser.TYPE_FLOAT:
+            value_column = "value_float"
+        else:
+            raise ValueError(f"Invalid operator: {op}")
+    
+        # Insert value (PRIMARY KEY prevents true duplication)
+        try:
+            cursor.execute(
+                f"""INSERT INTO kv_store 
+                   (incident_id, update_id, key, {value_column}, created_at) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (incident_id, update_id, key, value, now)
+            )
+        except sqlite3.IntegrityError:
+            pass  # Value already exists
     
         conn.commit()
         conn.close()
@@ -3718,7 +3715,7 @@ class IncidentReindexer:
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
                 self.index_db.index_incident(incident, self.project_config)
-                self.index_db.index_kv_data(incident, self.project_config)
+                self.index_db.index_kv_data(incident)
                 indexed_count += 1
                 if verbose:
                     print(f"  ✓ {incident_id}",end=":")
@@ -4171,7 +4168,7 @@ class IncidentManager:
             value: Value to store
             incident: Incident to store in
         """
-        field = self.project_config.get_special_field(key, for_record=True)
+        field = self.project_config.get_special_field(key)
         
         if field:
             # Special field - validate against config, ignore type hint
@@ -4179,7 +4176,7 @@ class IncidentManager:
                 raise ValueError(f"'{key}' cannot be edited")
             
             if field.field_type == "single":
-                is_valid, error = self.project_config.validate_field(key, value, for_record=True)
+                is_valid, error = self.project_config.validate_field(key, value)
                 if not is_valid:
                     raise ValueError(error)
             
@@ -4248,7 +4245,7 @@ class IncidentManager:
             ValueError: If attempting to use single-value operator on existing multi-value field
         """
         # Check if field already has multiple values (non-special fields only)
-        field = self.project_config.get_special_field(key, for_record=True)
+        field = self.project_config.get_special_field(key)
         
         if not field:  # Not a special field
             # Check existing values
@@ -4319,7 +4316,7 @@ class IncidentManager:
             incident: Incident to store in
             replace: If True, replace existing values; if False, append
         """
-        field = self.project_config.get_special_field(key, for_record=True)
+        field = self.project_config.get_special_field(key)
         
         if field:
             # Special field - validate against config, ignore type hint
@@ -4327,14 +4324,14 @@ class IncidentManager:
                 raise ValueError(f"'{key}' cannot be edited")
             
             if field.field_type == "single":
-                is_valid, error = self.project_config.validate_field(key, value, for_record=True)
+                is_valid, error = self.project_config.validate_field(key, value)
                 if not is_valid:
                     raise ValueError(error)
             else:  # multi
                 # Validate each value
                 values_to_validate = [value] if not isinstance(value, list) else value
                 for v in values_to_validate:
-                    is_valid, error = self.project_config.validate_field(key, v, for_record=True)
+                    is_valid, error = self.project_config.validate_field(key, v)
                     if not is_valid:
                         raise ValueError(error)
             
@@ -4840,7 +4837,7 @@ class IncidentManager:
         # Save and reindex
         self.storage.save_incident(incident, self.project_config)
         self.index_db.index_incident(incident, self.project_config)
-        self.index_db.index_kv_data(incident, self.project_config)
+        self.index_db.index_kv_data(incident)
     
         update_msg = ""
             
@@ -5377,7 +5374,7 @@ class IncidentManager:
         
         # Update index
         self.index_db.index_incident(incident, self.project_config)
-        self.index_db.index_kv_data(incident, self.project_config)
+        self.index_db.index_kv_data(incident)
         
         # Create initial update
         initial_message = self._format_incident_update(incident.id)
@@ -5935,7 +5932,6 @@ class IncidentManager:
             kv_strings=update.kv_strings,
             kv_integers=update.kv_integers,
             kv_floats=update.kv_floats,
-            project_config=self.project_config,
         )
         
         # Apply special fields to parent incident (auto-update fields with editable=true + system_value)
@@ -6654,14 +6650,6 @@ class IncidentCLI:
                         '--description',
                         '--metadata-only',
                     })
-                elif subcommand == 'list':
-                    reserved.update({
-                        '--ksearch',
-                        '--ksort',
-                        '--limit',
-                        '--ids-only',
-                        '--fields',
-                    })
             
             # Note-specific
             if command == 'note':
@@ -6676,7 +6664,6 @@ class IncidentCLI:
                         '--ksearch',
                         '--limit',
                         '--ids-only',
-                        '--fields',
                     })
         
         # Admin flags
@@ -7077,12 +7064,6 @@ class IncidentCLI:
             action="store_true",
             help="Show only IDs in simple list format",
         )
-        record_list_parser.add_argument(
-            "--fields",
-            action="append",
-            dest="fields",
-            help="Additional fields to display (comma-delimited or use multiple times, e.g., --fields status,priority or --fields status --fields priority)",
-        )
 
         # record update
         record_update_parser = record_subparsers.add_parser(
@@ -7210,12 +7191,6 @@ class IncidentCLI:
             type=int,
             default=50,
             help="Maximum records to show",
-        )
-        note_search_parser.add_argument(
-            "--fields",
-            action="append",
-            dest="fields",
-            help="Additional fields to display (comma-delimited or use multiple times)",
         )
 
         
@@ -7604,7 +7579,8 @@ $kv_all
 """)
 
     TEMPLATE_LIST_ITEM = StringTemplate("""\
-$id | $title | $updated_at """)
+$id | $title | $updated_at
+""")
 
     TEMPLATE_LIST_UPDATES_ITEM = StringTemplate("""\
 ────────────────────────────────────────────────────────────────────────────────
@@ -8101,29 +8077,6 @@ $update_kv
                 print(record_id)
             return
 
-        # Determine which fields to display on second line
-        # Keys from --ksearch should be included first, followed by --fields
-        additional_fields = []
-        
-        # Add keys from --ksearch (in order searched)
-        if hasattr(args, 'ksearch') and args.ksearch:
-            for ksearch_item in args.ksearch:
-                # Parse key from ksearch expressions like "key=value", "key>100", etc.
-                # Extract the key part before any operator
-                key = ksearch_item.split('=')[0].split('>')[0].split('<')[0].split('!')[0].strip()
-                if key and key not in additional_fields:
-                    additional_fields.append(key)
-        
-        # Add fields from --fields (in order presented)
-        # Each --fields argument can be a comma-delimited list
-        if hasattr(args, 'fields') and args.fields:
-            for field_arg in args.fields:
-                # Split by comma and strip whitespace
-                for field in field_arg.split(','):
-                    field = field.strip()
-                    if field and field not in additional_fields:
-                        additional_fields.append(field)
-        
         # Handle full output
         print(f"\n{'ID':<20} {'Title':<40} {'Updated':<20}")
         print("─" * 80)
@@ -8131,33 +8084,14 @@ $update_kv
         for rec in results:
             kv_all = self._flatten_kv_data(rec.kv_strings, rec.kv_integers, rec.kv_floats)
             
-            # First line: ID, Title, Updated
-            titlestring = f"{kv_all.get('title', 'Unknown')[:39]:<39}"
             output = self.TEMPLATE_LIST_ITEM.safe_substitute(
                 id=rec.id,
-                title=titlestring,
+                title=kv_all.get('title', 'Unknown')[:37],
                 updated_at=kv_all.get('updated_at', 'Unknown'),
             )
             print(output)
-            
-            # Second line: additional fields (if any)
-            if additional_fields:
-                field_parts = []
-                for field in additional_fields:
-                    # Get the value from flattened KV data
-                    value = kv_all.get(field)
-                    # Only include if value exists
-                    if value is not None and str(value).strip():
-                        field_parts.append(f"{field}: {value}")
-                
-                # Print second line if there are any field values
-                if field_parts:
-                    recid_len = len(rec.id)
-                    fieldlist = " | ".join(field_parts)
-                    print(f"{'':<{recid_len}} | {fieldlist}")
-        
         print("─" * 80)
-        print(f"Found {len(results)} matches")
+        print()
         
     def _cmd_update(self, args):
         """Update record metadata and/or description."""
@@ -8617,28 +8551,6 @@ $update_kv
                 print(result_id)
             return
 
-        # Determine which fields to display for updates
-        # Keys from --ksearch should be included first, followed by --fields
-        additional_fields = []
-        
-        # Add keys from --ksearch (in order searched)
-        if hasattr(args, 'ksearch') and args.ksearch:
-            for ksearch_item in args.ksearch:
-                # Parse key from ksearch expressions like "key=value", "key>100", etc.
-                key = ksearch_item.split('=')[0].split('>')[0].split('<')[0].split('!')[0].strip()
-                if key and key not in additional_fields:
-                    additional_fields.append(key)
-        
-        # Add fields from --fields (in order presented)
-        # Each --fields argument can be a comma-delimited list
-        if hasattr(args, 'fields') and args.fields:
-            for field_arg in args.fields:
-                # Split by comma and strip whitespace
-                for field in field_arg.split(','):
-                    field = field.strip()
-                    if field and field not in additional_fields:
-                        additional_fields.append(field)
-
         # Handle full output
         header = self.TEMPLATE_SEARCH_UPDATES_HEADER.safe_substitute(
             count=len(results),
@@ -8668,43 +8580,13 @@ $update_kv
                 continue
 
             incident_info = Incident.from_markdown(incident_content, incident_id, manager.project_config)
-            update_info = IncidentUpdate.from_markdown(update_content, update_id, incident_id)
-            
-            # Flatten update KV data for display
-            update_kv_all = self._flatten_kv_data(
-                update_info.kv_strings,
-                update_info.kv_integers, 
-                update_info.kv_floats
-            )
-            
-            # Build update KV display string (only show requested fields)
-            update_kv_lines = []
-            for field in additional_fields:
-                if field in update_kv_all:
-                    value = update_kv_all[field]
-                    if isinstance(value, list):
-                        value_str = ", ".join(str(v) for v in value)
-                    else:
-                        value_str = str(value)
-                    update_kv_lines.append(f"{field}: {value_str}")
-            
-            update_kv = "\n".join(update_kv_lines) if update_kv_lines else "(no additional fields)"
-            
-            # Flatten incident KV for display
-            incident_kv_all = self._flatten_kv_data(
-                incident_info.kv_strings,
-                incident_info.kv_integers,
-                incident_info.kv_floats
-            )
-            incident_kv = "\n".join(f"{k}: {v}" for k, v in incident_kv_all.items())
             
             output = self.TEMPLATE_SEARCH_UPDATES_ITEM.safe_substitute(
                 incident_id=incident_id,
                 update_id=update_id,
                 incident_content=incident_content,
                 update_content=update_content,
-                incident_kv=incident_kv,
-                update_kv=update_kv,
+                incident_info=str(incident_info),
             )
             print(output)
             
