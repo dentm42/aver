@@ -887,11 +887,10 @@ test_fields_flag() {
     print_section "--fields Flag (Record List and Note Search)"
     
     # Create test records with various fields
-    print_test "Setup: Create test record 1 with multiple fields"
+    print_test "Setup: Create test records with multiple fields"
     if output=$(run_aver record new --description "Test record 1" --no-validation-editor --title "Fields Test 1" --status "open" --priority "high" --severity "3" 2>&1); then
         local rec1=$(echo "$output" | grep -oE "REC-[A-Z0-9]+")
         if [ -n "$rec1" ]; then
-            pass
             echo "  Created: $rec1"
         else
             fail "Record 1 not created"
@@ -902,7 +901,6 @@ test_fields_flag() {
         return
     fi
     
-    print_test "Setup: Create test record 2 with multiple fields"
     if output=$(run_aver record new --description "Test record 2" --no-validation-editor --title "Fields Test 2" --status "in_progress" --priority "low" --severity "1" 2>&1); then
         local rec2=$(echo "$output" | grep -oE "REC-[A-Z0-9]+")
         if [ -n "$rec2" ]; then
@@ -1018,11 +1016,10 @@ test_fields_flag() {
     fi
     
     # Add notes to first record for note search tests
-    print_test "Setup: Add note #1 with various fields"
+    print_test "Setup: Add notes with various fields"
     if output=$(run_aver note add "$rec1" --message "First note" --category "bugfix" --priority "high" 2>&1); then
         local note1=$(echo "$output" | grep -oE "NT-[A-Z0-9]+")
         if [ -n "$note1" ]; then
-            pass
             echo "  Created note: $note1"
         else
             fail "Note 1 not created"
@@ -1033,7 +1030,6 @@ test_fields_flag() {
         return
     fi
     
-    print_test "Setup: Add note #2 with various fields"
     if output=$(run_aver note add "$rec1" --message "Second note" --category "bugfix" --priority "medium" 2>&1); then
         local note2=$(echo "$output" | grep -oE "NT-[A-Z0-9]+")
         if [ -n "$note2" ]; then
@@ -2764,7 +2760,132 @@ EOF
     else
         fail "IO read with user override failed"
     fi
+    
+    # Create a note for note-related tests
+    local io_note=$(run_aver note add "$io_rec" --message "Note for IO tests" --category=testing 2>&1 | grep -oE "NT-[A-Z0-9]+" || echo "")
+    
+    print_test "json io export-note"
+    track_command "json io export-note"
+    if [ -n "$io_note" ]; then
+        if output=$(echo '{"command": "export-note", "params": {"record_id": "'$io_rec'", "note_id": "'$io_note'"}}' | run_aver json io 2>&1); then
+            if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'content' in data['result']; assert 'Note for IO tests' in data['result']['content']" 2>/dev/null; then
+                pass
+                echo "  Note exported via IO"
+            else
+                fail "Note export response invalid"
+            fi
+        else
+            fail "IO export-note failed"
+        fi
+    else
+        fail "Could not create note for export test"
+        run_aver note add "$io_rec" --message "Note for IO tests" category=testing 2>&1
+    fi
+    
+    print_test "json io search-notes"
+    track_command "json io search-notes"
+    if output=$(echo '{"command": "search-notes", "params": {"ksearch": ["category=testing"], "limit": 10}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert data['result']['count'] >= 1" 2>/dev/null; then
+            pass
+            echo "  Note search via IO successful"
+        else
+            fail "Note search response invalid"
+        fi
+    else
+        fail "IO search-notes failed"
+    fi
+    
+    print_test "json io import-note"
+    track_command "json io import-note"
+    if output=$(echo '{"command": "import-note", "params": {"record_id": "'$io_rec'", "content": "Imported note via IO", "fields": {"category": "imported"}}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'note_id' in data['result']" 2>/dev/null; then
+            local imported_note=$(echo "$output" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['note_id'])" 2>/dev/null)
+            if [ -n "$imported_note" ]; then
+                # Verify note was created
+                local note_file="$TEST_DIR/updates/$io_rec/${imported_note}.md"
+                if [ -f "$note_file" ] && check_content_contains "$note_file" "Imported note via IO"; then
+                    pass
+                    echo "  Note imported via IO: $imported_note"
+                else
+                    fail "Imported note not found or content incorrect"
+                fi
+            else
+                fail "Note ID not returned"
+            fi
+        else
+            fail "Import-note response invalid"
+        fi
+    else
+        fail "IO import-note failed"
+    fi
+    
+    print_test "json io reply-template"
+    track_command "json io reply-template"
+    if output=$(echo '{"command": "reply-template", "params": {"record_id": "'$io_rec'", "note_id": "'$io_note'"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'template' in data['result']" 2>/dev/null; then
+            pass
+            echo "  Reply template retrieved via IO"
+        else
+            fail "Reply template response invalid"
+            echo '{"command": "reply-template", "params": {"record_id": "'$io_rec'", "note_id": "'$io_note'"}}' | run_aver json io
+        fi
+    else
+        fail "IO reply-template failed"
+    fi
+    
+    print_test "json io list-templates"
+    track_command "json io list-templates"
+    if output=$(echo '{"command": "list-templates", "params": {}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'templates' in data['result']" 2>/dev/null; then
+            pass
+            echo "  Templates listed via IO"
+        else
+            fail "List templates response invalid"
+        fi
+    else
+        fail "IO list-templates failed"
+    fi
+    
+    print_test "json io export-record with notes"
+    track_command "json io export-record with include_notes"
+    if output=$(echo '{"command": "export-record", "params": {"record_id": "'$io_rec'", "include_notes": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'notes' in data['result']; assert len(data['result']['notes']) > 0" 2>/dev/null; then
+            pass
+            echo "  Record exported with notes via IO"
+        else
+            fail "Export with notes response invalid"
+        fi
+    else
+        fail "IO export-record with notes failed"
+    fi
+    
+    print_test "json io error - missing required parameter"
+    set +e
+    track_command "json io with missing parameter"
+    output=$(echo '{"command": "export-record", "params": {}}' | run_aver json io 2>&1)
+    set -e
+    
+    if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'record_id' in data.get('error', '').lower()" 2>/dev/null; then
+        pass
+        echo "  Missing parameter error handled correctly"
+    else
+        fail "Should return error for missing required parameter"
+    fi
+    
+    print_test "json io error - invalid record_id"
+    set +e
+    track_command "json io with invalid record_id"
+    output=$(echo '{"command": "export-record", "params": {"record_id": "INVALID-123"}}' | run_aver json io 2>&1)
+    set -e
+    
+    if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == False; assert 'not found' in data.get('error', '').lower()" 2>/dev/null; then
+        pass
+        echo "  Invalid record_id error handled correctly"
+    else
+        fail "Should return error for invalid record_id"
+    fi
 }
+
 
 #==============================================================================
 # Cleanup
