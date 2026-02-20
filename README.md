@@ -245,12 +245,7 @@ aver is for people and teams who:
 - Want their records to remain usable years from now with nothing more than a text editor and a copy of their repository
 - Trust their own infrastructure and version control systems more than third-party platforms
 
-If your records need to live longer than the tools that track them, aver is designed for you.
-
----
-This refinement is excellent because it distinguishes between your **vocation** (Pastor) and your **professional experience** (Systems/Ops), while adding a deeper historical layer with the 1980s middle-school project. That "Church Giving Records" origin story is the perfect bookend to your current LibreOffice project.
-
-Here is the revised **About Me** that reflects your identity as a Pastor with a continuous, deep-rooted technical practice.
+**If your records need to live longer than the tools that track them, aver is designed for you**.
 
 ---
 
