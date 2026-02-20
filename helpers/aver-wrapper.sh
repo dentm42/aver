@@ -4,22 +4,21 @@
 
 # Find the git repo root
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-BIN_AVER_PY="~/bin/aver.py"
 
 if [[ -z "$REPO_ROOT" ]]; then
     if [[ -f "${HOME}/bin/aver.py" ]]; then
-        exec "python3 ${BIN_AVER_PY}" "$@"
+        exec "python3 ~/bin/aver.py" "$@"
     else
-	echo "aver: aver.py not found (not in a git repo)"
+	echo "aver: not found (not in a git repo)"
         exit 1
     fi
 fi
 
 # Delegate to the repo's incident wrapper
-if [[ -f "$REPO_ROOT/utils/aver" ]]; then
-    exec python3 "$REPO_ROOT/utils/aver" "$@"
-elif [[ -f "$REPO_ROOT/utils/aver.py" ]]; then
-    exec python3 "$REPO_ROOT/utils/aver.py" "$@"
+if [[ -f "$REPO_ROOT/bin/aver" ]]; then
+    exec python3 "$REPO_ROOT/bin/aver" "$@"
+elif [[ -f "$REPO_ROOT/bin/aver.py" ]]; then
+    exec python3 "$REPO_ROOT/bin/aver.py" "$@"
 elif [[ -f "$REPO_ROOT/aver" ]]; then
     exec python3 "$REPO_ROOT/aver" "$@"
 elif [[ -f "$REPO_ROOT/aver.py" ]]; then
@@ -27,6 +26,6 @@ elif [[ -f "$REPO_ROOT/aver.py" ]]; then
 elif [[ -f "${HOME}/bin/aver.py" ]]; then
     exec python3 "${HOME}/bin/aver.py" "$@"
 else
-    echo "aver: not found (checked git repo [${REPO_ROOT}] and ${HOME}/bin)"
+    echo "aver: not found (checked git repo [${REPO_ROOT}, ${REPO_ROOT}/bin] and ${HOME}/bin)"
     exit 1
 fi

@@ -332,3 +332,4 @@ aver --use personal record new --title "Personal task"
 ---
 
 **Remember**: Your data is just Markdown files. You can always read, edit, or process them with any text tool. Aver just adds structure, validation, and fast searching on top.
+

@@ -93,11 +93,14 @@ done
 AVER_PATH=""
 if [ -f "./aver.py" ]; then
     AVER_PATH="./aver.py"
+elif [ -f "../aver.py" ]; then
+    AVER_PATH="../aver.py"
 elif [ -f "/mnt/user-data/outputs/aver.py" ]; then
     AVER_PATH="/mnt/user-data/outputs/aver.py"
 else
     echo -e "${RED}ERROR: Cannot find aver.py${NC}"
-    echo "Please run this script from the directory containing aver.py"
+    echo "Please make sure the aver.py script being tested"
+    echo "is in the current directory or its parent"
     echo "or ensure aver.py exists at /mnt/user-data/outputs/aver.py"
     exit 1
 fi

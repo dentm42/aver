@@ -396,7 +396,5 @@ aver json search-records --limit 1000 | \
 
 ## See Also
 
-- `IO_MODE_GUIDE.md` - Detailed IO mode documentation
-- `JSON_INTERFACE_SUMMARY.md` - Implementation overview
-- `JSON_TESTS_SUMMARY.md` - Test coverage details
-- `aver_client_example.py` - Python client library
+- `IO_PROTOCOL.md` - Detailed IO mode documentation
+- `SPECIFICATION.md` - Implementation overview
