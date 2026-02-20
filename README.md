@@ -4,11 +4,12 @@
 <img src="assets/aver_demo.gif" alt="aver demo" width="900">
 <BR>
 <strong>Data Sovereignty in Knowledge Management.</strong>
+<br><br>
 </div>
 
-aver is a file-native system for keeping structured records with full history and fast search — built on plain text and Git.
+### aver is a file-native system for keeping structured records with full history and fast search — built on plain text and Git.
 
-aver helps you track issues, observations, decisions, and evolving knowledge in a way that is:
+#### aver helps you track issues, observations, decisions, and evolving knowledge in a way that is:
 
 - Human-readable
 - Version-controlled
