@@ -6,6 +6,8 @@ Aver is a lightweight knowledge tracking tool that stores structured data in **p
 
 **Key Concept**: Aver manages **records** (the things you're tracking) and **notes** (chronological updates to those records). Everything is stored as text files with YAML frontmatter for metadata.
 
+**The Sovereignty Advantage**: A single git commit can include both the fix and the updated status of the record creating an Atomic History. 100 years from now, someone can check out your repository and see not just how the code changed, but the exact context of the decision, all without needing an API key for a defunct service.
+
 ---
 
 ## Installation
