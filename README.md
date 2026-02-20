@@ -1,6 +1,12 @@
 # aver: A Versioned Knowledge Tracking Tool
 
-**Data sovereignty requires subsidiarity. The Text is the Authority.**
+<p align="center">
+<img src="assets/aver_demo.gif" alt="aver demo" width="900">
+
+
+
+<string>Data Sovereignty in Knowledge Management.</strong>
+</p>
 
 aver is a file-native system for keeping structured records with full history and fast search — built on plain text and Git.
 
