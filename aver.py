@@ -2657,11 +2657,11 @@ class KVParser:
         # Escape operators for regex (in case any are regex special chars)
         escaped_ops = [re.escape(op) for op in KVParser.VALID_OPERATORS]
         ops_pattern = '|'.join(escaped_ops)
-        print (f"OPS PATTERN: {ops_pattern}")
+
         pattern = rf'^([a-zA-Z0-9_-]+)({ops_pattern})(.*)$'
-        print (f"REGEX: {pattern}")
-        print(f"String: '{kv_str}' (length: {len(kv_str)})")
-        print(f"Repr: {repr(kv_str)}")  # Shows hidden characters
+        
+        
+        
         match = re.match(pattern, kv_str.strip())
          
         if match:
@@ -2757,7 +2757,7 @@ class KVParser:
             return False
         # Allow alphanumeric, underscores, and hyphens
         # return all(c.isalnum() or c in ('_', '-') for c in key)
-        print (f"TEST KEY: |{key}|")
+        # print (f"TEST KEY: |{key}|")
         return bool(re.match(r'^[a-zA-Z0-9_-]+$', key))
     
     @staticmethod
@@ -2932,7 +2932,7 @@ class IncidentFileStorage:
     def list_incident_files(self) -> List[str]:
         """List all incident IDs from files."""
         incident_ids = []
-        for file_path in self.incidents_dir.glob("REC-*.md"):
+        for file_path in self.incidents_dir.glob("*.md"):
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
@@ -7736,11 +7736,11 @@ $update_kv
     def _cmd_init(self, args):
         """Initialize database."""
         # DEBUG: Print args to see what we're getting
-        print(f"DEBUG: args = {args}", file=sys.stderr)
-        print(f"DEBUG: hasattr override_repo_boundary = {hasattr(args, 'override_repo_boundary')}", file=sys.stderr)
-        if hasattr(args, 'override_repo_boundary'):
-            print(f"DEBUG: args.override_repo_boundary = {args.override_repo_boundary}", file=sys.stderr)
-        print(f"DEBUG: vars(args) = {vars(args)}", file=sys.stderr)
+        # print(f"DEBUG: args = {args}", file=sys.stderr)
+        # print(f"DEBUG: hasattr override_repo_boundary = {hasattr(args, 'override_repo_boundary')}", file=sys.stderr)
+        # if hasattr(args, 'override_repo_boundary'):
+            # print(f"DEBUG: args.override_repo_boundary = {args.override_repo_boundary}", file=sys.stderr)
+        # print(f"DEBUG: vars(args) = {vars(args)}", file=sys.stderr)
         
         if args.location:
             db_root = Path(args.location)
