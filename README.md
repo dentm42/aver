@@ -246,3 +246,33 @@ aver is for people and teams who:
 - Trust their own infrastructure and version control systems more than third-party platforms
 
 If your records need to live longer than the tools that track them, aver is designed for you.
+
+---
+This refinement is excellent because it distinguishes between your **vocation** (Pastor) and your **professional experience** (Systems/Ops), while adding a deeper historical layer with the 1980s middle-school project. That "Church Giving Records" origin story is the perfect bookend to your current LibreOffice project.
+
+Here is the revised **About Me** that reflects your identity as a Pastor with a continuous, deep-rooted technical practice.
+
+---
+
+## **About Me: Stewardship Across the Eras**
+
+I am a pastor in the Lutheran Church—Missouri Synod (LCMS), serving since 2009. My daily work transitioned **from man's data to God's Word**, but my practice as a systems architect and developer remains a continuous thread in my life.
+
+My technical experience began in the mid-1980s when I built my first Church Giving Records system as a middle-schooler. My professional career in technology matured during the "Wild West" era of the early internet. Working in Internet Operations in the mid-to-late 90s, I engaged in hacking the Linux kernel to enable metered billing and helped pioneer the early days of ISP virtual hosting.   I also built a web based support "Trouble Ticket" system in C, before the era of modern databases, frameworks and scripting languages, meaning that I had to handle every data structure and disk offset by hand.
+
+### **The Philosophy of Digital Stewardship**
+
+I build tools for the **stewardship of truth**. I believe that software should be an **"Indestructible Artifact"**—something built to outlive the platforms, companies, and subscription models that birthed it.
+
+* **The Authority of the File**: Data should reside in human-readable, plain-text formats. Databases are temporary lenses; the filesystem is the source of truth.
+* **Zero-Dependency Resilience**: A tool should be as portable as a book. No "dark magic" server daemons or complex infrastructure beasts should be required to access your own knowledge.
+* **Nomadic Data**: Your history belongs to you. It should branch, merge, and travel with you through time, regardless of whether a SaaS kingdom falls.
+
+#### **Selected Projects & Contributions**
+
+* **Aver**: A Git-native, single-script knowledge tracking engine that treats "Issues" as versioned artifacts. It features a persistent **JSON Bridge** (IO mode) for high-performance, stream-based automation.
+* **Hubzilla (Contributor)**: Contributed to the core **workerqueue** architecture, optimizing asynchronous task processing for one of the most sophisticated decentralized identity and publishing platforms in existence.
+* **Church Giving Extension**: A record-keeping extension for **LibreOffice** designed for congregational financial stewardship. This project brings my work full-circle, applying modern principles of local-first data integrity to the same needs I first addressed in the 80s.
+
+> *"What matters should be recorded. What is recorded should be searchable. What is searchable should endure."*
+
