@@ -8,7 +8,7 @@
 # ]
 # ///
 """
-aver: a verified knowledge tracking tool
+aver: a versioned knowledge tracking tool
 
 Minimal external dependencies. 
 Stores records and updates as Markdown files with yaml headers.
