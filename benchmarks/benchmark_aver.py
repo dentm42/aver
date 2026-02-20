@@ -8,6 +8,8 @@ Tests the performance limits of the aver system by measuring:
 
 The system uses markdown files as source of truth with SQLite for search indexing.
 This benchmark helps determine the practical limits for different system configurations.
+
+Now uses JSON IO interface for much faster data injection.
 """
 
 import argparse
@@ -72,16 +74,79 @@ class BenchmarkConfig:
 
 
 class AverBenchmark:
-    """Benchmark runner for aver system"""
+    """Benchmark runner for aver system using JSON IO interface"""
     
     def __init__(self, config: BenchmarkConfig):
         self.config = config
         self.results: List[BenchmarkResult] = []
         self.current_total_records = 0
         self.record_ids: List[str] = []
+        self.io_process: Optional[subprocess.Popen] = None
         
+    def start_json_io(self):
+        """Start the JSON IO interface as a persistent process"""
+        cmd = [
+            sys.executable,
+            self.config.aver_path,
+            "--no-use-git-id",
+            "--override-repo-boundary",
+            "--location", str(self.config.test_dir),
+            "json", "io"
+        ]
+        
+        if self.config.verbose:
+            print(f"Starting JSON IO: {' '.join(cmd)}", file=sys.stderr)
+        
+        self.io_process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1  # Line buffered
+        )
+        
+    def stop_json_io(self):
+        """Stop the JSON IO process"""
+        if self.io_process:
+            self.io_process.stdin.close()
+            self.io_process.wait()
+            self.io_process = None
+    
+    def send_json_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Send a command to the JSON IO interface and get response"""
+        if not self.io_process:
+            raise RuntimeError("JSON IO process not started")
+        
+        request = {
+            "command": command,
+            "params": params
+        }
+        
+        if self.config.verbose:
+            print(f"Sending: {json.dumps(request)}", file=sys.stderr)
+        
+        # Send command
+        self.io_process.stdin.write(json.dumps(request) + "\n")
+        self.io_process.stdin.flush()
+        
+        # Read response
+        response_line = self.io_process.stdout.readline()
+        if not response_line:
+            raise RuntimeError("No response from JSON IO")
+        
+        response = json.loads(response_line)
+        
+        if self.config.verbose:
+            print(f"Response: {json.dumps(response)}", file=sys.stderr)
+        
+        if not response.get('success'):
+            raise RuntimeError(f"Command failed: {response.get('error', 'Unknown error')}")
+        
+        return response.get('result', {})
+    
     def run_aver_command(self, *args, capture_output=True) -> subprocess.CompletedProcess:
-        """Run an aver command with timing"""
+        """Run an aver command directly (for non-IO operations like list/view)"""
         cmd = [
             sys.executable,
             self.config.aver_path,
@@ -109,50 +174,63 @@ class AverBenchmark:
     def initialize_database(self):
         """Initialize the aver database"""
         print("Initializing database...")
-        self.run_aver_command("admin","init")
+        self.run_aver_command("admin", "init")
     
     def create_records(self, count: int) -> List[str]:
-        """Create a batch of records and return their IDs"""
-        print(f"Creating {count} records...")
+        """Create a batch of records using JSON IO and return their IDs"""
+        print(f"Creating {count} records via JSON IO...")
         new_ids = []
+        
+        start_time = time.perf_counter()
         
         for i in range(count):
             # Create record with minimal content
             record_num = self.current_total_records + i + 1
             description = f"Test record {record_num} for benchmarking"
             
-            result = self.run_aver_command(
-                "record", "new",
-                "--title", f"Benchmark Record {record_num}",
-                "--kv", f"test_field=value_{record_num}",
-                "--description",
-                description
+            result = self.send_json_command(
+                "import-record",
+                {
+                    "content": description,
+                    "fields": {
+                        "title": f"Benchmark Record {record_num}",
+                        "test_field": f"value_{record_num}"
+                    }
+                }
             )
             
-            # Extract record ID from output
-            output = result.stdout.strip()
-            # Output format: "Created record: REC-XXXXX"
-            if "Created record:" in output:
-                record_id = output.split("Created record:")[1].strip()
-                record_id = record_id.split("\n")[0].strip()
+            record_id = result.get('record_id')
+            if record_id:
                 new_ids.append(record_id)
+        
+        elapsed = time.perf_counter() - start_time
+        if self.config.verbose:
+            print(f"  Created {count} records in {elapsed:.2f}s ({count/elapsed:.1f} records/sec)", file=sys.stderr)
         
         self.current_total_records += count
         return new_ids
     
     def create_notes_for_record(self, record_id: str, count: int):
-        """Add notes to a specific record"""
+        """Add notes to a specific record using JSON IO"""
         if self.config.verbose:
             print(f"  Adding {count} notes to {record_id}...")
         
+        start_time = time.perf_counter()
+        
         for i in range(count):
             note_content = f"Benchmark note {i+1} for {record_id}"
-            self.run_aver_command(
-                "note","add",
-                record_id,
-                "--message",
-                note_content
+            self.send_json_command(
+                "import-note",
+                {
+                    "record_id": record_id,
+                    "content": note_content,
+                    "fields": {}
+                }
             )
+        
+        if self.config.verbose:
+            elapsed = time.perf_counter() - start_time
+            print(f"    Added {count} notes in {elapsed:.2f}s ({count/elapsed:.1f} notes/sec)", file=sys.stderr)
     
     def benchmark_search_operations(self) -> Dict[str, float]:
         """Benchmark various search operations"""
@@ -160,20 +238,21 @@ class AverBenchmark:
         
         # Test 1: List all records
         start = time.perf_counter()
-        self.run_aver_command("record","list")
+        self.run_aver_command("record", "list")
         results['list_time'] = time.perf_counter() - start
         
-        # Test 2: Search query (substring match)
+        # Test 2: Search query (using JSON IO for consistency)
         start = time.perf_counter()
-        #self.run_aver_command("search", "Benchmark")
+        # Search for records via JSON IO
+        self.send_json_command("search-records", {"limit": 100})
         results['query_time'] = time.perf_counter() - start
         
-        # Test 3: View a specific record (includes searching for it)
+        # Test 3: View a specific record
         if self.record_ids:
             # Use middle record to avoid caching bias
             middle_id = self.record_ids[len(self.record_ids) // 2]
             start = time.perf_counter()
-            self.run_aver_command("record","view", middle_id)
+            self.run_aver_command("record", "view", middle_id)
             results['view_time'] = time.perf_counter() - start
         else:
             results['view_time'] = 0.0
@@ -197,7 +276,7 @@ class AverBenchmark:
         results['read_record_time'] = time.perf_counter() - start
         
         # Test 2: Read all notes for a record
-        notes_dir = self.config.test_dir / "records" / middle_id
+        notes_dir = self.config.test_dir / "updates" / middle_id
         
         start = time.perf_counter()
         if notes_dir.exists() and notes_dir.is_dir():
@@ -212,6 +291,8 @@ class AverBenchmark:
         print(f"\n{'='*70}")
         print(f"Iteration {iteration}")
         print(f"{'='*70}")
+        
+        iteration_start = time.perf_counter()
         
         # Add new records if not the first iteration
         if iteration > 1:
@@ -233,9 +314,8 @@ class AverBenchmark:
         total_notes = self.current_total_records * self.config.notes_per_record
         
         print(f"\nCurrent state:")
-        print(f"  Total records: {self.current_total_records}")
-        print(f"  Notes per record: {self.config.notes_per_record}")
-        print(f"  Total notes: {total_notes}")
+        print(f"  Records: {self.current_total_records}")
+        print(f"  Notes: {total_notes}")
         
         # Run benchmarks
         print("\nBenchmarking search operations...")
@@ -244,8 +324,8 @@ class AverBenchmark:
         print("Benchmarking file operations...")
         file_results = self.benchmark_file_operations()
         
-        # Calculate total time and rates
-        total_time = sum(search_results.values()) + sum(file_results.values())
+        # Calculate metrics
+        total_time = time.perf_counter() - iteration_start
         records_per_sec = self.current_total_records / total_time if total_time > 0 else 0
         notes_per_sec = total_notes / total_time if total_time > 0 else 0
         
@@ -264,78 +344,77 @@ class AverBenchmark:
             notes_per_second=notes_per_sec
         )
         
-        # Print results
-        print(f"\nResults:")
-        print(f"  Search list: {result.search_list_time:.4f}s")
-        print(f"  Search query: {result.search_query_time:.4f}s")
-        print(f"  Search view: {result.search_view_time:.4f}s")
-        print(f"  File read record: {result.file_read_record_time:.4f}s")
-        print(f"  File read notes: {result.file_read_notes_time:.4f}s")
-        print(f"  Total time: {result.total_time:.4f}s")
-        print(f"  Records/sec: {result.records_per_second:.2f}")
-        print(f"  Notes/sec: {result.notes_per_second:.2f}")
+        # Print iteration results
+        print(f"\nIteration {iteration} Results:")
+        print(f"  Total time: {total_time:.4f}s")
+        print(f"  Records/sec: {records_per_sec:.2f}")
+        print(f"  Notes/sec: {notes_per_sec:.2f}")
+        print(f"\nSearch operations:")
+        print(f"  List all: {search_results['list_time']:.4f}s")
+        print(f"  Query: {search_results['query_time']:.4f}s")
+        print(f"  View record: {search_results['view_time']:.4f}s")
+        print(f"\nFile operations:")
+        print(f"  Read record: {file_results['read_record_time']:.4f}s")
+        print(f"  Read notes: {file_results['read_notes_time']:.4f}s")
         
         return result
     
-    def check_termination_condition(self) -> bool:
+    def should_terminate_early(self) -> bool:
         """Check if we should terminate based on performance degradation"""
         if len(self.results) < 2:
             return False
         
         # Compare last two iterations
-        prev_result = self.results[-2]
-        curr_result = self.results[-1]
+        prev = self.results[-2]
+        curr = self.results[-1]
         
-        # Calculate percentage increase in total time
-        if prev_result.total_time == 0:
+        if prev.total_time == 0:
             return False
         
-        time_increase = (curr_result.total_time - prev_result.total_time) / prev_result.total_time
+        increase = (curr.total_time - prev.total_time) / prev.total_time
         
-        if time_increase > self.config.termination_threshold:
-            print(f"\n{'='*70}")
-            print(f"EARLY TERMINATION")
-            print(f"{'='*70}")
-            print(f"Performance degradation detected:")
-            print(f"  Previous iteration time: {prev_result.total_time:.4f}s")
-            print(f"  Current iteration time: {curr_result.total_time:.4f}s")
-            print(f"  Increase: {time_increase*100:.1f}% (threshold: {self.config.termination_threshold*100:.1f}%)")
+        if increase > self.config.termination_threshold:
+            print(f"\n⚠ Performance degraded by {increase*100:.1f}% - terminating early")
             return True
         
         return False
     
     def run_benchmark(self):
-        """Run the full benchmark suite"""
-        print(f"\n{'='*70}")
-        print("AVER PERFORMANCE BENCHMARK")
+        """Run the complete benchmark"""
+        print(f"{'='*70}")
+        print("AVER PERFORMANCE BENCHMARK (JSON IO Mode)")
         print(f"{'='*70}")
         print(f"\nConfiguration:")
         print(f"  Starting records: {self.config.starting_records}")
         print(f"  Upper limit: {self.config.upper_limit}")
         print(f"  Records per iteration: {self.config.records_per_iteration}")
         print(f"  Notes per record: {self.config.notes_per_record}")
-        print(f"  Termination threshold: {self.config.termination_threshold*100:.1f}%")
+        print(f"  Termination threshold: {self.config.termination_threshold*100:.0f}%")
         print(f"  Test directory: {self.config.test_dir}")
         
-        # Initialize
+        # Initialize database
         self.initialize_database()
         
-        # Run iterations
-        iteration = 1
-        while self.current_total_records < self.config.upper_limit:
-            result = self.run_iteration(iteration)
-            self.results.append(result)
+        # Start JSON IO process for fast data injection
+        print("\nStarting JSON IO interface...")
+        self.start_json_io()
+        
+        try:
+            iteration = 1
+            while self.current_total_records < self.config.upper_limit:
+                result = self.run_iteration(iteration)
+                self.results.append(result)
+                
+                # Check for early termination
+                if self.should_terminate_early():
+                    break
+                
+                iteration += 1
             
-            # Check for early termination
-            if self.check_termination_condition():
-                break
-            
-            # Check if we've reached the limit
-            if self.current_total_records >= self.config.upper_limit:
-                print(f"\nReached upper limit of {self.config.upper_limit} records")
-                break
-            
-            iteration += 1
+        finally:
+            # Always stop the JSON IO process
+            print("\nStopping JSON IO interface...")
+            self.stop_json_io()
         
         # Print summary
         self.print_summary()
@@ -433,7 +512,7 @@ class AverBenchmark:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark aver.py performance limits",
+        description="Benchmark aver.py performance limits (using JSON IO)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -450,11 +529,14 @@ Examples:
   %(prog)s --upper-limit 20000 --notes-per-record 10 --output benchmark_results.json
 
 The benchmark will:
-1. Create records incrementally (default: 100 per iteration)
-2. Add notes to each record (default: 5 per record)
-3. Measure search and file access performance
-4. Terminate early if performance degrades >30% between iterations
-5. Provide recommendations based on results
+1. Start a persistent JSON IO interface for fast data injection
+2. Create records incrementally (default: 100 per iteration)
+3. Add notes to each record (default: 5 per record)
+4. Measure search and file access performance
+5. Terminate early if performance degrades >30% between iterations
+6. Provide recommendations based on results
+
+This version uses JSON IO which is much faster than spawning separate processes!
         """
     )
     
