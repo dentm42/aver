@@ -16,7 +16,7 @@ editable = true
 type = "single"
 value_type = "string"
 editable = true
-accepted_values = ["bug", "feature", "support", "suggestion", "documentation", "other"]
+accepted_values = ["bug", "feature", "support", "suggestion", "documentation", "addon", "other"]
 
 [special_fields.status]
 type = "single"
