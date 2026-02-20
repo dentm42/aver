@@ -1,5 +1,7 @@
 # aver: A Versioned Knowledge Tracking Tool
 
+**Data sovereignty requires subsidiarity. The Text is the Authority.**
+
 aver is a file-native system for keeping structured records with full history and fast search — built on plain text and Git.
 
 aver helps you track issues, observations, decisions, and evolving knowledge in a way that is:
@@ -26,6 +28,16 @@ You can use aver for:
 - Campaign or worldbuilding logs
 
 aver is not tied to any one field. It is a general system for structured records that evolve over time.
+
+---
+
+## Core Philosophy
+
+- Subsidiarity of Data: We believe the source of truth should reside at the lowest competent level—with the user, on their local machine, inside their repository. Aver moves your context out of centralized SaaS silos and back into your hands.
+
+- The Text is the Authority: In Aver, the Markdown files are not "exports" or "reports"—they are the primary source of truth. The system’s SQLite index is merely a Lens used for high-speed searching; the Authority always remains the text.
+
+- Atomic History: Because Aver records live in your Git tree, a single commit can contain both a code change and its corresponding record update. This creates a permanent, auditable history that will remain readable long after proprietary platforms have vanished.
 
 ---
 

@@ -13,6 +13,10 @@ aver: a versioned knowledge tracking tool
 Minimal external dependencies. 
 Stores records and updates as Markdown files with yaml headers.
 Uses SQLite for indexing and searching only.
+
+-----------------------------------------------------------------
+Data Sovereignty requires Subsidiarity.
+The Text is the Authority.
 -----------------------------------------------------------------
 
 Copyright (c) 2026 Matthew Dent
