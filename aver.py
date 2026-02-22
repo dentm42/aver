@@ -21,21 +21,21 @@ The Text is the Authority.
 
 Copyright (c) 2026 Matthew Dent
 
-Permission is hereby granted, free of charge, to any person obtaining a copy 
-of this software and associated documentation files (the "Software"), 
-to deal in the Software without restriction, including without limitation 
-the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or 
-sell copies of the Software, and to permit persons to whom the Software is furnished 
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is furnished
 to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all copies 
+The above copyright notice and this permission notice shall be included in all copies
 or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR 
-A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS 
-BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, 
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE 
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
@@ -144,8 +144,6 @@ class YAMLSerializer:
         
         Uses PyYAML with explicit settings for clean, readable output.
         """
-        # Debug output (can be removed in production)
-        # print(f"DUMP DICT: {d}")
         
         # Normalize single-element lists
         normalized = YAMLSerializer.normalize_dict_values(d)
@@ -2657,11 +2655,7 @@ class KVParser:
         # Escape operators for regex (in case any are regex special chars)
         escaped_ops = [re.escape(op) for op in KVParser.VALID_OPERATORS]
         ops_pattern = '|'.join(escaped_ops)
-
         pattern = rf'^([a-zA-Z0-9_-]+)({ops_pattern})(.*)$'
-        
-        
-        
         match = re.match(pattern, kv_str.strip())
          
         if match:
@@ -2720,7 +2714,6 @@ class KVParser:
                         )
                 else:
                     value = None
-            print (f"{key} {kvtype} {'+' if not is_removal else '-'} {value}")
             return (key, kvtype, '+' if not is_removal else '-', value)
         
         # Check for kv mode removal (key-)
@@ -2757,7 +2750,6 @@ class KVParser:
             return False
         # Allow alphanumeric, underscores, and hyphens
         # return all(c.isalnum() or c in ('_', '-') for c in key)
-        # print (f"TEST KEY: |{key}|")
         return bool(re.match(r'^[a-zA-Z0-9_-]+$', key))
     
     @staticmethod
@@ -3763,6 +3755,58 @@ class IncidentReindexer:
             print(f"✓ Reindexed {indexed_count} records, {indexed_updates} updates")
         
         return indexed_count
+        
+    def reindex_one(self, incident_id: str, verbose: bool = False) -> bool:
+        """
+        Reindex a single incident and all its notes from files.
+        
+        Args:
+            incident_id: The record ID to reindex
+            verbose: Print progress messages
+        
+        Returns:
+            True if successful, False if record not found
+        """
+        # Check if record exists
+        incident = self.storage.load_incident(incident_id, self.project_config)
+        
+        if not incident:
+            if verbose:
+                print(f"Record {incident_id} not found")
+            return False
+        
+        if verbose:
+            print(f"Reindexing {incident_id}...")
+        
+        # Remove existing index entries for this record
+        self.index_db.remove_incident_from_index(incident_id)
+        
+        # Reindex the incident
+        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_kv_data(incident, self.project_config)
+        
+        if verbose:
+            print(f"  ✓ Record indexed")
+        
+        # Reindex all notes for this incident
+        updates = self.storage.load_updates(incident_id)
+        
+        if verbose and updates:
+            print(f"  Reindexing {len(updates)} notes...", end="")
+        
+        for update in updates:
+            self.index_db.index_update(update)
+            if verbose:
+                print(".", end="", flush=True)
+        
+        if verbose and updates:
+            print()  # Newline after dots
+        
+        if verbose:
+            print(f"✓ Reindexed {incident_id} ({len(updates)} notes)")
+        
+        return True
+
 
 # ============================================================================
 # High-Level Manager
@@ -7144,6 +7188,19 @@ class IncidentCLI:
 
         self.record_update_parser = record_update_parser
 
+        # record reindex
+        record_reindex_parser = record_subparsers.add_parser(
+            "reindex",
+            help="Reindex a specific record and all its notes from disk files",
+        )
+        
+        record_reindex_parser.add_argument(
+            "record_id",
+            help="Record ID to reindex"
+        )
+
+        self.record_reindex_parser = record_reindex_parser
+
         
         # ====================================================================
         # NOTE COMMANDS
@@ -7557,6 +7614,8 @@ class IncidentCLI:
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
                     self._cmd_update(parsed)
+                elif parsed.record_command == "reindex":
+                    self._cmd_record_reindex(parsed)
                     
             elif parsed.command == "note":
                 if parsed.note_command == "add":
@@ -7735,12 +7794,6 @@ $update_kv
 
     def _cmd_init(self, args):
         """Initialize database."""
-        # DEBUG: Print args to see what we're getting
-        # print(f"DEBUG: args = {args}", file=sys.stderr)
-        # print(f"DEBUG: hasattr override_repo_boundary = {hasattr(args, 'override_repo_boundary')}", file=sys.stderr)
-        # if hasattr(args, 'override_repo_boundary'):
-            # print(f"DEBUG: args.override_repo_boundary = {args.override_repo_boundary}", file=sys.stderr)
-        # print(f"DEBUG: vars(args) = {vars(args)}", file=sys.stderr)
         
         if args.location:
             db_root = Path(args.location)
@@ -7964,7 +8017,6 @@ $update_kv
                 cli_kv_integers = {}
                 cli_kv_floats = {}
                 if kv_single:
-                    print (f"KVLIST-SINGLE: {kv_single}")
                     parsed = KVParser.parse_kv_list(kv_single)
                     for key, kvtype, op, value in parsed:
                         if op != '-':
@@ -7976,7 +8028,6 @@ $update_kv
                                 cli_kv_floats[key] = [float(value)]
                 
                 if kv_multi:
-                    print (f"KVLIST-MULTI: {kv_multi}")
                     parsed = KVParser.parse_kv_list(kv_multi)
                     for key, kvtype, op, value in parsed:
                         if op != '-':
@@ -8338,7 +8389,21 @@ $update_kv
                 # User cancelled after being offered editor
                 print(f"{e}", file=sys.stderr)
                 sys.exit(1)            
-            
+ 
+    def _cmd_record_reindex(self, args):
+        """Reindex a specific record and its notes."""
+        manager = self._get_manager(args)
+        reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
+        
+        success = reindexer.reindex_one(
+            args.record_id,
+            verbose=True
+        )
+        
+        if not success:
+            print(f"Error: Record {args.record_id} not found", file=sys.stderr)
+            sys.exit(1)
+ 
     def _show_note_fields_help(self, record_id: str):
         """
         Show available fields for a specific record's notes.

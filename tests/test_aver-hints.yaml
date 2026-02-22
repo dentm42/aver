@@ -1,0 +1,604 @@
+# test_aver.sh Structural Reference
+# Generated: 2025-02-21
+# Source: test_aver.sh (2991 lines)
+#
+# This file provides a quick reference to the test script structure for efficient test creation.
+#
+# Usage in AI sessions:
+#   1. Check this file to understand test structure
+#   2. Use patterns to create new tests
+#   3. Append new test functions before main()
+
+metadata:
+  total_lines: 2991
+  last_updated: "2025-02-21"
+  total_test_suites: 14
+  estimated_total_tests: 140+
+
+# ============================================================================
+# File Structure
+# ============================================================================
+
+structure:
+  header:
+    line_start: 1
+    line_end: 14
+    description: "Script description and purpose"
+  
+  configuration:
+    line_start: 15
+    line_end: 151
+    description: "Colors, counters, test tracking, helper functions"
+    key_variables:
+      - "TESTS_RUN, TESTS_PASSED, TESTS_FAILED"
+      - "FAILED_TESTS[], FAILED_COMMANDS[], FAILED_REASONS[]"
+      - "TEST_DIR, TEST_HOME, AVER_PATH"
+  
+  helper_functions:
+    line_start: 114
+    line_end: 182
+    functions:
+      - "print_section()"
+      - "print_test()"
+      - "pass()"
+      - "fail()"
+      - "track_command()"
+      - "run_aver()"
+      - "check_file_exists()"
+      - "check_content_contains()"
+  
+  setup:
+    line_start: 183
+    line_end: 440
+    description: "setup_test_environment() - Creates isolated test env"
+    creates:
+      - "Temporary HOME directory"
+      - "Temporary test database"
+      - "Test config.toml with special fields"
+  
+  test_functions:
+    line_start: 441
+    line_end: 2890
+    description: "All test suite functions"
+  
+  cleanup:
+    line_start: 2891
+    line_end: 2918
+    description: "cleanup() - Removes test directories"
+  
+  main:
+    line_start: 2919
+    line_end: 2990
+    description: "main() - Orchestrates all tests and summary"
+
+# ============================================================================
+# Test Suite Functions (in order)
+# ============================================================================
+
+test_suites:
+  - name: "test_basic_creation"
+    line_start: 441
+    line_end: 499
+    test_count: 6
+    description: "Basic record creation and viewing"
+    tests:
+      - "Create a simple record"
+      - "Verify record file exists"
+      - "View record"
+      - "Record has correct content"
+      - "Create record with description"
+      - "Create record with custom fields"
+  
+  - name: "test_special_characters"
+    line_start: 500
+    line_end: 569
+    test_count: 4
+    description: "Special characters (#, $, %) in values"
+    tests:
+      - "Record with hash in value"
+      - "Record with dollar sign"
+      - "Record with percent sign"
+      - "Record with mixed special chars"
+  
+  - name: "test_template_system"
+    line_start: 570
+    line_end: 640
+    test_count: 6
+    description: "Template creation and usage"
+    tests:
+      - "Create template record"
+      - "Use template to create new record"
+      - "Template fields inherited"
+      - "Template overrides work"
+      - "Template-specific special fields"
+      - "Record template cloning"
+  
+  - name: "test_validation"
+    line_start: 641
+    line_end: 698
+    test_count: 5
+    description: "Field validation (required, accepted_values)"
+    tests:
+      - "Required field missing fails"
+      - "Invalid value for accepted_values fails"
+      - "Valid value passes"
+      - "Validation on update"
+      - "Multiple validation errors"
+  
+  - name: "test_system_fields"
+    line_start: 699
+    line_end: 754
+    test_count: 5
+    description: "System-managed fields (created_at, etc)"
+    tests:
+      - "created_at auto-populated"
+      - "created_by auto-populated"
+      - "System fields not editable"
+      - "System fields in output"
+      - "Timestamps are ISO 8601"
+  
+  - name: "test_index_values"
+    line_start: 755
+    line_end: 885
+    test_count: 8
+    description: "index_values configuration for special fields"
+    tests:
+      - "Field with index_values=true is indexed"
+      - "Field with index_values=false not searchable"
+      - "Search on indexed field works"
+      - "Search on non-indexed field fails gracefully"
+      - "Mixed indexed/non-indexed fields"
+      - "Index values with templates"
+      - "Reindex updates indexed values"
+      - "List shows indexed fields"
+  
+  - name: "test_fields_flag"
+    line_start: 886
+    line_end: 1135
+    test_count: 18
+    description: "--fields flag for custom display"
+    tests:
+      - "Single field display"
+      - "Multiple fields comma-delimited"
+      - "Multiple --fields arguments"
+      - "Mixed comma and multiple flags"
+      - "Invalid field name handled"
+      - "Empty fields list"
+      - "--fields with search"
+      - "--fields with sorting"
+      - "And more field display tests..."
+  
+  - name: "test_user_profile"
+    line_start: 1183
+    line_end: 1333
+    test_count: 10
+    description: "User profile and configuration"
+  
+  - name: "test_library_management"
+    line_start: 1334
+    line_end: 1406
+    test_count: 4
+    description: "Library list/add/remove commands"
+  
+  - name: "test_custom_locations"
+    line_start: 1407
+    line_end: 1463
+    test_count: 3
+    description: "--location flag functionality"
+  
+  - name: "test_config_per_location"
+    line_start: 1464
+    line_end: 1615
+    test_count: 6
+    description: "Per-location configuration"
+  
+  - name: "test_listing_search"
+    line_start: 1136
+    line_end: 1182
+    test_count: 4
+    description: "Record listing and search"
+  
+  - name: "test_note_operations"
+    line_start: 1616
+    line_end: 1757
+    test_count: 12
+    description: "Note creation, listing, viewing, searching"
+  
+  - name: "test_note_special_fields"
+    line_start: 1758
+    line_end: 1896
+    test_count: 8
+    description: "Special fields for notes"
+  
+  - name: "test_from_file"
+    line_start: 1897
+    line_end: 2199
+    test_count: 15
+    description: "--from-file import feature"
+  
+  - name: "test_updates"
+    line_start: 2200
+    line_end: 2242
+    test_count: 3
+    description: "Record update operations"
+  
+  - name: "test_json_interface"
+    line_start: 2243
+    line_end: 2563
+    test_count: 18
+    description: "JSON import/export commands"
+  
+  - name: "test_json_io_mode"
+    line_start: 2564
+    line_end: 2890
+    test_count: 16
+    description: "Persistent JSON IO mode"
+  
+  - name: "test_record_reindex"
+    line_start: "NEW"
+    description: "Selective record reindex feature"
+    test_count: 10
+    note: "See test_aver_reindex_addition.sh for implementation"
+
+# ============================================================================
+# Helper Functions Usage
+# ============================================================================
+
+helpers:
+  print_section:
+    usage: 'print_section "Test Suite Name"'
+    description: "Print blue section header"
+    example: 'print_section "Test: Basic Record Creation"'
+  
+  print_test:
+    usage: 'print_test "Test description"'
+    description: "Start a new test, increments counter"
+    example: 'print_test "Create a simple record"'
+  
+  pass:
+    usage: "pass"
+    description: "Mark test as passed, print green PASS"
+    side_effects: "Increments TESTS_PASSED"
+  
+  fail:
+    usage: 'fail "Reason for failure"'
+    description: "Mark test as failed, print red FAIL"
+    side_effects: "Increments TESTS_FAILED, tracks failure details"
+  
+  track_command:
+    usage: 'track_command "command description"'
+    description: "Track command for failure reporting (when not using run_aver)"
+    example: 'track_command "manual sed command on file"'
+  
+  run_aver:
+    usage: 'run_aver <args>'
+    description: "Execute aver with test environment"
+    example: 'run_aver record new --title "Test"'
+    automatic: "Tracks command automatically"
+  
+  check_file_exists:
+    usage: 'if check_file_exists "$file"; then'
+    description: "Check if file exists"
+    returns: "0 if exists, 1 if not"
+  
+  check_content_contains:
+    usage: 'if check_content_contains "$file" "pattern"; then'
+    description: "Check if file contains pattern"
+    returns: "0 if found, 1 if not"
+
+# ============================================================================
+# Common Test Patterns
+# ============================================================================
+
+patterns:
+  basic_test:
+    pattern: |
+      print_test "Test description"
+      if run_aver <command>; then
+          pass
+      else
+          fail "Error message"
+      fi
+  
+  test_with_output_validation:
+    pattern: |
+      print_test "Test with output check"
+      if output=$(run_aver <command> 2>&1); then
+          if echo "$output" | grep -q "expected pattern"; then
+              pass
+              echo "  Additional success message"
+          else
+              fail "Output doesn't match expected pattern"
+          fi
+      else
+          fail "Command failed"
+      fi
+  
+  test_should_fail:
+    pattern: |
+      print_test "Test that should fail"
+      set +e  # Disable exit on error
+      track_command "command that should fail"
+      output=$(run_aver <command> 2>&1)
+      exit_code=$?
+      set -e  # Re-enable exit on error
+      
+      if [ $exit_code -ne 0 ]; then
+          if echo "$output" | grep -qi "expected error"; then
+              pass
+              echo "  Correctly reported error"
+          else
+              fail "Failed but wrong error message"
+          fi
+      else
+          fail "Should have failed but succeeded"
+      fi
+  
+  test_file_content:
+    pattern: |
+      print_test "File content verification"
+      local file="$TEST_DIR/records/REC-001.md"
+      if check_file_exists "$file"; then
+          if check_content_contains "$file" "expected content"; then
+              pass
+          else
+              fail "File missing expected content"
+          fi
+      else
+          fail "File doesn't exist"
+      fi
+  
+  test_with_manual_file_edit:
+    pattern: |
+      print_test "Manual file edit then verify"
+      local file="$TEST_DIR/records/REC-001.md"
+      track_command "sed command to edit file"
+      
+      sed -i 's/old/new/' "$file"
+      
+      if run_aver record reindex "REC-001" 2>&1 >/dev/null; then
+          if output=$(run_aver record list --ksearch field=value); then
+              if echo "$output" | grep -q "REC-001"; then
+                  pass
+              else
+                  fail "Manual edit not reflected"
+              fi
+          fi
+      fi
+
+# ============================================================================
+# Test Creation Guidelines
+# ============================================================================
+
+guidelines:
+  structure:
+    - "Create test function: test_feature_name()"
+    - "Start with print_section"
+    - "Create setup records if needed"
+    - "Each assertion is one print_test/pass/fail cycle"
+    - "Clean up is automatic (whole TEST_DIR is removed)"
+  
+  naming:
+    function: "test_<feature>_<aspect>()"
+    test_name: "Short description of what's being tested"
+    example: 'print_test "Reindex existing record"'
+  
+  error_handling:
+    - "Use set +e before commands expected to fail"
+    - "Always set -e after to restore error handling"
+    - "Capture output with: output=$(command 2>&1)"
+    - "Check exit code: if [ $exit_code -ne 0 ]; then"
+  
+  assertions:
+    - "File exists: check_file_exists"
+    - "Content match: check_content_contains or grep -q"
+    - "Command success: if run_aver ...; then"
+    - "Output validation: echo \"$output\" | grep -q"
+  
+  tracking:
+    - "run_aver tracks commands automatically"
+    - "For manual commands: track_command \"description\""
+    - "This helps debug failures"
+
+# ============================================================================
+# Adding New Tests
+# ============================================================================
+
+how_to_add_tests:
+  step1:
+    description: "Create new test function"
+    location: "Before main() function (around line 2890)"
+    template: |
+      test_new_feature() {
+          print_section "Test: New Feature"
+          
+          # Setup
+          print_test "Setup: Create test data"
+          local rec=$(run_aver record new --title "Test")
+          if [ -n "$rec" ]; then
+              pass
+          else
+              fail "Setup failed"
+              return
+          fi
+          
+          # Test 1
+          print_test "First test case"
+          if run_aver <command>; then
+              pass
+          else
+              fail "Test failed"
+          fi
+          
+          # Test 2, 3, etc...
+      }
+  
+  step2:
+    description: "Add function call to main()"
+    location: "In main() function around line 2953"
+    example: |
+      # Run test suites
+      test_basic_creation
+      test_special_characters
+      # ... existing tests ...
+      test_new_feature  # ← Add here
+  
+  step3:
+    description: "Run tests"
+    command: "./test_aver.sh"
+    debug: "./test_aver.sh --keep --verbose"
+
+# ============================================================================
+# Variables Available in Tests
+# ============================================================================
+
+available_variables:
+  TEST_DIR:
+    description: "Path to test database directory"
+    example: "$TEST_DIR/records/REC-001.md"
+  
+  TEST_HOME:
+    description: "Temporary HOME directory"
+    example: "$TEST_HOME/.averconfig"
+  
+  AVER_PATH:
+    description: "Path to aver.py being tested"
+    example: "python3 $AVER_PATH"
+  
+  VERBOSE:
+    description: "true if --verbose flag used"
+    usage: 'if [ "$VERBOSE" = true ]; then echo "Debug"; fi'
+  
+  TESTS_RUN:
+    description: "Total tests executed"
+    auto_incremented: "by print_test()"
+  
+  TESTS_PASSED:
+    description: "Tests that passed"
+    auto_incremented: "by pass()"
+  
+  TESTS_FAILED:
+    description: "Tests that failed"
+    auto_incremented: "by fail()"
+
+# ============================================================================
+# Test File Structure
+# ============================================================================
+
+test_file_locations:
+  records: "$TEST_DIR/records/*.md"
+  notes: "$TEST_DIR/updates/REC-*/NT-*.md"
+  config: "$TEST_DIR/config.toml"
+  index: "$TEST_DIR/aver.db"
+  user_config: "$TEST_HOME/.averconfig"
+
+# ============================================================================
+# Common Assertions
+# ============================================================================
+
+assertions:
+  record_exists:
+    code: 'check_file_exists "$TEST_DIR/records/REC-001.md"'
+  
+  record_contains:
+    code: 'check_content_contains "$TEST_DIR/records/REC-001.md" "pattern"'
+  
+  command_succeeds:
+    code: 'if run_aver command; then pass; else fail; fi'
+  
+  output_matches:
+    code: 'if echo "$output" | grep -q "pattern"; then pass; fi'
+  
+  search_finds_record:
+    code: |
+      if output=$(run_aver record list --ksearch field=value); then
+          if echo "$output" | grep -q "REC-001"; then
+              pass
+          fi
+      fi
+  
+  json_valid:
+    code: |
+      if echo "$output" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+          pass
+      fi
+
+# ============================================================================
+# Recent Test Additions
+# ============================================================================
+
+recent_additions:
+  - feature: "Selective record reindex"
+    function: "test_record_reindex"
+    tests: 10
+    added: "2025-02-21"
+    file: "test_aver_reindex_addition.sh"
+    description: |
+      Tests for "aver record reindex RECORD_ID" including:
+      - Basic reindex functionality
+      - Manual file edits + reindex
+      - Reindex with notes
+      - Error handling for non-existent records
+      - Manual note creation + reindex
+      - Filesystem-first workflow
+      - Bulk reindex
+
+# ============================================================================
+# Quick Reference
+# ============================================================================
+
+quick_reference:
+  start_new_test:
+    - 'print_test "Test description"'
+  
+  mark_success:
+    - "pass"
+    - 'echo "  Optional success message"'
+  
+  mark_failure:
+    - 'fail "Reason for failure"'
+  
+  run_command:
+    - 'run_aver record new --title "Test"'
+    - 'output=$(run_aver record list 2>&1)'
+  
+  check_output:
+    - 'if echo "$output" | grep -q "pattern"; then'
+  
+  expect_failure:
+    - "set +e"
+    - "output=$(run_aver ... 2>&1)"
+    - "exit_code=$?"
+    - "set -e"
+  
+  file_checks:
+    - 'check_file_exists "$TEST_DIR/records/REC-001.md"'
+    - 'check_content_contains "$file" "pattern"'
+
+# ============================================================================
+# Debug Tips
+# ============================================================================
+
+debugging:
+  keep_test_dir:
+    command: "./test_aver.sh --keep"
+    result: "Prints location of test directories for manual inspection"
+  
+  verbose_output:
+    command: "./test_aver.sh --verbose"
+    result: "Shows all command output and execution details"
+  
+  inspect_after_failure:
+    steps:
+      - "Run with --keep flag"
+      - "cd to printed TEST_DIR"
+      - "Examine files manually"
+      - "Run aver commands with --location $TEST_DIR"
+  
+  common_issues:
+    - issue: "Test passes locally but fails in CI"
+      solution: "Check for timing issues, ensure test is isolated"
+    - issue: "Random failures"
+      solution: "Look for tests that depend on order or shared state"
+    - issue: "File not found errors"
+      solution: "Verify paths use $TEST_DIR prefix"

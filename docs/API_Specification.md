@@ -96,6 +96,7 @@ value_type = "string"                  # "string", "integer", or "float"
 editable = true                        # Can users edit after creation?
 enabled = true                         # Is field active?
 required = true                        # Must be provided?
+index_values = true                    # Index in database for searching?
 
 [record_special_fields.status]
 type = "single"
@@ -105,6 +106,7 @@ enabled = true
 required = true
 accepted_values = ["open", "investigating", "resolved", "closed"]
 default = "open"                       # Default value if not provided
+index_values = true
 
 [record_special_fields.created_by]
 type = "single"
@@ -113,6 +115,7 @@ editable = false                       # Read-only after creation
 enabled = true
 required = true
 system_value = "user_name"             # Auto-populated from user config
+index_values = true
 
 [record_special_fields.created_at]
 type = "single"
@@ -121,6 +124,7 @@ editable = false
 enabled = true
 required = true
 system_value = "datetime"              # Auto-populated with current timestamp
+index_values = true
 
 [record_special_fields.tags]
 type = "multi"                         # Can have multiple values
@@ -128,6 +132,7 @@ value_type = "string"
 editable = true
 enabled = true
 required = false
+index_values = true
 
 # Global note special fields (apply to ALL notes unless template overrides)
 [note_special_fields.author]
@@ -137,6 +142,7 @@ editable = false
 enabled = true
 required = true
 system_value = "user_name"
+index_values = true
 
 [note_special_fields.timestamp]
 type = "single"
@@ -145,6 +151,7 @@ editable = false
 enabled = true
 required = true
 system_value = "datetime"
+index_values = true
 
 # Template definitions
 [template.bug]
@@ -160,6 +167,7 @@ enabled = true
 required = true
 accepted_values = ["1", "2", "3", "4", "5"]
 default = "3"
+index_values = true
 
 [template.bug.record_special_fields.reproducible]
 type = "single"
@@ -167,6 +175,7 @@ value_type = "string"
 editable = true
 enabled = true
 accepted_values = ["yes", "no", "sometimes"]
+index_values = true
 
 # Template-specific note fields
 [template.bug.note_special_fields.category]
@@ -175,6 +184,7 @@ value_type = "string"
 editable = true
 enabled = true
 accepted_values = ["investigation", "bugfix", "workaround", "duplicate"]
+index_values = true
 
 # Additional template example
 [template.feature]
@@ -185,10 +195,12 @@ note_prefix = "FEEDBACK"
 type = "single"
 value_type = "integer"
 accepted_values = ["1", "2", "3", "4", "5"]
+index_values = true
 
 [template.feature.record_special_fields.effort_estimate]
 type = "single"
 value_type = "integer"
+index_values = true
 ```
 
 **Field Property Reference:**
@@ -203,11 +215,18 @@ value_type = "integer"
 | `accepted_values` | `["a", "b", "c"]` | Restricted to specific values (optional) |
 | `default` | any value | Default if not provided (optional) |
 | `system_value` | `user_name`, `user_email`, `datetime` | Auto-populated (optional) |
+| `index_values` | `true`, `false` | Whether values are indexed in database (default: `true`) |
 
 **System Values:**
 - `user_name`: User's handle from config
 - `user_email`: User's email from config
 - `datetime`: Current timestamp in ISO 8601 format
+
+**Index Values:**
+- `index_values`: Controls whether field values are stored in the database index
+- Default: `true` (values are indexed and searchable)
+- Set to `false` for sensitive data or fields that don't need database searching
+- Fields with `index_values = false` are still stored in Markdown files but not in the SQLite `kv_store` table
 
 ---
 
@@ -1099,6 +1118,7 @@ value_type = "string"
 editable = true
 enabled = true
 required = true
+index_values = true
 
 [record_special_fields.status]
 type = "single"
@@ -1108,6 +1128,7 @@ enabled = true
 required = true
 accepted_values = ["open", "investigating", "resolved", "closed"]
 default = "open"
+index_values = true
 
 [record_special_fields.created_by]
 type = "single"
@@ -1116,6 +1137,7 @@ editable = false
 enabled = true
 required = true
 system_value = "user_name"
+index_values = true
 
 [record_special_fields.created_at]
 type = "single"
@@ -1124,12 +1146,14 @@ editable = false
 enabled = true
 required = true
 system_value = "datetime"
+index_values = true
 
 [record_special_fields.tags]
 type = "multi"
 value_type = "string"
 editable = true
 enabled = true
+index_values = true
 
 # Global note fields
 [note_special_fields.author]
@@ -1139,6 +1163,7 @@ editable = false
 enabled = true
 required = true
 system_value = "user_name"
+index_values = true
 
 [note_special_fields.timestamp]
 type = "single"
@@ -1147,6 +1172,7 @@ editable = false
 enabled = true
 required = true
 system_value = "datetime"
+index_values = true
 
 # Bug template
 [template.bug]
@@ -1161,6 +1187,7 @@ enabled = true
 required = true
 accepted_values = ["1", "2", "3", "4", "5"]
 default = "3"
+index_values = true
 
 [template.bug.record_special_fields.reproducible]
 type = "single"
@@ -1168,6 +1195,7 @@ value_type = "string"
 editable = true
 enabled = true
 accepted_values = ["yes", "no", "sometimes"]
+index_values = true
 
 [template.bug.note_special_fields.category]
 type = "single"
@@ -1175,6 +1203,7 @@ value_type = "string"
 editable = true
 enabled = true
 accepted_values = ["investigation", "bugfix", "workaround", "duplicate"]
+index_values = true
 
 # Feature template
 [template.feature]
@@ -1187,12 +1216,14 @@ value_type = "integer"
 editable = true
 enabled = true
 accepted_values = ["1", "2", "3", "4", "5"]
+index_values = true
 
 [template.feature.record_special_fields.effort_estimate]
 type = "single"
 value_type = "integer"
 editable = true
 enabled = true
+index_values = true
 ```
 
 ---

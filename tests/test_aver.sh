@@ -2888,6 +2888,289 @@ EOF
         fail "Should return error for invalid record_id"
     fi
 }
+#==============================================================================
+# Test: Selective Record Reindex
+#==============================================================================
+
+test_record_reindex() {
+    print_section "Test: Selective Record Reindex"
+    
+    # Setup: Create test records for reindex testing
+    print_test "Setup: Create test records for reindex"
+    local rec1=$(run_aver record new --title "Reindex Test 1" --status open --priority medium --description "Test record for reindex")
+    local rec2=$(run_aver record new --title "Reindex Test 2" --status closed --priority high --description "Another test record")
+    local rec1_id=$(echo "$rec1" | grep -oE "REC-[A-Z0-9]+")
+    local rec2_id=$(echo "$rec2" | grep -oE "REC-[A-Z0-9]+")
+
+    if [ -n "${rec1_id}" ] && [ -n "${rec2_id}" ]; then
+        pass
+    else
+        fail "Failed to create test records"
+        return
+    fi
+    
+    # Add notes to first record
+    print_test "Setup: Add notes to test record (${rec1_id})"
+    if run_aver note add "${rec1_id}" --message "First note" 2>&1 >/dev/null; then
+        if run_aver note add "${rec1_id}" --message "Second note" 2>&1 >/dev/null; then
+            pass
+        else
+            fail "Failed to add second note"
+            return
+        fi
+    else
+        fail "Failed to add first note"
+        return
+    fi
+    
+    # Test 1: Reindex existing record
+    print_test "Reindex existing record"
+    track_command "record reindex $rec1"
+    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
+        if echo "$output" | grep -q "Reindexed ${rec1_id}"; then
+            pass
+            echo "  Record reindexed successfully"
+        else
+            fail "Reindex output doesn't confirm success"
+        fi
+    else
+        run_aver record reindex "${rec1_id}" 2>&1
+        fail "Failed to reindex record"
+    fi
+    
+    # Test 2: Verify search still works after reindex
+    print_test "Search works after reindex"
+    track_command "record list --ksearch status=open"
+    if output=$(run_aver record list --ksearch status=open); then
+        if echo "$output" | grep -q "${rec1_id}"; then
+            pass
+            echo "  Record found in search after reindex"
+        else
+            run_aver record list --ksearch status=open
+            fail "Record not found in search after reindex"
+        fi
+    else
+        fail "Search failed after reindex"
+    fi
+    
+    # Test 3: Manual file edit + reindex
+    print_test "Manual file edit then reindex"
+    
+    # Manually edit the file
+    local rec_file="$TEST_DIR/records/${rec1_id}.md"
+    track_command "sed to manually edit file, then reindex"
+    
+    if [ -f "$rec_file" ]; then
+        # Change priority from medium to critical
+        sed -i 's/priority: medium/priority: critical/' "$rec_file"
+        
+        # Reindex
+        if run_aver record reindex "${rec1_id}" 2>&1 >/dev/null; then
+            # Verify change is indexed
+            if output=$(run_aver record list --ksearch priority=critical); then
+                if echo "$output" | grep -q "${rec1_id}"; then
+                    pass
+                    echo "  Manual edit indexed successfully"
+                else
+                    fail "Manual edit not reflected in search"
+                fi
+            else
+                fail "Search failed after manual edit reindex"
+            fi
+        else
+            fail "Reindex failed after manual edit"
+        fi
+    else
+        fail "Record file not found: $rec_file"
+    fi
+    
+    # Test 4: Reindex with notes
+    print_test "Reindex includes notes"
+    track_command "record reindex ${rec1_id} (with notes)"
+    
+    # Add another note
+    if run_aver note add "${rec1_id}" --message "Note for reindex test" 2>&1 >/dev/null; then
+        # Reindex
+        if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
+            if echo "$output" | grep -q "4 notes"; then
+                pass
+                echo "  Reindex counted all 4 notes"
+            else
+                fail "Reindex didn't report correct note count"
+            fi
+        else
+            fail "Reindex with notes failed"
+        fi
+    else
+        fail "Failed to add note for test"
+    fi
+    
+    # Test 5: Reindex non-existent record (should fail)
+    print_test "Reindex non-existent record fails gracefully"
+    set +e
+    track_command "record reindex NONEXISTENT-123"
+    output=$(run_aver record reindex "NONEXISTENT-123" 2>&1)
+    exit_code=$?
+    set -e
+    
+    if [ $exit_code -ne 0 ]; then
+        if echo "$output" | grep -qi "not found"; then
+            pass
+            echo "  Correctly reports record not found"
+        else
+            fail "Failed but didn't report 'not found'"
+        fi
+    else
+        fail "Should have failed for non-existent record"
+    fi
+    
+    # Test 6: Manually add note file + reindex
+    print_test "Manual note file creation then reindex"
+    track_command "manually create note file, then reindex"
+    
+    # Create a note file manually
+    local note_dir="$TEST_DIR/updates/${rec1_id}"
+    mkdir -p "$note_dir"
+    
+    cat > "$note_dir/NT-MANUAL.md" << EOF
+---
+author: testuser
+timestamp: 2025-01-20T10:00:00Z
+---
+
+This note was created manually for testing reindex.
+
+NT-MANUAL
+EOF
+    
+    # Reindex to pick up manual note
+    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
+        # Check if note count increased
+        if echo "$output" | grep -q "5 notes"; then
+            # Verify note is accessible
+            if run_aver note list "${rec1_id}" 2>&1 | grep -q "NT-MANUAL"; then
+                pass
+                echo "  Manual note file indexed successfully"
+            else
+                fail "Manual note file not visible after reindex"
+            fi
+        else
+            fail "Note count didn't increase after manual note creation"
+        fi
+    else
+        fail "Reindex failed after manual note creation"
+    fi
+    
+    # Test 7: Reindex after manual frontmatter change
+    print_test "Reindex after manual frontmatter field addition"
+    track_command "manually add field, then reindex"
+    
+    # Add a new field to frontmatter manually
+    local rec_file="$TEST_DIR/records/${rec2_id}.md"
+    if [ -f "$rec_file" ]; then
+        # Add custom field
+        sed -i '/^status:/a custom_field: test_value' "$rec_file"
+        
+        # Reindex
+        if run_aver record reindex "${rec2_id}" 2>&1 >/dev/null; then
+            # Try to search for the custom field
+            if output=$(run_aver record view "${rec2_id}"); then
+                if echo "$output" | grep -q "custom_field"; then
+                    pass
+                    echo "  Manual field addition indexed"
+                else
+                    fail "Manual field not visible after reindex"
+                fi
+            else
+                fail "Record view failed after reindex"
+            fi
+        else
+            fail "Reindex failed after manual field addition"
+        fi
+    else
+        fail "Record file not found"
+    fi
+    
+    # Test 8: Reindex record with no notes
+    print_test "Reindex record with no notes"
+    local rec3=$(run_aver record new --title "No notes record" --status open --priority high --description "No note record")
+    local rec3_id=$(echo "$rec3" | grep -oE "REC-[A-Z0-9]+")
+    
+    track_command "record reindex ${rec3_id} (no notes)"
+    if output=$(run_aver record reindex "${rec3_id}" 2>&1); then
+        if echo "$output" | grep -q "Reindexed ${rec3_id}"; then
+            # Should work fine with 0 notes
+            pass
+            echo "  Record with no notes reindexed successfully"
+        else
+            fail "Reindex didn't confirm success"
+        fi
+    else
+        fail "Reindex failed for record with no notes"
+    fi
+    
+    # Test 9: Filesystem-first workflow simulation
+    print_test "Filesystem-first: create file, then reindex"
+    track_command "manually create complete record file, then reindex"
+    
+    # Create a complete record file manually
+    cat > "$TEST_DIR/records/MANUAL-001.md" << 'EOF'
+---
+title: Manually Created Record
+status: open
+priority: high
+created_at: 2025-01-20T10:00:00Z
+created_by: testuser
+---
+
+This record was created entirely outside of aver.
+
+It demonstrates the filesystem-first approach where records
+are just markdown files that can be created with any tool.
+EOF
+    
+    # Reindex to make it searchable
+    if run_aver record reindex "MANUAL-001" 2>&1 >/dev/null; then
+        # Verify it's searchable
+        if output=$(run_aver record list); then
+            if echo "$output" | grep -q "MANUAL-001"; then
+                if run_aver record view "MANUAL-001" 2>&1 | grep -q "Manually Created Record"; then
+                    pass
+                    echo "  Manually created record indexed and searchable"
+                else
+                    fail "Manual record view failed"
+                fi
+            else
+                fail "Manual record not found in listing"
+            fi
+        else
+            fail "Record listing failed"
+        fi
+    else
+        fail "Reindex of manually created record failed"
+    fi
+    
+    # Test 10: Bulk reindex simulation
+    print_test "Bulk reindex multiple records"
+    track_command "reindex multiple records in sequence"
+    
+    local success_count=0
+    local total_count=3
+    
+    for rec_id in "${rec1_id}" "${rec2_id}" "${rec3_id}"; do
+        if run_aver record reindex "$rec_id" 2>&1 >/dev/null; then
+            success_count=$((success_count + 1))
+        fi
+    done
+    
+    if [ $success_count -eq $total_count ]; then
+        pass
+        echo "  Successfully reindexed $success_count records"
+    else
+        fail "Only reindexed $success_count of $total_count records"
+    fi
+}
+
 
 
 #==============================================================================
@@ -2951,6 +3234,7 @@ main() {
     test_updates
     test_json_interface
     test_json_io_mode
+    test_record_reindex
     
     # Summary
     print_section "Test Summary"
