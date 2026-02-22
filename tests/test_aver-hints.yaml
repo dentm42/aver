@@ -1,6 +1,6 @@
 # test_aver.sh Structural Reference
-# Generated: 2025-02-21
-# Source: test_aver.sh (2991 lines)
+# Generated: 2025-02-21 (Updated)
+# Source: test_aver.sh (3274 lines)
 #
 # This file provides a quick reference to the test script structure for efficient test creation.
 #
@@ -10,10 +10,11 @@
 #   3. Append new test functions before main()
 
 metadata:
-  total_lines: 2991
+  total_lines: 3274
   last_updated: "2025-02-21"
-  total_test_suites: 14
-  estimated_total_tests: 140+
+  total_test_suites: 15
+  estimated_total_tests: 150+
+  note: "test_record_reindex integrated at line 2895 - all tests passing ✅"
 
 # ============================================================================
 # File Structure
@@ -67,9 +68,81 @@ structure:
     description: "cleanup() - Removes test directories"
   
   main:
-    line_start: 2919
-    line_end: 2990
+    line_start: 3167
+    line_end: 3274
     description: "main() - Orchestrates all tests and summary"
+    test_suite_calls:
+      - "test_basic_creation"
+      - "test_special_characters"
+      - "test_template_system"
+      - "test_validation"
+      - "test_system_fields"
+      - "test_index_values"
+      - "test_fields_flag"
+      - "test_user_profile"
+      - "test_library_management"
+      - "test_custom_locations"
+      - "test_config_per_location"
+      - "test_listing_search"
+      - "test_note_operations"
+      - "test_note_special_fields"
+      - "test_from_file"
+      - "test_updates"
+      - "test_json_interface"
+      - "test_json_io_mode"
+      - "test_record_reindex  # ✅ Latest addition"
+
+# ============================================================================
+# CRITICAL: Record-as-Note Behavior (MUST READ FOR TESTS)
+# ============================================================================
+
+critical_testing_note:
+  record_storage:
+    issue: |
+      Aver stores the initial record content as a NOTE, not in the record file.
+      This causes note count assertions to be off by one.
+    
+    file_structure: |
+      records/REC-001.md          - Metadata only (frontmatter)
+      updates/REC-001/
+        NT-001.md                 - The record content (counted as first note!)
+        NT-002.md                 - First actual comment
+        NT-003.md                 - Second comment
+    
+    test_impact: |
+      When testing note counts:
+      - New record with no comments: 1 note (the record itself)
+      - Add 1 comment: 2 notes total
+      - Add 2 comments: 3 notes total
+      - Reindex shows: "3 notes" for record + 2 comments
+    
+    wrong_assertions: |
+      # WRONG - will fail:
+      run_aver note add REC-001 --message "Comment 1"
+      run_aver note add REC-001 --message "Comment 2"
+      if echo "$output" | grep -q "2 notes"; then  # WRONG!
+    
+    correct_assertions: |
+      # CORRECT - accounts for record as first note:
+      run_aver note add REC-001 --message "Comment 1"
+      run_aver note add REC-001 --message "Comment 2"
+      if echo "$output" | grep -q "3 notes"; then  # 1 record + 2 comments
+    
+    reindex_behavior: |
+      aver record reindex REC-001
+      # Output: "Reindexed REC-001 (3 notes)"
+      #         ^^^^ Includes the record itself
+    
+    note_list_behavior: |
+      aver note list REC-001
+      # Shows: NT-001 (the record)
+      #        NT-002 (first comment)
+      #        NT-003 (second comment)
+    
+    minimum_note_count: |
+      A record ALWAYS has at least 1 note (itself).
+      "Record with no notes" is impossible.
+      Tests should expect minimum 1 note, not 0.
 
 # ============================================================================
 # Test Suite Functions (in order)
@@ -233,6 +306,27 @@ test_suites:
     line_end: 2890
     test_count: 16
     description: "Persistent JSON IO mode"
+  
+  - name: "test_record_reindex"
+    line_start: 2895
+    line_end: 3165
+    test_count: 10
+    status: "✅ INTEGRATED AND PASSING"
+    description: "Selective record reindex feature"
+    tests:
+      - "Setup: Create test records"
+      - "Setup: Add notes to test record"
+      - "Reindex existing record"
+      - "Search works after reindex"
+      - "Manual file edit then reindex"
+      - "Reindex includes notes (correctly expects N+1 for record)"
+      - "Reindex non-existent record fails gracefully"
+      - "Manual note file creation then reindex"
+      - "Reindex after manual frontmatter field addition"
+      - "Reindex record with minimum notes (just the record)"
+      - "Filesystem-first: create file, then reindex"
+      - "Bulk reindex multiple records"
+    note: "All note count assertions correctly account for record-as-note"
   
   - name: "test_record_reindex"
     line_start: "NEW"
@@ -532,16 +626,18 @@ recent_additions:
     function: "test_record_reindex"
     tests: 10
     added: "2025-02-21"
-    file: "test_aver_reindex_addition.sh"
+    status: "✅ INTEGRATED AND PASSING"
+    line: 2895
     description: |
       Tests for "aver record reindex RECORD_ID" including:
-      - Basic reindex functionality
+      - Basic reindex functionality  
       - Manual file edits + reindex
-      - Reindex with notes
+      - Reindex with notes (correctly accounts for record-as-note)
       - Error handling for non-existent records
       - Manual note creation + reindex
       - Filesystem-first workflow
       - Bulk reindex
+    note: "All tests passing - note counts correctly include record-as-first-note"
 
 # ============================================================================
 # Quick Reference

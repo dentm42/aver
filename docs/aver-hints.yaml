@@ -1,0 +1,711 @@
+# Aver Structural Reference
+# Generated: 2025-02-21 (Updated)
+# Source: aver.py (10081 lines)
+#
+# This file provides a quick reference to aver's structure for efficient navigation.
+# Line numbers are approximate - use grep -n "class ClassName" or "def function_name" to find exact locations.
+#
+# Usage in AI sessions:
+#   1. Check this file first for structure/location
+#   2. Use grep to confirm exact line numbers if needed
+#   3. Use view tool for detailed code inspection
+
+metadata:
+  total_lines: 10081
+  last_updated: "2025-02-21"
+  main_classes: 9
+  major_sections: 12
+
+# ============================================================================
+# IMPORTANT: Record Storage Behavior
+# ============================================================================
+
+critical_notes:
+  record_as_note:
+    description: |
+      When a record is created, aver stores the initial record content
+      as a NOTE in the updates/ directory, not in the records/ file.
+      
+      File structure:
+        records/REC-001.md     - Contains only metadata (frontmatter)
+        updates/REC-001/
+          NT-001.md            - The actual record content (first "note")
+          NT-002.md            - First actual comment/note
+          NT-003.md            - Second comment/note
+      
+      This means:
+      - A "new" record has 1 note (the record itself)
+      - Adding a comment creates the 2nd note
+      - note list REC-001 will show NT-001 (the record) + any comments
+      - Test assertions should expect N+1 notes (record + N comments)
+    
+    implications:
+      - "Record with no notes" is impossible - minimum is 1 (the record)
+      - Reindex output: "1 notes" for a record with no comments
+      - Note count tests: If you add 2 comments, expect "3 notes" total
+    
+    example_test_fix: |
+      # WRONG:
+      if echo "$output" | grep -q "2 notes"; then  # Added 2 comments
+      
+      # CORRECT:
+      if echo "$output" | grep -q "3 notes"; then  # 1 record + 2 comments
+
+# ============================================================================
+# File Structure (Major Sections)
+# ============================================================================
+
+sections:
+  imports:
+    line_start: 1
+    line_end: 70
+    description: "Standard library and external imports"
+    
+  yaml_serializer:
+    line_start: 71
+    line_end: 270
+    description: "YAML frontmatter handling with type hints"
+    key_functions:
+      - "add_type_hint"
+      - "strip_type_hint"
+      - "normalize_dict_values"
+      
+  markdown_document:
+    line_start: 271
+    line_end: 424
+    description: "Markdown parsing and frontmatter extraction"
+    
+  data_models:
+    line_start: 425
+    line_end: 820
+    description: "Core data classes (Incident, IncidentUpdate)"
+    
+  special_field:
+    line_start: 821
+    line_end: 870
+    description: "SpecialField dataclass for field configuration"
+    
+  project_config:
+    line_start: 871
+    line_end: 1620
+    description: "Configuration management from config.toml"
+    
+  id_generator:
+    line_start: 1621
+    line_end: 1720
+    description: "Record and note ID generation"
+    
+  database_discovery:
+    line_start: 1721
+    line_end: 2180
+    description: "Finding and selecting aver databases"
+    
+  key_value_parser:
+    line_start: 2181
+    line_end: 2730
+    description: "KV format parsing and operators"
+    
+  file_storage:
+    line_start: 2731
+    line_end: 2960
+    description: "Markdown file read/write operations"
+    
+  index_database:
+    line_start: 2961
+    line_end: 3710
+    description: "SQLite index for search and filtering"
+    
+  index_manager:
+    line_start: 3711
+    line_end: 3770
+    description: "Reindexing coordination"
+    
+  incident_manager:
+    line_start: 3771
+    line_end: 6750
+    description: "High-level API for record/note operations"
+    
+  cli_application:
+    line_start: 6751
+    line_end: 10017
+    description: "CLI argument parsing and command dispatch"
+
+# ============================================================================
+# Core Data Models
+# ============================================================================
+
+data_models:
+  Incident:
+    line_start: 425
+    description: "Record data model with KV fields"
+    attributes:
+      - "id: str"
+      - "content: str"
+      - "kv_strings: Optional[Dict[str, List[str]]]"
+      - "kv_integers: Optional[Dict[str, List[int]]]"
+      - "kv_floats: Optional[Dict[str, List[float]]]"
+    key_methods:
+      from_markdown:
+        line_start: 426
+        signature: "from_markdown(cls, content: str, incident_id: str, project_config: ProjectConfig) -> Incident"
+        description: "Deserialize record from markdown file"
+      to_markdown:
+        line_start: 530
+        signature: "to_markdown(self, project_config: Optional[ProjectConfig] = None) -> str"
+        description: "Serialize record to markdown with frontmatter"
+      get_value:
+        line_start: 576
+        signature: "get_value(self, key: str) -> Any"
+        description: "Get single value for key (returns first value)"
+      get_values:
+        line_start: 588
+        signature: "get_values(self, key: str) -> Optional[List[Any]]"
+        description: "Get all values for key"
+      set_value:
+        line_start: 604
+        signature: "set_value(self, key: str, value: Any)"
+        description: "Set value (replaces existing)"
+      has_value:
+        line_start: 633
+        signature: "has_value(self, key: str) -> bool"
+        description: "Check if key has any values"
+        
+  IncidentUpdate:
+    line_start: 658
+    description: "Note/comment data model"
+    attributes:
+      - "id: str"
+      - "message: str"
+      - "kv_strings: Optional[Dict[str, List[str]]]"
+      - "kv_integers: Optional[Dict[str, List[int]]]"
+      - "kv_floats: Optional[Dict[str, List[float]]]"
+    key_methods:
+      from_markdown:
+        line_start: 669
+        signature: "from_markdown(cls, content: str, update_id: str, incident_id: str) -> IncidentUpdate"
+        description: "Deserialize note from markdown"
+      to_markdown:
+        line_start: 734
+        signature: "to_markdown(self, project_config: Optional[ProjectConfig] = None, parent_template_id: Optional[str] = None) -> str"
+        description: "Serialize note to markdown"
+
+# ============================================================================
+# Configuration System
+# ============================================================================
+
+configuration:
+  SpecialField:
+    line_start: 821
+    description: "Field definition with validation rules"
+    attributes:
+      - "name: str"
+      - "field_type: str  # single or multi"
+      - "value_type: str  # string, integer, float"
+      - "accepted_values: Optional[List[str]]"
+      - "editable: bool"
+      - "enabled: bool"
+      - "required: bool"
+      - "system_value: Optional[str]  # datetime, user_name, etc"
+      - "default: Optional[str]"
+    methods:
+      validate:
+        line_start: 847
+        signature: "validate(self, value: Any) -> bool"
+        description: "Check if value is in accepted_values"
+        
+  ProjectConfig:
+    line_start: 871
+    description: "Main configuration loaded from config.toml"
+    attributes:
+      - "record_special_fields: Dict[str, SpecialField]"
+      - "note_special_fields: Dict[str, SpecialField]"
+      - "templates: Dict[str, TemplateConfig]"
+      - "record_id_prefix: str"
+      - "update_id_prefix: str"
+    key_methods:
+      load_from_file:
+        line_start: 1206
+        signature: "load_from_file(cls, config_path: Path) -> ProjectConfig"
+        description: "Load config from .aver/config.toml"
+      get_special_field:
+        line_start: 1320
+        signature: "get_special_field(self, name: str, for_record: bool = True) -> Optional[SpecialField]"
+        description: "Get field definition by name"
+      validate_field:
+        line_start: 1360
+        signature: "validate_field(self, name: str, value: Any) -> tuple[bool, Optional[str]]"
+        description: "Validate value against field config"
+      validate_required_fields:
+        line_start: 1380
+        signature: "validate_required_fields(self, incident: Incident) -> tuple[bool, Optional[str]]"
+        description: "Check all required fields are present"
+
+# ============================================================================
+# File Storage Layer
+# ============================================================================
+
+storage:
+  IncidentFileStorage:
+    line_start: 2731
+    description: "Manages markdown file I/O for records and notes"
+    attributes:
+      - "repo_root: Path"
+      - "incidents_dir: Path  # records/"
+      - "updates_dir: Path  # updates/"
+    key_methods:
+      save_incident:
+        line_start: 2846
+        signature: "save_incident(self, incident: Incident, project_config: Optional[ProjectConfig] = None)"
+        description: "Write record to records/{ID}.md"
+      load_incident:
+        line_start: 2869
+        signature: "load_incident(self, incident_id: str, project_config: ProjectConfig) -> Optional[Incident]"
+        description: "Read record from markdown file"
+      save_update:
+        line_start: 2901
+        signature: "save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional[ProjectConfig] = None)"
+        description: "Write note to updates/{RECORD_ID}/{NOTE_ID}.md"
+      load_updates:
+        line_start: 2925
+        signature: "load_updates(self, incident_id: str) -> List[IncidentUpdate]"
+        description: "Read all notes for a record"
+      list_incident_files:
+        line_start: 2894
+        signature: "list_incident_files(self) -> List[str]"
+        description: "Get all record IDs from filesystem"
+
+# ============================================================================
+# Index Database Layer
+# ============================================================================
+
+indexing:
+  IncidentIndexDatabase:
+    line_start: 2962
+    description: "SQLite index for fast searching"
+    tables:
+      - "incidents_index (id, indexed_at)"
+      - "incidents_fts (FTS5 virtual table)"
+      - "kv_store (unified key-value storage)"
+      - "updates (id, incident_id, indexed_at)"
+    key_methods:
+      index_incident:
+        line_start: 3071
+        signature: "index_incident(self, incident: Incident, project_config: ProjectConfig)"
+        description: "Add record to incidents_index table"
+      index_kv_data:
+        line_start: 3203
+        signature: "index_kv_data(self, incident: Incident, project_config: ProjectConfig)"
+        description: "Index all KV pairs for searching"
+      index_update:
+        line_start: 3252
+        signature: "index_update(self, update: IncidentUpdate)"
+        description: "Add note to index"
+      remove_incident_from_index:
+        line_start: 3116
+        signature: "remove_incident_from_index(self, incident_id: str)"
+        description: "Delete record from all index tables"
+      clear_index:
+        line_start: 3696
+        signature: "clear_index(self)"
+        description: "Drop all index data (for full reindex)"
+      list_incidents_from_index:
+        line_start: 3126
+        signature: "list_incidents_from_index(self, project_config, filters, search, limit) -> List[str]"
+        description: "Search records with ksearch filters"
+        
+  IncidentIndexManager:
+    line_start: 3711
+    description: "Coordinates reindexing operations"
+    key_methods:
+      reindex_all:
+        line_start: 3723
+        signature: "reindex_all(self, verbose: bool = False) -> int"
+        description: "Rebuild entire index from filesystem"
+      reindex_one:
+        line_start: 3759
+        signature: "reindex_one(self, incident_id: str, verbose: bool = False) -> bool"
+        description: "Reindex single record and its notes"
+        note: "Implemented - see line 3759"
+        important: "Note count includes the record itself (stored as first note)"
+
+# ============================================================================
+# High-Level Manager API
+# ============================================================================
+
+manager:
+  IncidentManager:
+    line_start: 3771
+    description: "Main API - orchestrates storage, index, and config"
+    attributes:
+      - "storage: IncidentFileStorage"
+      - "index_db: IncidentIndexDatabase"
+      - "index_manager: IncidentIndexManager"
+      - "project_config: ProjectConfig"
+      - "effective_user: Dict[str, str]"
+    
+    # Record operations
+    record_operations:
+      create_incident:
+        line_start: 3934
+        signature: "create_incident(self, content: str, kv_data: Dict, custom_id: Optional[str] = None, template_id: Optional[str] = None) -> Incident"
+        description: "Create new record with auto ID generation"
+      get_incident:
+        line_start: 4021
+        signature: "get_incident(self, incident_id: str) -> Optional[Incident]"
+        description: "Load record by ID"
+      update_incident:
+        line_start: 4029
+        signature: "update_incident(self, incident_id: str, kv_updates: Dict, content_update: Optional[str] = None)"
+        description: "Update record fields and/or content"
+      delete_incident:
+        line_start: 4054
+        signature: "delete_incident(self, incident_id: str)"
+        description: "Delete record and all its notes"
+      list_incidents:
+        line_start: 4064
+        signature: "list_incidents(self, ksearch_list, ksort_list, limit, ids_only) -> List"
+        description: "Search records with filters and sorting"
+    
+    # Note operations
+    note_operations:
+      add_update:
+        line_start: 4240
+        signature: "add_update(self, incident_id: str, message: str, kv_strings: Optional[Dict] = None, ...) -> str"
+        description: "Add note to record"
+      get_updates:
+        line_start: 4314
+        signature: "get_updates(self, incident_id: str) -> List[IncidentUpdate]"
+        description: "Get all notes for record"
+      search_updates:
+        line_start: 4323
+        signature: "search_updates(self, incident_id: Optional[str], ksearch_list) -> List[IncidentUpdate]"
+        description: "Search notes with filters"
+
+# ============================================================================
+# CLI Application
+# ============================================================================
+
+cli:
+  AverCLI:
+    line_start: 6751
+    description: "Command-line interface and argument parsing"
+    
+    # Command setup
+    setup:
+      setup_commands:
+        line_start: 6934
+        signature: "setup_commands(self)"
+        description: "Configure all CLI parsers"
+        subcommands:
+          - "record (new, view, list, update, reindex)"
+          - "note (add, list, view, search)"
+          - "admin (init, reindex, get-id, validate)"
+          - "json (io, import-record, update-record, export-record, search-records, etc.)"
+    
+    # Record commands
+    record_commands:
+      _cmd_record_new:
+        line_start: 4716
+        signature: "_cmd_record_new(self, args)"
+        description: "Handle 'aver record new'"
+      _cmd_record_view:
+        line_start: 5389
+        signature: "_cmd_record_view(self, args)"
+        description: "Handle 'aver record view'"
+      _cmd_record_list:
+        line_start: 5481
+        signature: "_cmd_record_list(self, args)"
+        description: "Handle 'aver record list'"
+      _cmd_record_update:
+        line_start: 5068
+        signature: "_cmd_record_update(self, args)"
+        description: "Handle 'aver record update'"
+      _cmd_record_reindex:
+        line_start: 5609
+        signature: "_cmd_record_reindex(self, args)"
+        description: "Handle 'aver record reindex' (selective reindex)"
+        note: "New in latest version"
+    
+    # Note commands
+    note_commands:
+      _cmd_note_add:
+        line_start: 5616
+        signature: "_cmd_note_add(self, args)"
+        description: "Handle 'aver note add'"
+      _cmd_note_list:
+        line_start: 5783
+        signature: "_cmd_note_list(self, args)"
+        description: "Handle 'aver note list'"
+      _cmd_note_view:
+        line_start: 5856
+        signature: "_cmd_note_view(self, args)"
+        description: "Handle 'aver note view'"
+      _cmd_note_search:
+        line_start: 5927
+        signature: "_cmd_note_search(self, args)"
+        description: "Handle 'aver note search'"
+    
+    # Admin commands
+    admin_commands:
+      _cmd_admin_init:
+        line_start: 6034
+        signature: "_cmd_admin_init(self, args)"
+        description: "Handle 'aver admin init'"
+      _cmd_admin_reindex:
+        line_start: 8671
+        signature: "_cmd_admin_reindex(self, args)"
+        description: "Handle 'aver admin reindex' (full reindex)"
+      _cmd_admin_get_id:
+        line_start: 8685
+        signature: "_cmd_admin_get_id(self, args)"
+        description: "Handle 'aver admin get-id'"
+        note: "Returns current user identity"
+    
+    # JSON IO commands
+    json_commands:
+      _cmd_json_io:
+        line_start: 8714
+        signature: "_cmd_json_io(self, args)"
+        description: "Handle 'aver json io' (persistent REPL)"
+      _cmd_json_import_record:
+        line_start: 8968
+        signature: "_cmd_json_import_record(self, args)"
+        description: "Create record via JSON"
+      _cmd_json_export_record:
+        line_start: 9029
+        signature: "_cmd_json_export_record(self, args)"
+        description: "Export record as JSON"
+      _cmd_json_search_records:
+        line_start: 9122
+        signature: "_cmd_json_search_records(self, args)"
+        description: "Search records, return JSON"
+
+# ============================================================================
+# Key Utilities
+# ============================================================================
+
+utilities:
+  IDGenerator:
+    line_start: 1621
+    description: "Generate unique IDs for records and notes"
+    methods:
+      generate_record_id:
+        line_start: 1625
+        signature: "generate_record_id(cls, prefix: str = 'REC') -> str"
+        description: "Generate REC-XXXXXX format ID"
+      generate_update_id:
+        line_start: 1653
+        signature: "generate_update_id(cls, prefix: str = 'NT') -> str"
+        description: "Generate NT-XXXXXX format ID"
+      generate_update_filename:
+        line_start: 1681
+        signature: "generate_update_filename(cls, update_id: str) -> str"
+        description: "Generate {ID}.md filename"
+        
+  DatabaseDiscovery:
+    line_start: 1721
+    description: "Find and select aver databases"
+    methods:
+      find_all_databases:
+        line_start: 1725
+        signature: "find_all_databases(cls) -> List[Path]"
+        description: "Search for .aver directories"
+      select_database_contextual:
+        line_start: 1836
+        signature: "select_database_contextual(cls, candidates: List[Path]) -> Path"
+        description: "Pick database based on cwd"
+      select_database_interactive:
+        line_start: 1914
+        signature: "select_database_interactive(cls, candidates: List[Path]) -> Path"
+        description: "Prompt user to choose database"
+        
+  KeyValueParser:
+    line_start: 2181
+    description: "Parse ksearch filters and operators"
+    methods:
+      parse_kv_search:
+        line_start: 2562
+        signature: "parse_kv_search(cls, search_expr: str) -> Tuple[str, str, Any]"
+        description: "Parse 'key=value' or 'key>value' into (key, op, value)"
+      parse_kv_sort:
+        line_start: 2622
+        signature: "parse_kv_sort(cls, sort_expr: str) -> Tuple[str, str]"
+        description: "Parse 'key' or 'key-' into (key, direction)"
+
+# ============================================================================
+# Important Constants
+# ============================================================================
+
+constants:
+  file_locations:
+    config_path: ".aver/config.toml"
+    index_db: ".aver/aver.db"
+    records_dir: "records/"
+    updates_dir: "updates/"
+  
+  id_formats:
+    record_default: "REC-XXXXXX (base32)"
+    note_default: "NT-XXXXXX (base32)"
+    custom_allowed: "A-Z, a-z, 0-9, _, -"
+  
+  search_operators:
+    - "= (equals)"
+    - "!= (not equals)"
+    - "> (greater than)"
+    - "< (less than)"
+    - ">= (greater or equal)"
+    - "<= (less or equal)"
+  
+  type_hints:
+    suffix: "__"
+    formats:
+      - "field__string"
+      - "field__integer"
+      - "field__float"
+
+# ============================================================================
+# Common Code Patterns
+# ============================================================================
+
+patterns:
+  get_manager:
+    description: "Get IncidentManager instance in command handlers"
+    usage: "manager = self._get_manager(args)"
+    
+  load_and_validate:
+    description: "Load record with validation"
+    pattern: |
+      incident = manager.get_incident(record_id)
+      if not incident:
+          print("Record not found")
+          sys.exit(1)
+  
+  kv_update:
+    description: "Update KV fields"
+    pattern: |
+      kv_updates = {}
+      if args.text_updates:
+          for key, value in args.text_updates:
+              # Parse and update
+  
+  json_io_command:
+    description: "Send command via JSON IO"
+    pattern: |
+      request = {"command": "export-record", "params": {"record_id": "ISS-001"}}
+      process.stdin.write(json.dumps(request) + "\n")
+      response = json.loads(process.stdout.readline())
+
+# ============================================================================
+# Validation Flow
+# ============================================================================
+
+validation:
+  when_validated:
+    - "record new (always)"
+    - "record update (always)"
+    - "note add (always)"
+  when_not_validated:
+    - "reindex (loads without validation)"
+    - "from_markdown (parsing only)"
+  validation_methods:
+    - "ProjectConfig.validate_field() - check accepted_values"
+    - "ProjectConfig.validate_required_fields() - check required present"
+    - "IncidentManager._validate_incident_fields() - full validation"
+
+# ============================================================================
+# Testing Hooks
+# ============================================================================
+
+testing:
+  environment_variables:
+    AVER_USER_NAME: "Override user name"
+    AVER_USER_EMAIL: "Override user email"
+    HOME: "User home directory for .averconfig"
+  
+  test_database_location:
+    description: "Use --location flag to point to test database"
+    usage: "aver --location /tmp/test-aver record list"
+
+# ============================================================================
+# Recent Features (Track Changes)
+# ============================================================================
+
+recent_additions:
+  - feature: "Selective record reindex"
+    command: "aver record reindex RECORD_ID"
+    added: "2025-02-21"
+    status: "✅ IMPLEMENTED"
+    line: 3759
+    note: "Reindex reports note count including record itself (minimum 1)"
+  
+  - feature: "Admin get-id command"
+    command: "aver admin get-id"
+    added: "2025-02-21"
+    purpose: "Get current user handle for scripts"
+  
+  - feature: "Multi-value field operations"
+    syntax: "--text-multi field+value, field-value"
+    added: "Earlier version"
+  
+  - feature: "For-record parameter"
+    usage: "IncidentManager methods accept for_record parameter"
+    purpose: "Support templates with different field sets"
+
+# ============================================================================
+# Quick Reference: Find Code by Task
+# ============================================================================
+
+task_index:
+  "Create a record":
+    method: "IncidentManager.create_incident()"
+    cli: "_cmd_record_new()"
+    line: 3934
+  
+  "Update a record":
+    method: "IncidentManager.update_incident()"
+    cli: "_cmd_record_update()"
+    line: 4029
+  
+  "Search records":
+    method: "IncidentManager.list_incidents()"
+    cli: "_cmd_record_list()"
+    index: "IncidentIndexDatabase.list_incidents_from_index()"
+    line: 4064
+  
+  "Add a note":
+    method: "IncidentManager.add_update()"
+    cli: "_cmd_note_add()"
+    line: 4240
+  
+  "Parse ksearch filter":
+    method: "KeyValueParser.parse_kv_search()"
+    line: 2562
+  
+  "Load config":
+    method: "ProjectConfig.load_from_file()"
+    line: 1206
+  
+  "Reindex database":
+    full: "IncidentIndexManager.reindex_all()"
+    selective: "IncidentIndexManager.reindex_one()"
+    line: 3723
+  
+  "Validate field":
+    method: "ProjectConfig.validate_field()"
+    line: 1360
+  
+  "JSON IO interface":
+    cli: "_cmd_json_io()"
+    line: 8714
+
+# ============================================================================
+# Grep Patterns for Quick Navigation
+# ============================================================================
+
+grep_patterns:
+  find_class: 'grep -n "^class ClassName" aver.py'
+  find_method: 'grep -n "def method_name" aver.py'
+  find_command_handler: 'grep -n "def _cmd_" aver.py'
+  find_parser_setup: 'grep -n "add_parser" aver.py'
+  find_validation: 'grep -n "validate" aver.py'
+  find_kv_operations: 'grep -n "kv_strings\|kv_integers\|kv_floats" aver.py'
