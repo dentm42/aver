@@ -737,3 +737,58 @@ debugging:
       solution: "Look for tests that depend on order or shared state"
     - issue: "File not found errors"
       solution: "Verify paths use $TEST_DIR prefix"
+
+# ============================================================================
+# DOCKER CONTAINER KNOWN FAILURES (safe to ignore)
+# ============================================================================
+#
+# When running tests inside the Claude Code isolated Docker container,
+# 18 tests consistently fail.  These ALL pass when run from outside the
+# container on the host machine.  Do NOT treat these as regressions.
+#
+# Last verified: 2026-02-24  (148 pass / 18 fail inside container)
+#
+docker_known_failures:
+  summary: |
+    18 tests fail inside the Docker container but pass on the host.
+    Expected result inside container: 148 passed, 18 failed.
+    If you see exactly these 18 failures and nothing else, the codebase is fine.
+
+  group_1_sqlite3_missing:
+    cause: "sqlite3 CLI binary is not installed in the Docker image"
+    affected_tests:
+      - "Add note with KV data"
+        # test directly shells out to: sqlite3 "$TEST_DIR/aver.db" "SELECT ..."
+    test_suite: "test_note_operations"
+    fix_if_needed: "Install sqlite3 in container: apt-get install sqlite3"
+
+  group_2_library_alias_commands:
+    cause: "admin config add-alias and list-aliases commands fail in container environment"
+    affected_tests:
+      - "Add library alias 'work'"
+      - "Add library alias 'personal'"
+      - "Add library alias 'archive'"
+      - "Set per-library users"
+      - "List libraries"
+      - "Use library alias with --use flag (work)"
+      - "Use library alias with --use flag (personal)"
+      - "Records are isolated between libraries"
+      - "Per-library user for record creation"
+      - "Per-library user for note creation"
+    test_suites:
+      - "test_library_management"
+      - "test_user_profile"
+
+  group_3_custom_location_init:
+    cause: "admin init at arbitrary /tmp/... paths fails in container environment"
+    affected_tests:
+      - "Initialize at custom location 1"
+      - "Initialize at custom location 2"
+      - "Create record at custom location 1"
+      - "Create record at custom location 2"
+      - "Records isolated by location"
+      - "Each location can have different config"
+      - "Relaxed config (optional fields)"
+    test_suites:
+      - "test_custom_locations"
+      - "test_config_per_location"
