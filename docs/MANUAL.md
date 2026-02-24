@@ -842,6 +842,15 @@ aver record list
 aver record list --limit 10
 ```
 
+**Count matching records** (requires `--ksearch`):
+
+```bash
+aver record list --ksearch status=open --count
+aver record list --ksearch "priority=high" --count
+```
+
+Returns only the integer count of matching records with no other output.
+
 ### record search
 
 Search for records.
@@ -898,6 +907,15 @@ Search notes across all records.
 aver note search --ksearch category=bugfix
 aver note search --ksearch priority=critical
 ```
+
+**Count matching notes**:
+
+```bash
+aver note search --ksearch category=bugfix --count
+aver note search --ksearch priority=critical --count
+```
+
+Returns only the integer count of matching notes with no other output.
 
 ### admin reindex
 

@@ -631,22 +631,31 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "--count flag for record list and note search"
+    commands:
+      - "aver record list --ksearch KEY=VAL --count"
+      - "aver note search --ksearch KEY=VAL --count"
+    added: "2026-02-24"
+    status: "✅ IMPLEMENTED"
+    note: "Returns only an integer count. --count requires --ksearch for record list. Also adds count_only parameter to JSON IO search-records and search-notes commands."
+    json_io_usage: '{"command": "search-records", "params": {"ksearch": "status=open", "count_only": true}}'
+
   - feature: "Selective record reindex"
     command: "aver record reindex RECORD_ID"
     added: "2025-02-21"
     status: "✅ IMPLEMENTED"
     line: 3759
     note: "Reindex reports note count including record itself (minimum 1)"
-  
+
   - feature: "Admin get-id command"
     command: "aver admin get-id"
     added: "2025-02-21"
     purpose: "Get current user handle for scripts"
-  
+
   - feature: "Multi-value field operations"
     syntax: "--text-multi field+value, field-value"
     added: "Earlier version"
-  
+
   - feature: "For-record parameter"
     usage: "IncidentManager methods accept for_record parameter"
     purpose: "Support templates with different field sets"

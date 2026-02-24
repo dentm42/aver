@@ -7151,6 +7151,11 @@ class IncidentCLI:
             dest="fields",
             help="Additional fields to display (comma-delimited or use multiple times, e.g., --fields status,priority or --fields status --fields priority)",
         )
+        record_list_parser.add_argument(
+            "--count",
+            action="store_true",
+            help="Return only the count of matching records (requires --ksearch)",
+        )
 
         # record update
         record_update_parser = record_subparsers.add_parser(
@@ -7298,8 +7303,13 @@ class IncidentCLI:
             dest="fields",
             help="Additional fields to display (comma-delimited or use multiple times)",
         )
+        note_search_parser.add_argument(
+            "--count",
+            action="store_true",
+            help="Return only the count of matching notes",
+        )
 
-        
+
         # ====================================================================
         # JSON INTERFACE
         # ====================================================================
@@ -8154,7 +8164,27 @@ $update_kv
     def _cmd_list(self, args):
         """List records with KV search and sort."""
         manager = self._get_manager(args)
-        
+
+        # --count requires --ksearch
+        if getattr(args, 'count', False) and not getattr(args, 'ksearch', None):
+            print("Error: --count requires --ksearch", file=sys.stderr)
+            sys.exit(1)
+
+        # --count: return only the match count
+        if getattr(args, 'count', False):
+            try:
+                results = manager.list_incidents(
+                    ksearch_list=args.ksearch,
+                    ksort_list=getattr(args, 'ksort', None),
+                    limit=args.limit,
+                    ids_only=True,
+                )
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            print(len(results))
+            return
+
         try:
             results = manager.list_incidents(
                 ksearch_list=getattr(args, 'ksearch', None),
@@ -8685,7 +8715,21 @@ $update_kv
     def _cmd_search_updates(self, args):
         """Search notes by KV data."""
         manager = self._get_manager(args)
-    
+
+        # --count: return only the match count
+        if getattr(args, 'count', False):
+            try:
+                results = manager.search_updates(
+                    ksearch=args.ksearch,
+                    limit=args.limit,
+                    ids_only=True,
+                )
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            print(len(results))
+            return
+
         try:
             results = manager.search_updates(
                 ksearch=args.ksearch,
@@ -9637,28 +9681,39 @@ $update_kv
             return result
             
         elif command == 'search-records':
-            # Optional: ksearch (list), ksort (list), limit
+            # Optional: ksearch (list), ksort (list), limit, count_only
             ksearch = params.get('ksearch')
             ksort = params.get('ksort')
-            
+            count_only = params.get('count_only', False)
+
             # Convert single values to lists for consistency
             if ksearch is not None and not isinstance(ksearch, list):
                 ksearch = [ksearch] if ksearch else None
             if ksort is not None and not isinstance(ksort, list):
                 ksort = [ksort] if ksort else None
-            
+
             args.ksearch = ksearch
             args.ksort = ksort
             args.limit = params.get('limit', 100)
-            
+
             manager = get_manager_with_override()
+
+            if count_only:
+                results = manager.list_incidents(
+                    ksearch_list=ksearch,
+                    ksort_list=ksort,
+                    limit=args.limit,
+                    ids_only=True,
+                )
+                return {"count": len(results)}
+
             results = manager.list_incidents(
                 ksearch_list=ksearch,
                 ksort_list=ksort,
                 limit=args.limit,
                 ids_only=False,
             )
-            
+
             records = []
             for incident in results:
                 record_data = {
@@ -9676,24 +9731,34 @@ $update_kv
                     for key, values in incident.kv_floats.items():
                         record_data["fields"][key] = values[0] if len(values) == 1 else values
                 records.append(record_data)
-            
+
             return {
                 "count": len(records),
                 "records": records,
             }
             
         elif command == 'search-notes':
-            # Optional: ksearch, limit
+            # Optional: ksearch, limit, count_only
             args.ksearch = params.get('ksearch')
             args.limit = params.get('limit')
-            
+            count_only = params.get('count_only', False)
+
             manager = get_manager_with_override()
+
+            if count_only:
+                results = manager.search_updates(
+                    ksearch=args.ksearch,
+                    limit=args.limit,
+                    ids_only=True,
+                )
+                return {"count": len(results)}
+
             results = manager.search_updates(
                 ksearch=args.ksearch,
                 limit=args.limit,
                 ids_only=False,
             )
-            
+
             notes = []
             for incident_id, update_id in results:
                 updates = manager.get_updates(incident_id)
@@ -9716,7 +9781,7 @@ $update_kv
                                 note_data["fields"][key] = values[0] if len(values) == 1 else values
                         notes.append(note_data)
                         break
-            
+
             return {
                 "count": len(notes),
                 "notes": notes,
