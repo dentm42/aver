@@ -2,3 +2,4 @@
 CLAUDE.md
 .claude-tracking/
 .claude
+__pycache__/

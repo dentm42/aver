@@ -4918,7 +4918,8 @@ class IncidentManager:
         # Log update
 
         if updated_fields:
-            update_msg += f"\n\n## Updated Fields: \n{'\n * '.join(updated_fields)}"
+            updated_fields_str = '\n * '.join(updated_fields)
+            update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
             update_msg += f"\n\n"
 
         update_msg += f"\n\n## Previous Key/Vals\n"
@@ -9739,7 +9740,11 @@ $update_kv
             
         elif command == 'search-notes':
             # Optional: ksearch, limit, count_only
-            args.ksearch = params.get('ksearch')
+            ksearch_raw = params.get('ksearch')
+            # Convert single string to list for consistency with search_updates API
+            if ksearch_raw is not None and not isinstance(ksearch_raw, list):
+                ksearch_raw = [ksearch_raw] if ksearch_raw else None
+            args.ksearch = ksearch_raw
             args.limit = params.get('limit')
             count_only = params.get('count_only', False)
 

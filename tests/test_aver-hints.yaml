@@ -10,11 +10,11 @@
 #   3. Append new test functions before main()
 
 metadata:
-  total_lines: 3274
-  last_updated: "2025-02-21"
-  total_test_suites: 15
-  estimated_total_tests: 150+
-  note: "test_record_reindex integrated at line 2895 - all tests passing ✅"
+  total_lines: 3450
+  last_updated: "2026-02-24"
+  total_test_suites: 20
+  estimated_total_tests: 170+
+  note: "test_count_flag integrated at line 3176 - 10 new tests passing ✅"
 
 # ============================================================================
 # File Structure
@@ -69,7 +69,7 @@ structure:
   
   main:
     line_start: 3167
-    line_end: 3274
+    line_end: 3450
     description: "main() - Orchestrates all tests and summary"
     test_suite_calls:
       - "test_basic_creation"
@@ -90,7 +90,8 @@ structure:
       - "test_updates"
       - "test_json_interface"
       - "test_json_io_mode"
-      - "test_record_reindex  # ✅ Latest addition"
+      - "test_record_reindex"
+      - "test_count_flag  # ✅ Latest addition"
 
 # ============================================================================
 # CRITICAL: Record-as-Note Behavior (MUST READ FOR TESTS)
@@ -309,7 +310,7 @@ test_suites:
   
   - name: "test_record_reindex"
     line_start: 2895
-    line_end: 3165
+    line_end: 3173
     test_count: 10
     status: "✅ INTEGRATED AND PASSING"
     description: "Selective record reindex feature"
@@ -327,12 +328,26 @@ test_suites:
       - "Filesystem-first: create file, then reindex"
       - "Bulk reindex multiple records"
     note: "All note count assertions correctly account for record-as-note"
-  
-  - name: "test_record_reindex"
-    line_start: "NEW"
-    description: "Selective record reindex feature"
+
+  - name: "test_count_flag"
+    line_start: 3176
+    line_end: 3370
     test_count: 10
-    note: "See test_aver_reindex_addition.sh for implementation"
+    status: "✅ INTEGRATED AND PASSING"
+    description: "--count flag for record list, note search, and JSON IO count_only"
+    tests:
+      - "Setup: Create records for count tests"
+      - "record list --count returns a number"
+      - "record list --count matches 'Found N matches'"
+      - "record list --count without --ksearch fails with error"
+      - "record list --count output is bare number only"
+      - "Setup: Add notes with unique category 'counttest'"
+      - "note search --count returns a number"
+      - "note search --count matches 'Found N matching notes'"
+      - "note search --count output is bare number only"
+      - "JSON IO search-records count_only"
+      - "JSON IO search-notes count_only"
+      - "JSON IO count_only matches full search count"
 
 # ============================================================================
 # Helper Functions Usage
@@ -622,6 +637,30 @@ assertions:
 # ============================================================================
 
 recent_additions:
+  - feature: "--count flag for record list, note search, and JSON IO"
+    function: "test_count_flag"
+    tests: 10
+    added: "2026-02-24"
+    status: "✅ INTEGRATED AND PASSING"
+    line: 3176
+    description: |
+      Tests for --count flag on record list and note search, plus JSON IO count_only:
+      - record list --count --ksearch returns a bare number
+      - --count matches 'Found N matches' from regular list
+      - --count without --ksearch fails with error
+      - --count output contains no headers or record IDs
+      - note search --count --ksearch returns a bare number
+      - note search --count matches 'Found N matching notes'
+      - note search --count output is bare number only
+      - JSON IO search-records count_only returns {count} without records key
+      - JSON IO search-notes count_only returns {count} without notes key
+      - JSON IO count_only matches full search count
+    note: "Uses unique category='counttest' to avoid interference with other note tests"
+    also_fixed:
+      - "f-string backslash in line 4921 (Python 3.11 compat)"
+      - "search-notes JSON IO: ksearch string now converted to list before passing to search_updates"
+      - "run_aver helper: PYTHONUSERBASE preserved across HOME override"
+
   - feature: "Selective record reindex"
     function: "test_record_reindex"
     tests: 10
@@ -630,7 +669,7 @@ recent_additions:
     line: 2895
     description: |
       Tests for "aver record reindex RECORD_ID" including:
-      - Basic reindex functionality  
+      - Basic reindex functionality
       - Manual file edits + reindex
       - Reindex with notes (correctly accounts for record-as-note)
       - Error handling for non-existent records

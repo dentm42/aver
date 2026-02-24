@@ -152,14 +152,15 @@ track_command() {
 run_aver() {
     # Track the command being run
     CURRENT_COMMAND="aver $*"
-    
+
     if [ "$VERBOSE" = true ]; then
         echo "RUN AVER: $@" >&2
         echo "========================================" >&2
         echo "python3 \"$AVER_PATH\" --override-repo-boundary --location \"$TEST_DIR\" \"$@\"" >&2
         echo "========================================" >&2
     fi
-    python3 "$AVER_PATH" --override-repo-boundary --location "$TEST_DIR" "$@"
+    # Preserve original Python user site-packages (HOME override would break them)
+    PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" --override-repo-boundary --location "$TEST_DIR" "$@"
 }
 
 check_file_exists() {
@@ -3172,6 +3173,203 @@ EOF
 }
 
 
+#==============================================================================
+# Test: --count flag for record list, note search, and JSON IO
+#==============================================================================
+
+test_count_flag() {
+    print_section "Test: --count Flag"
+
+    # Setup: create 2 open records and 1 closed record
+    print_test "Setup: Create records for count tests"
+    local r1=$(run_aver record new --description "" --no-validation-editor \
+        --title "CountTest Open 1" --status open --priority critical 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r2=$(run_aver record new --description "" --no-validation-editor \
+        --title "CountTest Open 2" --status open --priority critical 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r3=$(run_aver record new --description "" --no-validation-editor \
+        --title "CountTest Closed" --status closed --priority critical 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+
+    if [ -z "$r1" ] || [ -z "$r2" ] || [ -z "$r3" ]; then
+        fail "Setup failed: could not create test records"
+        return
+    fi
+    pass
+    echo "  Created: $r1 (open), $r2 (open), $r3 (closed)"
+
+    # Test 1: --count returns a number
+    print_test "record list --count returns a number"
+    if output=$(run_aver record list --ksearch priority=critical --count 2>&1); then
+        count=$(echo "$output" | tr -d '[:space:]')
+        if echo "$count" | grep -qE '^[0-9]+$'; then
+            pass
+            echo "  Got count: $count"
+        else
+            fail "Output is not a number: '$output'"
+        fi
+    else
+        fail "record list --count failed"
+    fi
+
+    # Test 2: --count value matches count in regular list output
+    print_test "record list --count matches 'Found N matches'"
+    count_out=$(run_aver record list --ksearch priority=critical --count 2>&1)
+    count=$(echo "$count_out" | tr -d '[:space:]')
+    list_out=$(run_aver record list --ksearch priority=critical 2>&1)
+    found_n=$(echo "$list_out" | grep "Found .* matches" | grep -oE '[0-9]+' | head -1 || echo "")
+    if [ -n "$found_n" ] && [ "$count" = "$found_n" ]; then
+        pass
+        echo "  --count ($count) == 'Found $found_n matches'"
+    else
+        fail "--count ($count) does not match 'Found $found_n matches'"
+    fi
+
+    # Test 3: --count without --ksearch errors
+    print_test "record list --count without --ksearch fails with error"
+    set +e
+    track_command "aver record list --count (no --ksearch)"
+    output=$(run_aver record list --count 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ]; then
+        if echo "$output" | grep -qi "ksearch"; then
+            pass
+            echo "  Correctly requires --ksearch"
+        else
+            fail "Failed but wrong error message: $output"
+        fi
+    else
+        fail "Should have failed without --ksearch"
+    fi
+
+    # Test 4: --count output is a bare number (no table headers, no record IDs)
+    print_test "record list --count output is bare number only"
+    if output=$(run_aver record list --ksearch priority=critical --count 2>&1); then
+        if echo "$output" | grep -qE '^[0-9]+$' && ! echo "$output" | grep -q "REC-"; then
+            pass
+            echo "  Output is bare number: $output"
+        else
+            fail "Output contains unexpected content: '$output'"
+        fi
+    else
+        fail "record list --count failed"
+    fi
+
+    # Setup notes: add 2 notes with a unique category "counttest"
+    print_test "Setup: Add notes with unique category 'counttest'"
+    if run_aver note add "$r1" --message "Count test note 1" --category counttest > /dev/null 2>&1 && \
+       run_aver note add "$r2" --message "Count test note 2" --category counttest > /dev/null 2>&1; then
+        pass
+        echo "  Added 2 notes with category=counttest"
+    else
+        fail "Failed to add notes with category=counttest"
+    fi
+
+    # Test 5: note search --count returns a number
+    print_test "note search --count returns a number"
+    if output=$(run_aver note search --ksearch category=counttest --count 2>&1); then
+        count=$(echo "$output" | tr -d '[:space:]')
+        if echo "$count" | grep -qE '^[0-9]+$'; then
+            pass
+            echo "  Got note count: $count"
+        else
+            fail "Output is not a number: '$output'"
+        fi
+    else
+        fail "note search --count failed"
+    fi
+
+    # Test 6: note search --count matches 'Found N matching notes:'
+    print_test "note search --count matches 'Found N matching notes'"
+    count_out=$(run_aver note search --ksearch category=counttest --count 2>&1)
+    count=$(echo "$count_out" | tr -d '[:space:]')
+    search_out=$(run_aver note search --ksearch category=counttest 2>&1)
+    found_n=$(echo "$search_out" | grep "Found .* matching notes" | grep -oE '[0-9]+' | head -1 || echo "")
+    if [ -n "$found_n" ] && [ "$count" = "$found_n" ]; then
+        pass
+        echo "  --count ($count) == 'Found $found_n matching notes'"
+    else
+        fail "--count ($count) does not match 'Found $found_n matching notes'"
+    fi
+
+    # Test 7: note search --count output is bare number (no note content)
+    print_test "note search --count output is bare number only"
+    if output=$(run_aver note search --ksearch category=counttest --count 2>&1); then
+        if echo "$output" | grep -qE '^[0-9]+$' && ! echo "$output" | grep -qi "author\|timestamp\|matching notes"; then
+            pass
+            echo "  Output is bare number: $output"
+        else
+            fail "Output contains unexpected content: '$output'"
+        fi
+    else
+        fail "note search --count check failed"
+    fi
+
+    # Test 8: JSON IO search-records count_only returns count without records
+    print_test "JSON IO search-records count_only"
+    track_command "echo search-records count_only | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": "priority=critical", "count_only": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True
+result = data['result']
+assert 'count' in result, 'count key missing'
+assert 'records' not in result, 'records key should not be present'
+assert isinstance(result['count'], int), 'count should be int'
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO count_only: valid response"
+        else
+            fail "JSON IO count_only response invalid: $output"
+        fi
+    else
+        fail "JSON IO search-records count_only failed"
+    fi
+
+    # Test 9: JSON IO search-notes count_only returns count without notes
+    print_test "JSON IO search-notes count_only"
+    track_command "echo search-notes count_only | aver json io"
+    if output=$(echo '{"command": "search-notes", "params": {"ksearch": "category=counttest", "count_only": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True
+result = data['result']
+assert 'count' in result, 'count key missing'
+assert 'notes' not in result, 'notes key should not be present'
+assert isinstance(result['count'], int), 'count should be int'
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO note count_only: valid response"
+        else
+            fail "JSON IO search-notes count_only response invalid: $output"
+        fi
+    else
+        fail "JSON IO search-notes count_only failed"
+    fi
+
+    # Test 10: JSON IO count_only matches full search count
+    print_test "JSON IO count_only matches full search count"
+    track_command "compare count_only vs full search in json io"
+    count_resp=$(echo '{"command": "search-records", "params": {"ksearch": "priority=critical", "count_only": true}}' \
+        | run_aver json io 2>&1)
+    full_resp=$(echo '{"command": "search-records", "params": {"ksearch": "priority=critical"}}' \
+        | run_aver json io 2>&1)
+
+    count_only_n=$(echo "$count_resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['count'])" 2>/dev/null || echo "")
+    full_n=$(echo "$full_resp" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['count'])" 2>/dev/null || echo "")
+
+    if [ -n "$count_only_n" ] && [ "$count_only_n" = "$full_n" ]; then
+        pass
+        echo "  count_only ($count_only_n) == full search count ($full_n)"
+    else
+        fail "count_only ($count_only_n) != full search count ($full_n)"
+    fi
+}
+
 
 #==============================================================================
 # Cleanup
@@ -3235,7 +3433,8 @@ main() {
     test_json_interface
     test_json_io_mode
     test_record_reindex
-    
+    test_count_flag
+
     # Summary
     print_section "Test Summary"
     echo -e "Total tests run:    ${BLUE}${TESTS_RUN}${NC}"
