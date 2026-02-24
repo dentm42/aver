@@ -851,6 +851,25 @@ aver record list --ksearch "priority=high" --count
 
 Returns only the integer count of matching records with no other output.
 
+**Return records with the maximum value of a key** (requires `--ksort`):
+
+```bash
+aver record list --ksort severity --max severity
+aver record list --ksearch status=open --ksort severity --max severity
+aver record list --ksort priority --max priority,severity
+aver record list --ksort priority --max priority --max severity
+```
+
+`--max` runs the full query (ksearch + ksort + limit) as a working set, then
+post-filters to return only records that hold the **maximum value** for any of
+the specified keys (keys are evaluated independently; OR logic).  `--ksort` is
+required to ensure the relevant records are within the result window.
+
+- `--max KEY` accepts a single key or a comma-delimited list.
+- `--max` may be specified more than once.
+- Keys are evaluated independently — a record is included if it has the max
+  for **any** of the keys.
+
 ### record search
 
 Search for records.

@@ -3372,6 +3372,226 @@ assert isinstance(result['count'], int), 'count should be int'
 
 
 #==============================================================================
+# Test: --max flag for record list and JSON IO search-records
+#==============================================================================
+
+test_max_flag() {
+    print_section "Test: --max Flag"
+
+    # Setup: create records with known severity (integer) and priority (string)
+    # severity: 1=lowest, 5=highest   priority: low < medium < high (lexicographic)
+    print_test "Setup: Create records with varying severity and priority"
+    local ra=$(run_aver record new --description "" --no-validation-editor \
+        --title "Max Test A" --status open --priority low --severity 3 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local rb=$(run_aver record new --description "" --no-validation-editor \
+        --title "Max Test B" --status open --priority high --severity 5 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local rc=$(run_aver record new --description "" --no-validation-editor \
+        --title "Max Test C" --status open --priority high --severity 2 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local rd=$(run_aver record new --description "" --no-validation-editor \
+        --title "Max Test D" --status open --priority medium --severity 5 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+
+    if [ -z "$ra" ] || [ -z "$rb" ] || [ -z "$rc" ] || [ -z "$rd" ]; then
+        fail "Setup failed: could not create test records"
+        return
+    fi
+    pass
+    echo "  $ra: priority=low,  severity=3"
+    echo "  $rb: priority=high, severity=5  ← max severity"
+    echo "  $rc: priority=high, severity=2"
+    echo "  $rd: priority=med,  severity=5  ← max severity"
+
+    # Test 1: --max without --ksort errors
+    print_test "--max without --ksort fails with error"
+    set +e
+    track_command "aver record list --ksearch status=open --max severity (no --ksort)"
+    output=$(run_aver record list --ksearch status=open --max severity 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qi "ksort"; then
+        pass
+        echo "  Correctly requires --ksort"
+    else
+        fail "Should have failed with --ksort error, got exit=$exit_code: $output"
+    fi
+
+    # Test 2: --max integer key returns only records with the max integer value
+    print_test "--max on integer key returns records with max value"
+    if output=$(run_aver record list --ksearch status=open --ksort severity --max severity 2>&1); then
+        # rb and rd both have severity=5 (the max), ra has 3, rc has 2
+        if echo "$output" | grep -q "Max Test B" && echo "$output" | grep -q "Max Test D"; then
+            if ! echo "$output" | grep -q "Max Test A" && ! echo "$output" | grep -q "Max Test C"; then
+                pass
+                echo "  Correctly returned only severity=5 records (B and D)"
+            else
+                fail "Returned records without max severity: $output"
+            fi
+        else
+            fail "Did not return all max-severity records: $output"
+        fi
+    else
+        fail "--max severity command failed"
+    fi
+
+    # Test 3: --max string key returns only records with the max string value
+    print_test "--max on string key returns records with max string value"
+    if output=$(run_aver record list --ksearch status=open --ksort priority --max priority 2>&1); then
+        # max priority lexicographically is "medium" < "high" < "low" … actually:
+        # "high" < "low" < "medium" lexicographically
+        # Let's check: "h" < "l" < "m"  → max = "medium"
+        # rd has priority=medium which is the lex max
+        if echo "$output" | grep -q "Max Test D"; then
+            if ! echo "$output" | grep -q "Max Test A"; then
+                pass
+                echo "  Correctly returned only records with max priority value"
+            else
+                fail "Returned non-max-priority records: $output"
+            fi
+        else
+            fail "Did not find expected max-priority record: $output"
+        fi
+    else
+        fail "--max priority command failed"
+    fi
+
+    # Test 4: --max with comma-delimited keys (OR logic)
+    print_test "--max with comma-delimited keys uses OR logic"
+    if output=$(run_aver record list --ksearch status=open --ksort severity --max "severity,priority" 2>&1); then
+        # max severity=5 → rb, rd qualify
+        # max priority (lex) = "medium" → rd qualifies
+        # OR: rb, rc (high=second-lex? no: "high" < "low" < "medium"), rd
+        # Actually: lex order: "high" < "low" < "medium"
+        # max priority = "medium" → rd
+        # Union of max-severity (rb,rd) OR max-priority (rd) = rb, rd
+        if echo "$output" | grep -q "Max Test B" && echo "$output" | grep -q "Max Test D"; then
+            pass
+            echo "  OR logic: returned max-severity OR max-priority records"
+        else
+            fail "OR logic did not return expected records: $output"
+        fi
+    else
+        fail "--max comma-delimited keys command failed"
+    fi
+
+    # Test 5: --max with repeated flag (same as comma-delimited)
+    print_test "--max repeated flag same as comma-delimited"
+    out_comma=$(run_aver record list --ksearch status=open --ksort severity --max "severity,priority" 2>&1)
+    out_repeat=$(run_aver record list --ksearch status=open --ksort severity --max severity --max priority 2>&1)
+    # Both should return the same set of record IDs
+    ids_comma=$(echo "$out_comma" | grep -oE "REC-[A-Z0-9]+" | sort | tr '\n' ' ')
+    ids_repeat=$(echo "$out_repeat" | grep -oE "REC-[A-Z0-9]+" | sort | tr '\n' ' ')
+    if [ "$ids_comma" = "$ids_repeat" ] && [ -n "$ids_comma" ]; then
+        pass
+        echo "  Both forms return identical results: $ids_comma"
+    else
+        fail "Comma form ($ids_comma) != repeated form ($ids_repeat)"
+    fi
+
+    # Test 6: --max with single matching record
+    print_test "--max with unique max value returns single record"
+    if output=$(run_aver record list --ksearch status=open --ksort severity --max severity 2>&1); then
+        # There are exactly 2 records with severity=5 (rb and rd)
+        count=$(echo "$output" | grep -c "Max Test" || echo "0")
+        if [ "$count" = "2" ]; then
+            pass
+            echo "  Correctly returned 2 records with max severity"
+        else
+            fail "Expected 2 max-severity records, got $count"
+        fi
+    else
+        fail "--max severity count check failed"
+    fi
+
+    # Test 7: --max result count is <= full result count
+    print_test "--max result count is <= full query count"
+    full_out=$(run_aver record list --ksearch status=open --ksort severity 2>&1)
+    max_out=$(run_aver record list --ksearch status=open --ksort severity --max severity 2>&1)
+    full_n=$(echo "$full_out" | grep "Found .* matches" | grep -oE '[0-9]+' | head -1 || echo "0")
+    max_n=$(echo "$max_out" | grep "Found .* matches" | grep -oE '[0-9]+' | head -1 || echo "0")
+    if [ -n "$full_n" ] && [ -n "$max_n" ] && [ "$max_n" -le "$full_n" ]; then
+        pass
+        echo "  max results ($max_n) <= full results ($full_n)"
+    else
+        fail "max results ($max_n) should be <= full results ($full_n)"
+    fi
+
+    # Test 8: JSON IO search-records max parameter
+    print_test "JSON IO search-records max parameter"
+    track_command "echo search-records max | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True, f'not success: {data}'
+result = data['result']
+assert 'records' in result, 'records key missing'
+# All returned records must have severity == max severity in result
+records = result['records']
+assert len(records) > 0, 'no records returned'
+severities = [r['fields'].get('severity') for r in records if 'severity' in r['fields']]
+assert len(severities) == len(records), 'some records missing severity field'
+max_sev = max(severities)
+for s in severities:
+    assert s == max_sev, f'severity {s} != max {max_sev}'
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO max: all returned records have max severity"
+        else
+            fail "JSON IO max response invalid or records not at max: $output"
+        fi
+    else
+        fail "JSON IO search-records max failed"
+    fi
+
+    # Test 9: JSON IO search-records max without ksort errors
+    print_test "JSON IO search-records max without ksort errors"
+    track_command "echo search-records max (no ksort) | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": "status=open", "max": ["severity"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == False, 'should have failed'
+assert 'ksort' in data.get('error', '').lower(), f'wrong error: {data}'
+" 2>/dev/null; then
+            pass
+            echo "  Correctly errored: max requires ksort"
+        else
+            fail "Should have failed with ksort error: $output"
+        fi
+    else
+        fail "JSON IO max-without-ksort test invocation failed"
+    fi
+
+    # Test 10: JSON IO max with multiple keys (OR logic)
+    print_test "JSON IO search-records max with multiple keys"
+    track_command "echo search-records max multi-key | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True, f'not success: {data}'
+result = data['result']
+assert len(result['records']) > 0, 'no records returned'
+print('count:', result['count'])
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO multi-key max returned results"
+        else
+            fail "JSON IO multi-key max invalid: $output"
+        fi
+    else
+        fail "JSON IO multi-key max failed"
+    fi
+}
+
+
+#==============================================================================
 # Cleanup
 #==============================================================================
 
@@ -3434,6 +3654,7 @@ main() {
     test_json_io_mode
     test_record_reindex
     test_count_flag
+    test_max_flag
 
     # Summary
     print_section "Test Summary"

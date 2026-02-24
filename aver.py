@@ -5521,7 +5521,9 @@ class IncidentManager:
         # Sort if requested
         if ksort_list:
             try:
-                parsed_ksort = [KVSearchParser.parse_ksort(expr) for expr in ksort_list]
+                parsed_ksort = []
+                for expr in ksort_list:
+                    parsed_ksort.extend(KVSearchParser.parse_ksort(expr))
                 incident_ids = self.index_db.get_sorted_incidents(incident_ids, parsed_ksort)
             except ValueError as e:
                 raise RuntimeError(f"Invalid ksort expression: {e}")
@@ -7157,6 +7159,15 @@ class IncidentCLI:
             action="store_true",
             help="Return only the count of matching records (requires --ksearch)",
         )
+        record_list_parser.add_argument(
+            "--max",
+            action="append",
+            dest="max_keys",
+            metavar="KEYS",
+            help="Return only records holding the max value for KEY in the result set "
+                 "(requires --ksort); comma-delimited or use multiple times "
+                 "(e.g., --max priority or --max priority,severity)",
+        )
 
         # record update
         record_update_parser = record_subparsers.add_parser(
@@ -7777,6 +7788,58 @@ $update_kv
         
         return kv_all
 
+    def _apply_max_filter(self, results: list, max_keys: list) -> list:
+        """
+        Post-filter a list of Incident results to those containing the maximum
+        value for any of the specified keys (OR logic across keys).
+
+        For each key independently:
+          - Find the maximum value of that key across all records in results.
+          - Include every record whose value for that key equals that maximum.
+        A record is returned if it qualifies under ANY of the keys (OR).
+
+        Type priority for comparison: integer > float > string (lexicographic).
+        For multi-value fields the per-record representative value is max(values).
+
+        Args:
+            results:  List of Incident objects (the working result set).
+            max_keys: List of field-name strings to evaluate.
+
+        Returns:
+            Filtered list of Incident objects in original order.
+        """
+        if not results or not max_keys:
+            return results
+
+        qualifying_ids = set()
+
+        for key in max_keys:
+            # Collect (comparable_value, record_id) for records that have this key
+            keyed: list = []
+            for rec in results:
+                val = None
+                if rec.kv_integers and key in rec.kv_integers:
+                    vals = rec.kv_integers[key]
+                    val = max(vals) if isinstance(vals, list) else vals
+                elif rec.kv_floats and key in rec.kv_floats:
+                    vals = rec.kv_floats[key]
+                    val = max(vals) if isinstance(vals, list) else vals
+                elif rec.kv_strings and key in rec.kv_strings:
+                    vals = rec.kv_strings[key]
+                    val = max(vals) if isinstance(vals, list) else vals
+
+                if val is not None:
+                    keyed.append((val, rec.id))
+
+            if keyed:
+                max_val = max(v for v, _ in keyed)
+                for val, rec_id in keyed:
+                    if val == max_val:
+                        qualifying_ids.add(rec_id)
+
+        # Preserve original sort order
+        return [rec for rec in results if rec.id in qualifying_ids]
+
     def _format_kv_section(self, kv_all: dict) -> str:
         """
         Format flattened KV data into a readable section.
@@ -8171,6 +8234,11 @@ $update_kv
             print("Error: --count requires --ksearch", file=sys.stderr)
             sys.exit(1)
 
+        # --max requires --ksort
+        if getattr(args, 'max_keys', None) and not getattr(args, 'ksort', None):
+            print("Error: --max requires --ksort", file=sys.stderr)
+            sys.exit(1)
+
         # --count: return only the match count
         if getattr(args, 'count', False):
             try:
@@ -8196,6 +8264,17 @@ $update_kv
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+        # Apply --max post-filter (operates on full Incident objects, not ids)
+        if getattr(args, 'max_keys', None) and results and not args.ids_only:
+            parsed_max_keys = []
+            for key_arg in args.max_keys:
+                for key in key_arg.split(','):
+                    key = key.strip()
+                    if key and key not in parsed_max_keys:
+                        parsed_max_keys.append(key)
+            if parsed_max_keys:
+                results = self._apply_max_filter(results, parsed_max_keys)
 
         if not results:
             print("No records found")
@@ -9682,16 +9761,22 @@ $update_kv
             return result
             
         elif command == 'search-records':
-            # Optional: ksearch (list), ksort (list), limit, count_only
+            # Optional: ksearch (list), ksort (list), limit, count_only, max (list)
             ksearch = params.get('ksearch')
             ksort = params.get('ksort')
             count_only = params.get('count_only', False)
+            max_keys_raw = params.get('max')
 
             # Convert single values to lists for consistency
             if ksearch is not None and not isinstance(ksearch, list):
                 ksearch = [ksearch] if ksearch else None
             if ksort is not None and not isinstance(ksort, list):
                 ksort = [ksort] if ksort else None
+            if max_keys_raw is not None and not isinstance(max_keys_raw, list):
+                max_keys_raw = [max_keys_raw] if max_keys_raw else None
+
+            if max_keys_raw and not ksort:
+                raise ValueError("'max' parameter requires 'ksort'")
 
             args.ksearch = ksearch
             args.ksort = ksort
@@ -9714,6 +9799,10 @@ $update_kv
                 limit=args.limit,
                 ids_only=False,
             )
+
+            # Apply max post-filter if requested
+            if max_keys_raw and results:
+                results = self._apply_max_filter(results, max_keys_raw)
 
             records = []
             for incident in results:

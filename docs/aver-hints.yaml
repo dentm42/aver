@@ -631,6 +631,21 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "--max flag for record list and JSON IO search-records"
+    commands:
+      - "aver record list --ksort KEY --max KEY"
+      - "aver record list --ksort KEY --max KEY1,KEY2"
+      - "aver record list --ksort KEY --max KEY1 --max KEY2"
+    added: "2026-02-24"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Runs the full query (ksearch+ksort+limit) as a working set, then
+      post-filters to records holding the max value for any specified key (OR).
+      Keys evaluated independently. Requires --ksort.
+    json_io_usage: '{"command": "search-records", "params": {"ksort": "severity", "max": ["severity"]}}'
+    helper_method: "_apply_max_filter(results, max_keys) -> list"
+    helper_line: "~7780  (after _flatten_kv_data)"
+
   - feature: "--count flag for record list and note search"
     commands:
       - "aver record list --ksearch KEY=VAL --count"

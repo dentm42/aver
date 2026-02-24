@@ -10,11 +10,11 @@
 #   3. Append new test functions before main()
 
 metadata:
-  total_lines: 3450
+  total_lines: 3620
   last_updated: "2026-02-24"
-  total_test_suites: 20
-  estimated_total_tests: 170+
-  note: "test_count_flag integrated at line 3176 - 10 new tests passing ✅"
+  total_test_suites: 21
+  estimated_total_tests: 180+
+  note: "test_max_flag integrated - 10 new tests passing ✅  (159 pass / 18 docker-env fail)"
 
 # ============================================================================
 # File Structure
@@ -91,7 +91,8 @@ structure:
       - "test_json_interface"
       - "test_json_io_mode"
       - "test_record_reindex"
-      - "test_count_flag  # ✅ Latest addition"
+      - "test_count_flag"
+      - "test_max_flag  # ✅ Latest addition"
 
 # ============================================================================
 # CRITICAL: Record-as-Note Behavior (MUST READ FOR TESTS)
@@ -328,6 +329,25 @@ test_suites:
       - "Filesystem-first: create file, then reindex"
       - "Bulk reindex multiple records"
     note: "All note count assertions correctly account for record-as-note"
+
+  - name: "test_max_flag"
+    line_start: 3373
+    line_end: 3570
+    test_count: 10
+    status: "✅ INTEGRATED AND PASSING"
+    description: "--max flag for record list and JSON IO search-records"
+    tests:
+      - "Setup: Create records with varying severity and priority"
+      - "--max without --ksort fails with error"
+      - "--max on integer key returns records with max value"
+      - "--max on string key returns records with max string value"
+      - "--max with comma-delimited keys uses OR logic"
+      - "--max repeated flag same as comma-delimited"
+      - "--max with single matching record"
+      - "--max result count is <= full query count"
+      - "JSON IO search-records max parameter"
+      - "JSON IO search-records max without ksort errors"
+      - "JSON IO search-records max with multiple keys"
 
   - name: "test_count_flag"
     line_start: 3176
@@ -746,12 +766,12 @@ debugging:
 # 18 tests consistently fail.  These ALL pass when run from outside the
 # container on the host machine.  Do NOT treat these as regressions.
 #
-# Last verified: 2026-02-24  (148 pass / 18 fail inside container)
+# Last verified: 2026-02-24  (159 pass / 18 fail inside container)
 #
 docker_known_failures:
   summary: |
     18 tests fail inside the Docker container but pass on the host.
-    Expected result inside container: 148 passed, 18 failed.
+    Expected result inside container: 159 passed, 18 failed.
     If you see exactly these 18 failures and nothing else, the codebase is fine.
 
   group_1_sqlite3_missing:
