@@ -4968,6 +4968,7 @@ class IncidentManager:
             use_yaml_editor: bool = True,
             metadata_only: bool = False,
             allow_validation_editor: bool = True,
+            merge_kv: bool = True,
         ) -> bool:
             """
             Update incident fields from KV list/dicts and/or description.
@@ -4987,6 +4988,7 @@ class IncidentManager:
                 use_stdin: Read description from STDIN
                 use_editor: Launch editor for description
                 use_yaml_editor: If True with use_editor, edit full record with yaml (default)
+                merge_kv: If True (default), merge passed-in KV over existing; if False, replace entirely
         
             Example:
                 manager.update_incident_info(
@@ -5041,15 +5043,25 @@ class IncidentManager:
             
             # Handle direct KV dicts (from --from-file)
             if kv_strings is not None or kv_integers is not None or kv_floats is not None:
-                # Direct KV mode - merge passed-in keys over existing KV data.
-                # Keys present in the passed-in dict overwrite existing values;
-                # keys present only in the existing dict are retained.
+                # Direct KV mode - merge or replace based on merge_kv flag.
+                # If merge_kv=True (default): passed-in keys overwrite existing values;
+                #   keys present only in the existing dict are retained.
+                # If merge_kv=False: passed-in dict entirely replaces existing data.
                 if kv_strings:
-                    incident.kv_strings = {**incident.kv_strings, **kv_strings}
+                    if merge_kv:
+                        incident.kv_strings = {**incident.kv_strings, **kv_strings}
+                    else:
+                        incident.kv_strings = kv_strings.copy()
                 if kv_integers:
-                    incident.kv_integers = {**incident.kv_integers, **kv_integers}
+                    if merge_kv:
+                        incident.kv_integers = {**incident.kv_integers, **kv_integers}
+                    else:
+                        incident.kv_integers = kv_integers.copy()
                 if kv_floats:
-                    incident.kv_floats = {**incident.kv_floats, **kv_floats}
+                    if merge_kv:
+                        incident.kv_floats = {**incident.kv_floats, **kv_floats}
+                    else:
+                        incident.kv_floats = kv_floats.copy()
                 
                 # Skip the normal KV list processing
                 has_kv_to_process = False
@@ -5096,7 +5108,7 @@ class IncidentManager:
                 except ValueError:
                     # User abandoned validation
                     return False
-            # else: Using direct KV dicts from --from-file, already merged above
+            # else: Using direct KV dicts from --from-file, already merged/replaced above
                     
             # Handle description/full record updates
             if (not metadata_only) and (description or use_stdin or use_editor):
@@ -5168,6 +5180,11 @@ class IncidentManager:
         
             # Apply system fields for update (using incident's template if it has one)
             self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
+        
+            # Remove valueless keys from all KV dictionaries
+            incident.kv_strings = {k: v for k, v in incident.kv_strings.items() if v}
+            incident.kv_integers = {k: v for k, v in incident.kv_integers.items() if v}
+            incident.kv_floats = {k: v for k, v in incident.kv_floats.items() if v}
         
             # Save and reindex
             written_content = self.storage.save_incident(incident, self.project_config)
@@ -5248,7 +5265,6 @@ class IncidentManager:
             )
 
             return True
-
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
@@ -8747,6 +8763,7 @@ $update_kv
                     use_yaml_editor=False,
                     metadata_only=False,
                     allow_validation_editor=False,
+                    merge_kv=False,
                 )
                 
                 if result:
@@ -8794,6 +8811,7 @@ $update_kv
                     use_yaml_editor=use_yaml_editor,
                     metadata_only=metadata_only,
                     allow_validation_editor=allow_validation_editor,
+                    merge_kv=True,
                 )
                 
                 if result:
@@ -9625,6 +9643,7 @@ $update_kv
                     use_yaml_editor=False,
                     metadata_only=content is None,
                     allow_validation_editor=False,
+                    merge_kv=True,
                 )
                 
                 # Output JSON response
@@ -10466,6 +10485,7 @@ $update_kv
                     use_yaml_editor=False,
                     metadata_only=content is None,
                     allow_validation_editor=False,
+                    merge_kv=True,
                 )
                 
                 return {

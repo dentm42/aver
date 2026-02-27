@@ -1,0 +1,6 @@
+* 2026-02-26 - update_incident_info added merge_kv BOOLEAN option.
+	TODO: create tests for OVERWRITING KV data (merge_kv=False) and for MERGING KV data (merge_kv=True)
+              keys with empty values will be removed at record storage time.
+              "Record Updates" merge unless using "--from-file" mode of the CLI
+              JSON (both CLI and IO) MERGE kv_* data. 
+              ALSO: examine instances of "update_incident_info" and update docs
