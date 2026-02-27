@@ -460,6 +460,19 @@ cli:
         signature: "_cmd_admin_get_id(self, args)"
         description: "Handle 'aver admin get-id'"
         note: "Returns current user identity"
+      _cmd_admin_template_data:
+        line_start: 9075
+        signature: "_cmd_admin_template_data(self, args)"
+        description: "Handle 'aver admin template-data [template_id] [--json]'"
+        note: "Shows record+note field schema for a template; omit template_id for all"
+      _build_template_data:
+        line_start: 9031
+        signature: "_build_template_data(self, project_config, template_id) -> dict"
+        description: "Build field schema dict for a template (shared by CLI and JSON IO)"
+      _print_template_data_human:
+        line_start: 9119
+        signature: "_print_template_data_human(self, data: dict)"
+        description: "Print template field data in human-readable format"
     
     # JSON IO commands
     json_commands:
@@ -467,8 +480,12 @@ cli:
         line_start: 8714
         signature: "_cmd_json_io(self, args)"
         description: "Handle 'aver json io' (persistent REPL)"
+      _execute_json_command:
+        line_start: 9826
+        signature: "_execute_json_command(self, command, params, global_args, user_id) -> dict"
+        description: "Dispatch layer for all JSON IO commands; handles template-data, search-records, etc."
       _cmd_json_import_record:
-        line_start: 8968
+        line_start: 9180
         signature: "_cmd_json_import_record(self, args)"
         description: "Create record via JSON"
       _cmd_json_export_record:
@@ -476,9 +493,13 @@ cli:
         signature: "_cmd_json_export_record(self, args)"
         description: "Export record as JSON"
       _cmd_json_search_records:
-        line_start: 9122
+        line_start: 9495
         signature: "_cmd_json_search_records(self, args)"
-        description: "Search records, return JSON"
+        description: "Search records, return JSON (supports ^ operator and count_only)"
+      _cmd_json_search_notes:
+        line_start: 9538
+        signature: "_cmd_json_search_notes(self, args)"
+        description: "Search notes, return JSON (supports ^ operator and count_only)"
 
 # ============================================================================
 # Key Utilities
@@ -555,6 +576,22 @@ constants:
     - "< (less than)"
     - ">= (greater or equal)"
     - "<= (less or equal)"
+    - "^ (in: pipe-delimited values, e.g. status^open|closed|resolved)"
+
+  system_values:
+    - "datetime — YYYY-MM-DD HH:MM:SS"
+    - "datestamp — YYYY-MM-DD"
+    - "user_name — user handle"
+    - "user_email — user email"
+    - "recordid — record ID"
+    - "updateid — note ID"
+    - "template_id — template name"
+
+  database_tables:
+    file_index: "id INTEGER PK AUTOINCREMENT, file_path TEXT UNIQUE, file_hash TEXT, file_mtime TEXT"
+    incidents_fts: "FTS5 virtual table: incident_id UNINDEXED, source, source_id UNINDEXED, content"
+    kv_store: "id INTEGER PK, incident_id TEXT, update_id TEXT, key TEXT, value_string/integer/float, created_at TEXT"
+    note: "incidents_index was removed/migrated to file_index in 2026-02-27"
   
   type_hints:
     suffix: "__"
@@ -631,6 +668,45 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "file_index table and file_hash system value"
+    added: "2026-02-27"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      incidents_index (id TEXT, indexed_at TEXT) replaced by file_index
+      (id INTEGER PK AUTOINCREMENT, file_path TEXT UNIQUE, file_hash TEXT, file_mtime TEXT).
+      Every index_incident() and index_update() call now writes an entry to file_index
+      with the MD5 of file content and filesystem mtime.
+      At write-then-index call sites, save_incident()/save_update() return the written
+      content string so it is passed as file_content= to avoid re-serialization drift
+      and ensure mtime is always read after the write completes.
+      Migration: _ensure_schema() drops old incidents_index and creates file_index.
+      list_incidents_from_index() base query changed from incidents_index to incidents_fts.
+      'file_hash' is NOT a system_value — it lives only in file_index.
+      New helpers: _md5_of_content(), _mtime_of_path() on IncidentIndexDatabase.
+      New method: remove_file_from_index(file_path).
+    key_methods:
+      - "_md5_of_content(content) -> str  (~line 3010)"
+      - "_mtime_of_path(path) -> str  (~line 3015)"
+      - "remove_file_from_index(file_path)  (~line 3237)"
+
+  - feature: "^ (in) operator for ksearch"
+    syntax: "status^open|closed|resolved"
+    added: "2026-02-27"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Pipe-delimited IN-list filter. Records/notes where the field value
+      matches ANY of the listed values. Multiple --ksearch flags remain AND logic.
+      Implemented as an INNER JOIN with IN(?,?,...) placeholders for float/int/string.
+      Works for record list, note search, and JSON IO search-records/search-notes.
+    example: "aver record list --ksearch 'status^open|closed'"
+    json_io_usage: '{"command": "search-records", "params": {"ksearch": ["status^open|closed"]}}'
+    bugfix_note: |
+      Incident.from_markdown() special-field path was storing raw YAML values into
+      kv_strings without str() conversion. YAML auto-parses datetime-like strings
+      (e.g. "2026-02-27 14:30:00") as datetime objects, causing json.dumps() to fail
+      with "Object of type datetime is not JSON serializable". Fixed at lines ~494, 503,
+      517, 526 in Incident.from_markdown() by applying str() consistently.
+
   - feature: "--max flag for record list and JSON IO search-records"
     commands:
       - "aver record list --ksort KEY --max KEY"
@@ -645,6 +721,25 @@ recent_additions:
     json_io_usage: '{"command": "search-records", "params": {"ksort": "severity", "max": ["severity"]}}'
     helper_method: "_apply_max_filter(results, max_keys) -> list"
     helper_line: "~7780  (after _flatten_kv_data)"
+
+  - feature: "admin template-data command"
+    commands:
+      - "aver admin template-data [template_id]"
+      - "aver admin template-data [template_id] --json"
+    added: "2026-02-27"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Shows record_fields and note_fields for a given template (or global
+      defaults if no template_id). Without --json, prints human-readable
+      output. With --json (or via JSON IO), returns structured data for
+      UI pre-validation: template_id, record_prefix, note_prefix,
+      record_fields, note_fields (each with type, value_type, editable,
+      required, accepted_values, default, system_value).
+      Omitting template_id prints/returns ALL templates as a JSON array.
+    json_io_usage: '{"command": "template-data", "params": {"template_id": "bug"}}'
+    json_io_global: '{"command": "template-data", "params": {}}'
+    helper_method: "_build_template_data(project_config, template_id) -> dict"
+    cli_handler: "_cmd_admin_template_data(args)"
 
   - feature: "--count flag for record list and note search"
     commands:

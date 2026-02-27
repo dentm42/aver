@@ -3592,6 +3592,178 @@ print('count:', result['count'])
 
 
 #==============================================================================
+# Test: ^ (in) operator for ksearch
+#==============================================================================
+
+test_in_operator() {
+    print_section "Test: ^ (in) Operator for ksearch"
+
+    # Setup: create records with known status/priority values
+    print_test "Setup: Create records with varying status and priority"
+    local r_open=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Open" --status open --priority low 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_closed=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Closed" --status closed --priority high 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_resolved=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Resolved" --status resolved --priority high 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_inprog=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test InProgress" --status in_progress --priority critical 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+
+    if [ -z "$r_open" ] || [ -z "$r_closed" ] || [ -z "$r_resolved" ] || [ -z "$r_inprog" ]; then
+        fail "Setup failed: could not create test records"
+        return
+    fi
+    pass
+    echo "  open=$r_open  closed=$r_closed  resolved=$r_resolved  in_progress=$r_inprog"
+
+    # Test 1: status^open|closed returns open and closed, not resolved/in_progress
+    print_test "status^open|closed matches open and closed records only"
+    track_command "aver record list --ksearch 'status^open|closed'"
+    if output=$(run_aver record list --ksearch "status^open|closed" 2>&1); then
+        if echo "$output" | grep -q "In Test Open" && echo "$output" | grep -q "In Test Closed"; then
+            if ! echo "$output" | grep -q "In Test Resolved" && ! echo "$output" | grep -q "In Test InProgress"; then
+                pass
+                echo "  Correctly matched open and closed, excluded resolved and in_progress"
+            else
+                fail "Returned records outside the IN set: $output"
+            fi
+        else
+            fail "Did not return expected records: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 2: priority^high|critical matches high and critical, not low
+    print_test "priority^high|critical matches high and critical records only"
+    track_command "aver record list --ksearch 'priority^high|critical'"
+    if output=$(run_aver record list --ksearch "priority^high|critical" 2>&1); then
+        if echo "$output" | grep -q "In Test Closed" && echo "$output" | grep -q "In Test Resolved" && echo "$output" | grep -q "In Test InProgress"; then
+            if ! echo "$output" | grep -q "In Test Open"; then
+                pass
+                echo "  Correctly matched high/critical, excluded low"
+            else
+                fail "Returned low-priority record: $output"
+            fi
+        else
+            fail "Did not return expected records: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 3: ^ combined with another --ksearch (AND logic preserved)
+    print_test "status^open|closed combined with priority=high (AND logic)"
+    track_command "aver record list --ksearch 'status^open|closed' --ksearch 'priority=high'"
+    if output=$(run_aver record list --ksearch "status^open|closed" --ksearch "priority=high" 2>&1); then
+        # Only r_closed has status=closed AND priority=high
+        if echo "$output" | grep -q "In Test Closed"; then
+            if ! echo "$output" | grep -q "In Test Open" && ! echo "$output" | grep -q "In Test Resolved"; then
+                pass
+                echo "  AND logic: only closed+high record returned"
+            else
+                fail "AND logic broken, returned extra records: $output"
+            fi
+        else
+            fail "Did not find expected closed+high record: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 4: Single value status^open degenerates to status=open
+    print_test "status^open (single value) equivalent to status=open"
+    track_command "aver record list --ksearch 'status^open'"
+    out_in=$(run_aver record list --ksearch "status^open" 2>&1)
+    out_eq=$(run_aver record list --ksearch "status=open" 2>&1)
+    ids_in=$(echo "$out_in" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
+    ids_eq=$(echo "$out_eq" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
+    if [ "$ids_in" = "$ids_eq" ] && [ -n "$ids_in" ]; then
+        pass
+        echo "  Single-value ^ matches same records as ="
+    else
+        fail "Single ^ ($ids_in) != = ($ids_eq)"
+    fi
+
+    # Test 5: JSON IO search-records with ^ operator
+    print_test "JSON IO: status^open|closed returns correct records"
+    track_command "echo search-records ksearch status^open|closed | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": ["status^open|closed"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True, f'not success: {data}'
+records = data['result']['records']
+statuses = [r['fields'].get('status') for r in records]
+for s in statuses:
+    assert s in ('open', 'closed'), f'unexpected status: {s}'
+assert any(s == 'open' for s in statuses), 'no open records'
+assert any(s == 'closed' for s in statuses), 'no closed records'
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO ^ operator returned only open/closed records"
+        else
+            fail "JSON IO ^ response invalid or wrong records: $output"
+        fi
+    else
+        fail "JSON IO search-records with ^ failed"
+    fi
+
+    # Test 6: Note search with ^ operator
+    # Add notes to r_open with categories
+    print_test "Setup: Add notes with category field to test note ^ search"
+    local na=$(run_aver note add "$r_open" --message "bugfix note" --category bugfix 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    local nb=$(run_aver note add "$r_open" --message "investigation note" --category investigation 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    local nc=$(run_aver note add "$r_open" --message "workaround note" --category workaround 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    if [ -z "$na" ] || [ -z "$nb" ] || [ -z "$nc" ]; then
+        fail "Setup failed: could not create test notes"
+        return
+    fi
+    pass
+    echo "  Notes: bugfix=$na  investigation=$nb  workaround=$nc"
+
+    print_test "note search --ksearch 'category^bugfix|investigation'"
+    track_command "aver note search --ksearch 'category^bugfix|investigation'"
+    if output=$(run_aver note search --ksearch "category^bugfix|investigation" 2>&1); then
+        if echo "$output" | grep -q "bugfix note" && echo "$output" | grep -q "investigation note"; then
+            if ! echo "$output" | grep -q "workaround note"; then
+                pass
+                echo "  Note ^ search: bugfix and investigation matched, workaround excluded"
+            else
+                fail "Workaround note should not appear: $output"
+            fi
+        else
+            fail "Expected bugfix/investigation notes not found: $output"
+        fi
+    else
+        fail "note search with ^ failed: $output"
+    fi
+
+    # Test 7: Nonexistent values return empty, not error
+    print_test "status^nonexistent|alsonotreal returns empty (no error)"
+    track_command "aver record list --ksearch 'status^nonexistent|alsonotreal'"
+    set +e
+    output=$(run_aver record list --ksearch "status^nonexistent|alsonotreal" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+        pass
+        echo "  Nonexistent values: empty result, no error"
+    else
+        fail "Expected empty result but got exit=$exit_code: $output"
+    fi
+}
+
+
+#==============================================================================
 # Cleanup
 #==============================================================================
 
@@ -3836,6 +4008,7 @@ main() {
     test_record_reindex
     test_count_flag
     test_max_flag
+    test_in_operator
     test_template_data
 
     # Summary

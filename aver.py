@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sqlite3
@@ -491,7 +492,7 @@ class Incident:
                 
                 if field.field_type == "single":
                     if field.value_type == "string":
-                        kv_strings[key_with_hint] = [value]
+                        kv_strings[key_with_hint] = [str(value)]
                     elif field.value_type == "integer":
                         kv_integers[key_with_hint] = [int(value)]
                     elif field.value_type == "float":
@@ -500,7 +501,7 @@ class Incident:
                     if not isinstance(value, list):
                         value = [value]
                     if field.value_type == "string":
-                        kv_strings[key_with_hint] = value
+                        kv_strings[key_with_hint] = [str(v) for v in value]
                     elif field.value_type == "integer":
                         kv_integers[key_with_hint] = [int(v) for v in value]
                     elif field.value_type == "float":
@@ -508,13 +509,13 @@ class Incident:
             else:
                 # Custom field - check for type hint
                 clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
-                
+
                 # Also check if clean_key is a special field (in case hint was added erroneously)
                 if clean_key in special_field_names:
                     field = special_fields[clean_key]
                     if field.field_type == "single":
                         if field.value_type == "string":
-                            kv_strings[clean_key] = [value]
+                            kv_strings[clean_key] = [str(value)]
                         elif field.value_type == "integer":
                             kv_integers[clean_key] = [int(value)]
                         elif field.value_type == "float":
@@ -523,7 +524,7 @@ class Incident:
                         if not isinstance(value, list):
                             value = [value]
                         if field.value_type == "string":
-                            kv_strings[clean_key] = value
+                            kv_strings[clean_key] = [str(v) for v in value]
                         elif field.value_type == "integer":
                             kv_integers[clean_key] = [int(v) for v in value]
                         elif field.value_type == "float":
@@ -1486,7 +1487,7 @@ class SystemValueDeriver:
             if template_name is None:
                 return ""
             return template_name
-        
+
         else:
             # Unknown system value type - return empty string
             return ""
@@ -2764,27 +2765,28 @@ class KVParser:
 class KVSearchParser:
     """Parse key-value search and sort expressions."""
     
-    VALID_OPERATORS = {'<', '>', '=', '<=', '>='}
-    
+    VALID_OPERATORS = {'<', '>', '=', '<=', '>=', '^'}
+
     @staticmethod
     def parse_ksearch(search_expr: str) -> tuple:
         """
         Parse key-value search expression.
-        
+
         Format: {key} {operator} {value}
-        Operators: <, >, =, <=, >=, <>, !=
-        
+        Operators: <, >, =, <=, >=, <>, !=, ^ (in)
+
         Examples:
         - "cost > 12.49"
         - "priority=high"
         - "count<=100"
-        
+        - "status^open|closed|resolved"
+
         Args:
             search_expr: Search expression string
-            
+
         Returns:
             (key, operator, value) tuple
-            
+
         Raises:
             ValueError: If format is invalid
         """
@@ -2793,22 +2795,23 @@ class KVSearchParser:
         # Try to find operators (check longer ones first)
         # NOTE: If you add more, make sure none of the PREVIOUS
         #       items in the list will match.
-        for op in ['<=', '>=', '!=', '<>', '=', '<', '>']:
+        # ^ must come first: its value may contain | but no other operator chars
+        for op in ['^', '<=', '>=', '!=', '<>', '=', '<', '>']:
             if op in search_expr:
                 parts = search_expr.split(op, 1)
                 if len(parts) == 2:
                     key = parts[0].strip()
                     value_str = parts[1].strip()
-                    
+
                     if not key or not value_str:
                         raise ValueError(f"Invalid search format: '{search_expr}'")
-                    
+
                     return (key, op, value_str)
-        
+
         raise ValueError(
             f"Invalid ksearch format: '{search_expr}'\n"
             f"Expected: '{{key}} {{operator}} {{value}}'\n"
-            f"Operators: <, >, =, <=, >=, <>, !="
+            f"Operators: <, >, =, <=, >=, <>, !=, ^ (in: 'status^open|closed')"
         )
     
     @staticmethod
@@ -2888,13 +2891,13 @@ class IncidentFileStorage:
         updates_dir.mkdir(parents=True, exist_ok=True)
         return updates_dir
             
-    def save_incident(self, incident: Incident, project_config: ProjectConfig):
-        """Save incident to Markdown file."""
+    def save_incident(self, incident: Incident, project_config: ProjectConfig) -> str:
+        """Save incident to Markdown file. Returns the content written."""
         path = self._get_incident_path(incident.id)
         content = incident.to_markdown(project_config)
-        
         with open(path, "w") as f:
             f.write(content)
+        return content
     
     def load_incident(
         self,
@@ -2928,10 +2931,10 @@ class IncidentFileStorage:
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
-    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None):
+    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None) -> str:
         """
-        Save update to Markdown file with yaml header.
-        
+        Save update to Markdown file with yaml header. Returns the content written.
+
         Args:
             incident_id: Parent incident ID
             update: IncidentUpdate to save (should have template_id set if using templates)
@@ -2950,6 +2953,7 @@ class IncidentFileStorage:
         
         content = update.to_markdown(project_config, parent_template_id=parent_template_id)
         update_file.write_text(content)
+        return content
     
 
     def load_updates(self, incident_id: str) -> List[IncidentUpdate]:
@@ -3001,20 +3005,66 @@ class IncidentIndexDatabase:
         """Generate ISO 8601 timestamp with Z suffix."""
         return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
+    @staticmethod
+    def _md5_of_content(content: str) -> str:
+        """Return the MD5 hex digest of UTF-8 encoded content."""
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _mtime_of_path(path: Path) -> str:
+        """Return the file's current mtime as an ISO 8601 UTC string.
+
+        Must only be called after the file has been written — callers in the
+        save-then-index path already ensure this ordering.  Falls back to the
+        current time if the path does not exist (e.g. during testing).
+        """
+        try:
+            mtime_ts = path.stat().st_mtime
+            return datetime.datetime.fromtimestamp(
+                mtime_ts, tz=datetime.timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+        except OSError:
+            return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+
     def _ensure_schema(self):
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, migrating legacy tables as needed."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-    
-        # Incidents index table
+
+        # ----------------------------------------------------------------
+        # incidents_index → file_index migration
+        # The old incidents_index table only stored (id TEXT, indexed_at TEXT).
+        # We replace it with file_index which tracks the file path, MD5 hash,
+        # and mtime for every indexed file (records and notes).
+        # ----------------------------------------------------------------
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incidents_index'"
+        )
+        has_legacy = cursor.fetchone() is not None
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='file_index'"
+        )
+        has_file_index = cursor.fetchone() is not None
+
+        if has_legacy and not has_file_index:
+            cursor.execute("DROP TABLE incidents_index")
+
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS incidents_index (
-                id TEXT PRIMARY KEY,
-                indexed_at TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS file_index (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT    NOT NULL UNIQUE,
+                file_hash TEXT    NOT NULL,
+                file_mtime TEXT   NOT NULL
             )
             """
-        )    
+        )
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_path ON file_index(file_path)"
+        )
+
         # Full-text search index
         cursor.execute(
             """
@@ -3075,25 +3125,49 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
-    def index_incident(self, incident: Incident, project_config: ProjectConfig):
-        """Add or update incident in index."""
+    def index_incident(
+        self,
+        incident: Incident,
+        project_config: ProjectConfig,
+        file_path: Optional[Path] = None,
+        file_content: Optional[str] = None,
+    ):
+        """Add or update incident in index.
+
+        Args:
+            incident: The incident to index.
+            project_config: Project configuration.
+            file_path: Absolute path to the record's Markdown file. When provided,
+                the actual file mtime is read; if omitted, current time is used.
+            file_content: Raw Markdown content of the file (used for MD5 hash).
+                If omitted, the hash is computed from incident.to_markdown() output.
+        """
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-    
-        now = self._generate_timestamp()
-    
-        # Update minimal index entry
-        cursor.execute(
-            "INSERT OR REPLACE INTO incidents_index (id, indexed_at) VALUES (?, ?)",
-            (incident.id, now),
-        )
-    
+
+        # -- file_index entry -----------------------------------------------
+        if file_path is not None:
+            rel_path = str(file_path)
+            content_for_hash = file_content if file_content is not None else incident.to_markdown(project_config)
+            file_hash = self._md5_of_content(content_for_hash)
+            file_mtime = self._mtime_of_path(file_path)
+            cursor.execute(
+                """
+                INSERT INTO file_index (file_path, file_hash, file_mtime)
+                VALUES (?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash  = excluded.file_hash,
+                    file_mtime = excluded.file_mtime
+                """,
+                (rel_path, file_hash, file_mtime),
+            )
+
         # Index FTS for description and other content
         cursor.execute(
             "DELETE FROM incidents_fts WHERE incident_id = ? AND source = 'incident'",
             (incident.id,)
         )
-    
+
         # Get title and description from kv_store
         title = incident.kv_strings.get('title', [''])[0] if incident.kv_strings else ''
         description = incident.content
@@ -3102,107 +3176,46 @@ class IncidentIndexDatabase:
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
             (incident.id, "incident", incident.id, content),
         )
-    
+
         conn.commit()
 
-    def remove_incident_from_index(self, incident_id: str):
-        """Remove incident from index."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM incidents_index WHERE id = ?", (incident_id,))
-        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident_id,))
-        cursor.execute("DELETE FROM kv_store WHERE incident_id = ?", (incident_id,))
-        conn.commit()
-        conn.close()
-
-    def list_incidents_from_index(
+    def index_update(
         self,
-        project_config: ProjectConfig,
-        filters: Optional[Dict[str, Any]] = None,
-        search: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[str]:
-        """List incident IDs from index with filters."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-    
-        # Start with all incidents
-        incident_ids_query = "SELECT id FROM incidents_index"
-        params = []
-    
-        # Apply special field filters
-        if filters:
-            for field_name, value in filters.items():
-                field = project_config.get_special_field(field_name, for_record=True)
-                if not field:
-                    continue  # Skip unknown fields
-            
-                if field.field_type == "single":
-                    incident_ids_query += f"""
-                        AND id IN (
-                            SELECT incident_id FROM kv_store
-                            WHERE key = ? AND (
-                                value_string = ? OR 
-                                value_integer = ? OR 
-                                value_float = ?
-                            ) AND update_id IS NULL
-                        )
-                    """
-                    params.extend([field_name, value, value, value])
-                else:  # multi - value must be in the list
-                    if isinstance(value, list):
-                        # Match ANY value in the list
-                        value_placeholders = ",".join("?" * len(value))
-                        incident_ids_query += f"""
-                            AND id IN (
-                                SELECT incident_id FROM kv_store
-                                WHERE key = ? AND (
-                                    value_string IN ({value_placeholders}) OR 
-                                    value_integer IN ({value_placeholders}) OR 
-                                    value_float IN ({value_placeholders})
-                                ) AND update_id IS NULL
-                            )
-                        """
-                        params.append(field_name)
-                        params.extend(value)
-                        params.extend(value)
-                        params.extend(value)
-                    else:
-                        incident_ids_query += f"""
-                            AND id IN (
-                                SELECT incident_id FROM kv_store
-                                WHERE key = ? AND (
-                                    value_string = ? OR 
-                                    value_integer = ? OR 
-                                    value_float = ?
-                                ) AND update_id IS NULL
-                            )
-                        """
-                        params.extend([field_name, value, value, value])
-     
-        # Apply FTS search
-        if search:
-            incident_ids_query += """
-                AND id IN (
-                    SELECT DISTINCT incident_id FROM incidents_fts
-                    WHERE incidents_fts MATCH ?
-                )
-            """
-            params.append(search)
-    
-        incident_ids_query += f" ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-    
-        cursor.execute(incident_ids_query, params)
-        incident_ids = [row[0] for row in cursor.fetchall()]
-    
-        conn.close()
-        return incident_ids
+        update: IncidentUpdate,
+        file_path: Optional[Path] = None,
+        file_content: Optional[str] = None,
+    ):
+        """Index update in FTS and record file metadata.
 
-    def index_update(self, update: IncidentUpdate):
-        """Index update in FTS and store KV data."""
+        Args:
+            update: The note to index.
+            file_path: Absolute path to the note's Markdown file. When provided,
+                the actual file mtime is read; if omitted, current time is used.
+            file_content: Raw Markdown content (used for MD5 hash).
+        """
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
+
+        # -- file_index entry -----------------------------------------------
+        if file_path is not None:
+            rel_path = str(file_path)
+            if file_content is not None:
+                content_for_hash = file_content
+            else:
+                content_for_hash = Path(file_path).read_text(encoding="utf-8")
+
+            file_hash = self._md5_of_content(content_for_hash)
+            file_mtime = self._mtime_of_path(file_path)
+            cursor.execute(
+                """
+                INSERT INTO file_index (file_path, file_hash, file_mtime)
+                VALUES (?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash  = excluded.file_hash,
+                    file_mtime = excluded.file_mtime
+                """,
+                (rel_path, file_hash, file_mtime),
+            )
 
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
@@ -3217,11 +3230,114 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
+    def remove_incident_from_index(self, incident_id: str):
+        """Remove incident and all its notes from index."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident_id,))
+        cursor.execute("DELETE FROM kv_store WHERE incident_id = ?", (incident_id,))
+        conn.commit()
+        conn.close()
+
+    def remove_file_from_index(self, file_path: Path):
+        """Remove a specific file entry from file_index."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM file_index WHERE file_path = ?", (str(file_path),))
+        conn.commit()
+        conn.close()
+
+    def list_incidents_from_index(
+        self,
+        project_config: ProjectConfig,
+        filters: Optional[Dict[str, Any]] = None,
+        search: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[str]:
+        """List incident IDs from index with filters."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+    
+        # Start with all incidents (source_id = incident_id for incident rows in FTS)
+        incident_ids_query = (
+            "SELECT DISTINCT incident_id AS id FROM incidents_fts WHERE source = 'incident'"
+        )
+        params = []
+
+        # Apply special field filters
+        if filters:
+            for field_name, value in filters.items():
+                field = project_config.get_special_field(field_name, for_record=True)
+                if not field:
+                    continue  # Skip unknown fields
+
+                if field.field_type == "single":
+                    incident_ids_query += f"""
+                        AND incident_id IN (
+                            SELECT incident_id FROM kv_store
+                            WHERE key = ? AND (
+                                value_string = ? OR
+                                value_integer = ? OR
+                                value_float = ?
+                            ) AND update_id IS NULL
+                        )
+                    """
+                    params.extend([field_name, value, value, value])
+                else:  # multi - value must be in the list
+                    if isinstance(value, list):
+                        # Match ANY value in the list
+                        value_placeholders = ",".join("?" * len(value))
+                        incident_ids_query += f"""
+                            AND incident_id IN (
+                                SELECT incident_id FROM kv_store
+                                WHERE key = ? AND (
+                                    value_string IN ({value_placeholders}) OR
+                                    value_integer IN ({value_placeholders}) OR
+                                    value_float IN ({value_placeholders})
+                                ) AND update_id IS NULL
+                            )
+                        """
+                        params.append(field_name)
+                        params.extend(value)
+                        params.extend(value)
+                        params.extend(value)
+                    else:
+                        incident_ids_query += f"""
+                            AND incident_id IN (
+                                SELECT incident_id FROM kv_store
+                                WHERE key = ? AND (
+                                    value_string = ? OR
+                                    value_integer = ? OR
+                                    value_float = ?
+                                ) AND update_id IS NULL
+                            )
+                        """
+                        params.extend([field_name, value, value, value])
+
+        # Apply FTS search
+        if search:
+            incident_ids_query += """
+                AND incident_id IN (
+                    SELECT DISTINCT incident_id FROM incidents_fts
+                    WHERE incidents_fts MATCH ?
+                )
+            """
+            params.append(search)
+
+        incident_ids_query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+    
+        cursor.execute(incident_ids_query, params)
+        incident_ids = [row[0] for row in cursor.fetchall()]
+    
+        conn.close()
+        return incident_ids
+
     def clear_index(self):
         """Clear all entries from index."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM incidents_index")
+        cursor.execute("DELETE FROM file_index")
         cursor.execute("DELETE FROM incidents_fts")
         cursor.execute("DELETE FROM kv_store")
         conn.commit()
@@ -3444,22 +3560,25 @@ class IncidentIndexDatabase:
             ValueError: If operator is not in the allowed set
         """
         # Whitelist of allowed operators
-        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>=', "<>", "!="}
-        
+        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>=', "<>", "!=", "^"}
+
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        
-        # Separate equality and inequality conditions
+
+        # Separate equality, inequality, and "in" conditions
         equality_conditions = []
         inequality_conditions = []
-        
+        in_conditions = []
+
         for key, operator, value in ksearch_list:
             # Validate operator
             if operator not in ALLOWED_OPERATORS:
                 raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
-            
+
             if operator in ('!=', '<>'):
                 inequality_conditions.append((key, operator, value))
+            elif operator == '^':
+                in_conditions.append((key, operator, value))
             else:
                 equality_conditions.append((key, operator, value))
         
@@ -3526,7 +3645,46 @@ class IncidentIndexDatabase:
                 key, str_val
             ])
         
-        # Build query for equality conditions
+        # Add each IN-condition as an INNER JOIN using IN (?, ?, ...)
+        for key, operator, value in in_conditions:
+            alias = f"kv{join_counter}"
+            join_counter += 1
+
+            # Split pipe-delimited values
+            values_list = [v.strip() for v in value.split('|') if v.strip()]
+            n = len(values_list)
+
+            float_placeholders = ",".join("?" * n)
+            int_placeholders = ",".join("?" * n)
+            str_placeholders = ",".join("?" * n)
+
+            join = f"""INNER JOIN kv_store {alias} ON
+                base.incident_id = {alias}.incident_id
+                AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
+                AND (
+                    ({alias}.key = ? AND {alias}.value_float IN ({float_placeholders}))
+                    OR ({alias}.key = ? AND {alias}.value_integer IN ({int_placeholders}))
+                    OR ({alias}.key = ? AND {alias}.value_string IN ({str_placeholders}))
+                )"""
+            joins.append(join)
+
+            float_vals = []
+            int_vals = []
+            str_vals = []
+            for v in values_list:
+                try:
+                    float_vals.append(float(v))
+                except (ValueError, TypeError):
+                    float_vals.append(None)
+                try:
+                    int_vals.append(int(v))
+                except (ValueError, TypeError):
+                    int_vals.append(None)
+                str_vals.append(str(v))
+
+            params.extend([key] + float_vals + [key] + int_vals + [key] + str_vals)
+
+        # Build query for equality/in conditions
         query_with_joins = select_clause + " " + from_clause
         for join in joins:
             query_with_joins += " " + join
@@ -3534,7 +3692,7 @@ class IncidentIndexDatabase:
 
         cursor.execute(query_with_joins, params)
         results = cursor.fetchall()
-        
+
         # If no inequality conditions, we're done
         if not inequality_conditions:
             conn.close()
@@ -3546,12 +3704,12 @@ class IncidentIndexDatabase:
                 return [row[1] if return_updates else row[0] for row in results]
         
         # Handle inequality conditions by EXCLUSION
-        # Start with the results from equality conditions (or all records if no equality conditions)
-        if equality_conditions:
-            # Use results from equality search as starting set
+        # Start with the results from equality/in conditions (or all records if none)
+        if equality_conditions or in_conditions:
+            # Use results from equality/in search as starting set
             candidate_set = set((row[0], row[1]) for row in results)
         else:
-            # No equality conditions - start with all records matching base filters
+            # No equality/in conditions - start with all records matching base filters
             cursor.execute(query_with_joins, params)
             candidate_set = set((row[0], row[1]) for row in cursor.fetchall())
         
@@ -3731,80 +3889,88 @@ class IncidentReindexer:
         indexed_count = 0
         indexed_updates = 0
         for incident_id in incident_ids:
+            incident_path = self.storage._get_incident_path(incident_id)
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
-                self.index_db.index_incident(incident, self.project_config)
+                self.index_db.index_incident(
+                    incident, self.project_config, file_path=incident_path
+                )
                 self.index_db.index_kv_data(incident, self.project_config)
                 indexed_count += 1
                 if verbose:
-                    print(f"  ✓ {incident_id}",end=":")
+                    print(f"  ✓ {incident_id}", end=":")
             else:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
-            
-            # Index updates for this incident (moved inside the loop)
-            updates = self.storage.load_updates(incident_id)
 
+            # Index updates for this incident
+            updates_dir = self.storage._get_updates_dir(incident_id)
+            updates = self.storage.load_updates(incident_id)
             for update in updates:
-                self.index_db.index_update(update)
+                note_path = updates_dir / f"{update.id}.md"
+                self.index_db.index_update(update, file_path=note_path)
                 if verbose:
-                    print(f".",end="")
+                    print(f".", end="")
                 indexed_updates += 1
             print()
         if verbose:
             print(f"✓ Reindexed {indexed_count} records, {indexed_updates} updates")
-        
+
         return indexed_count
-        
+
     def reindex_one(self, incident_id: str, verbose: bool = False) -> bool:
         """
         Reindex a single incident and all its notes from files.
-        
+
         Args:
             incident_id: The record ID to reindex
             verbose: Print progress messages
-        
+
         Returns:
             True if successful, False if record not found
         """
-        # Check if record exists
+        incident_path = self.storage._get_incident_path(incident_id)
         incident = self.storage.load_incident(incident_id, self.project_config)
-        
+
         if not incident:
             if verbose:
                 print(f"Record {incident_id} not found")
             return False
-        
+
         if verbose:
             print(f"Reindexing {incident_id}...")
-        
+
         # Remove existing index entries for this record
         self.index_db.remove_incident_from_index(incident_id)
-        
+
         # Reindex the incident
-        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_incident(
+            incident, self.project_config, file_path=incident_path
+        )
         self.index_db.index_kv_data(incident, self.project_config)
-        
+
         if verbose:
             print(f"  ✓ Record indexed")
-        
+
         # Reindex all notes for this incident
+        updates_dir = self.storage._get_updates_dir(incident_id)
         updates = self.storage.load_updates(incident_id)
-        
+
         if verbose and updates:
             print(f"  Reindexing {len(updates)} notes...", end="")
-        
+
         for update in updates:
-            self.index_db.index_update(update)
+            note_path = updates_dir / f"{update.id}.md"
+            self.index_db.index_update(update, file_path=note_path)
             if verbose:
                 print(".", end="", flush=True)
-        
+
         if verbose and updates:
             print()  # Newline after dots
-        
+
         if verbose:
             print(f"✓ Reindexed {incident_id} ({len(updates)} notes)")
-        
+
         return True
 
 
@@ -4906,8 +5072,12 @@ class IncidentManager:
         self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
     
         # Save and reindex
-        self.storage.save_incident(incident, self.project_config)
-        self.index_db.index_incident(incident, self.project_config)
+        written_content = self.storage.save_incident(incident, self.project_config)
+        self.index_db.index_incident(
+            incident, self.project_config,
+            file_path=self.storage._get_incident_path(incident.id),
+            file_content=written_content,
+        )
         self.index_db.index_kv_data(incident, self.project_config)
     
         update_msg = ""
@@ -4972,9 +5142,13 @@ class IncidentManager:
             incident_update.kv_strings = {}
         incident_update.kv_strings['incident_id'] = [incident_id]
 
-        self.storage.save_update(incident_id, incident_update, self.project_config)
-        self.index_db.index_update(incident_update)
-    
+        written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
+        self.index_db.index_update(
+            incident_update,
+            file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
+            file_content=written_content,
+        )
+
         return True
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
@@ -5442,12 +5616,16 @@ class IncidentManager:
                 raise RuntimeError(f"Record creation failed: {str(e)}")
 
         # Save to file
-        self.storage.save_incident(incident, self.project_config)
-        
+        written_content = self.storage.save_incident(incident, self.project_config)
+
         # Update index
-        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_incident(
+            incident, self.project_config,
+            file_path=self.storage._get_incident_path(incident.id),
+            file_content=written_content,
+        )
         self.index_db.index_kv_data(incident, self.project_config)
-        
+
         # Create initial update
         initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
@@ -5477,9 +5655,13 @@ class IncidentManager:
             initial_update.kv_strings = {}
         initial_update.kv_strings['incident_id'] = [incident_id]
         
-        self.storage.save_update(incident_id, initial_update, self.project_config)
-        self.index_db.index_update(initial_update)
-        
+        written_content = self.storage.save_update(incident_id, initial_update, self.project_config)
+        self.index_db.index_update(
+            initial_update,
+            file_path=self.storage._get_updates_dir(incident_id) / f"{initial_update.id}.md",
+            file_content=written_content,
+        )
+
         return incident_id
     
     def list_incidents(
@@ -5996,9 +6178,13 @@ class IncidentManager:
         update.kv_strings['incident_id'] = [incident_id]
         
         # Save update
-        self.storage.save_update(incident_id, update, self.project_config)
-        self.index_db.index_update(update)
-        
+        written_content = self.storage.save_update(incident_id, update, self.project_config)
+        self.index_db.index_update(
+            update,
+            file_path=self.storage._get_updates_dir(incident_id) / f"{update.id}.md",
+            file_content=written_content,
+        )
+
         # Index update KV data (completely independent from incident KV)
         self.index_db.index_update_kv_data(
             incident_id,
@@ -7129,7 +7315,7 @@ class IncidentCLI:
             "--ksearch",
             action="append",
             dest="ksearch",
-            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
+            help="Search by key-value: 'key=value', 'cost>100', 'status^open|closed' (can use multiple times)",
         )
         record_list_parser.add_argument(
             "--ksort",
@@ -7296,7 +7482,7 @@ class IncidentCLI:
             action="append",
             dest="ksearch",
             required=True,
-            help="Search by note KV: 'key=value' (required, can use multiple times)",
+            help="Search by note KV: 'key=value', 'status^open|closed' (required, can use multiple times)",
         )
         note_search_parser.add_argument(
             "--ids-only",
@@ -7410,7 +7596,7 @@ class IncidentCLI:
             "--ksearch",
             action="append",
             dest="ksearch",
-            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
+            help="Search by key-value: 'key=value', 'cost>100', 'status^open|closed' (can use multiple times)",
         )
         json_search_records_parser.add_argument(
             "--ksort",
@@ -7599,6 +7785,23 @@ class IncidentCLI:
             help="Show all available databases",
         )
 
+        # admin template-data
+        admin_template_data_parser = admin_subparsers.add_parser(
+            "template-data",
+            help="Show field definitions for a template (record and note fields)",
+        )
+        admin_template_data_parser.add_argument(
+            "template_id",
+            nargs="?",
+            default=None,
+            help="Template ID to inspect (omit to list all templates)",
+        )
+        admin_template_data_parser.add_argument(
+            "--json",
+            action="store_true",
+            help="Output as JSON (suitable for UI pre-validation)",
+        )
+
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
@@ -7684,6 +7887,8 @@ class IncidentCLI:
                     self._cmd_reindex(parsed)
                 elif parsed.admin_command == "list-databases":
                     self._cmd_list_databases(parsed)
+                elif parsed.admin_command == "template-data":
+                    self._cmd_admin_template_data(parsed)
                     
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -8965,6 +9170,127 @@ $update_kv
         print("     --location PATH to specify explicitly")
         print("="*70 + "\n")
 
+    def _build_template_data(self, project_config, template_id: Optional[str]) -> dict:
+        """
+        Build field data for a template (or global defaults if template_id is None).
+
+        Returns a dict with record_fields and note_fields, each containing the
+        full SpecialField info suitable for UI pre-validation.
+        """
+        record_fields_raw = project_config.get_special_fields_for_template(
+            template_id, for_record=True
+        )
+        note_fields_raw = project_config.get_special_fields_for_template(
+            template_id, for_record=False
+        )
+
+        def _serialize_fields(fields_dict):
+            out = {}
+            for field_name, field_def in fields_dict.items():
+                if not field_def.enabled:
+                    continue
+                entry = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                if field_def.accepted_values:
+                    entry["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    entry["default"] = field_def.default
+                if field_def.system_value:
+                    entry["system_value"] = field_def.system_value
+                out[field_name] = entry
+            return out
+
+        template = project_config.get_template(template_id) if template_id else None
+        result = {
+            "template_id": template_id,
+            "record_prefix": template.record_prefix if template else project_config.default_record_prefix,
+            "note_prefix": template.note_prefix if template else project_config.default_note_prefix,
+            "record_fields": _serialize_fields(record_fields_raw),
+            "note_fields": _serialize_fields(note_fields_raw),
+        }
+        return result
+
+    def _cmd_admin_template_data(self, args):
+        """Show field definitions for a template (record and note fields)."""
+        try:
+            manager = self._get_manager(args)
+            config = manager.project_config
+
+            use_json = getattr(args, 'json', False)
+
+            if args.template_id:
+                # Single template
+                if not config.has_template(args.template_id):
+                    print(f"Error: Template '{args.template_id}' not found", file=sys.stderr)
+                    available = list(config._templates.keys())
+                    if available:
+                        print(f"Available templates: {', '.join(available)}", file=sys.stderr)
+                    else:
+                        print("No templates configured.", file=sys.stderr)
+                    sys.exit(1)
+
+                data = self._build_template_data(config, args.template_id)
+
+                if use_json:
+                    print(json.dumps(data, indent=2))
+                else:
+                    self._print_template_data_human(data)
+
+            else:
+                # No template_id: show all templates including global defaults
+                template_ids = [None] + list(config._templates.keys())
+
+                if use_json:
+                    all_data = []
+                    for tid in template_ids:
+                        all_data.append(self._build_template_data(config, tid))
+                    print(json.dumps(all_data, indent=2))
+                else:
+                    for tid in template_ids:
+                        data = self._build_template_data(config, tid)
+                        self._print_template_data_human(data)
+
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def _print_template_data_human(self, data: dict):
+        """Print template field data in human-readable format."""
+        template_id = data["template_id"]
+        label = f"Template: {template_id}" if template_id else "Global defaults (no template)"
+        print()
+        print("=" * 70)
+        print(label)
+        print(f"  Record prefix: {data['record_prefix']}")
+        print(f"  Note prefix:   {data['note_prefix']}")
+        print("=" * 70)
+
+        for section, key in [("Record fields", "record_fields"), ("Note fields", "note_fields")]:
+            fields = data[key]
+            print(f"\n  {section}:")
+            if not fields:
+                print("    (none)")
+            else:
+                for field_name, field_def in sorted(fields.items()):
+                    flags = []
+                    if field_def.get("required"):
+                        flags.append("required")
+                    if not field_def.get("editable", True):
+                        flags.append("read-only")
+                    if field_def.get("system_value"):
+                        flags.append(f"system:{field_def['system_value']}")
+                    flag_str = f"  [{', '.join(flags)}]" if flags else ""
+                    print(f"    {field_name}  ({field_def['type']}, {field_def['value_type']}){flag_str}")
+                    if field_def.get("accepted_values"):
+                        print(f"      Accepted: {', '.join(field_def['accepted_values'])}")
+                    if field_def.get("default") is not None:
+                        print(f"      Default:  {field_def['default']}")
+        print()
+
     # ====================================================================
     # JSON INTERFACE COMMANDS
     # ====================================================================
@@ -10219,7 +10545,19 @@ $update_kv
             return {
                 "templates": templates,
             }
-            
+
+        elif command == 'template-data':
+            # Optional: template_id (omit for global defaults)
+            template_id = params.get('template_id', None)
+
+            manager = get_manager_with_override()
+            config = manager.project_config
+
+            if template_id is not None and not config.has_template(template_id):
+                raise RuntimeError(f"Template '{template_id}' not found")
+
+            return self._build_template_data(config, template_id)
+
         else:
             raise ValueError(f"Unknown command: {command}")
 
