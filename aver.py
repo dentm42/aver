@@ -3026,6 +3026,47 @@ class IncidentIndexDatabase:
         except OSError:
             return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
+    def _get_file_index_entry(self, file_path: Path) -> Optional[tuple]:
+        """Return (file_hash, file_mtime) stored in file_index for *file_path*, or None."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT file_hash, file_mtime FROM file_index WHERE file_path = ?",
+            (str(file_path),),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row  # None or (hash, mtime)
+
+    def is_file_unchanged(self, file_path: Path, skip_mtime: bool = False) -> bool:
+        """Return True if *file_path* can be skipped during reindex.
+
+        Decision logic:
+          1. If no entry exists in file_index → must index (return False).
+          2. If *skip_mtime* is False and mtime matches stored mtime → assume
+             unchanged (return True).
+          3. Read file and compare MD5 hash.
+             If hash matches → file is identical (return True).
+             Otherwise → file has changed (return False).
+        """
+        entry = self._get_file_index_entry(file_path)
+        if entry is None:
+            return False
+
+        stored_hash, stored_mtime = entry
+
+        if not skip_mtime:
+            current_mtime = self._mtime_of_path(file_path)
+            if current_mtime == stored_mtime:
+                return True
+
+        # mtime differs or skipped — check actual content
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return self._md5_of_content(content) == stored_hash
+
     def _ensure_schema(self):
         """Create tables if they don't exist, migrating legacy tables as needed."""
         conn = sqlite3.connect(self.database_path)
@@ -3870,28 +3911,51 @@ class IncidentReindexer:
         self.index_db = index_db
         self.project_config = project_config
 
-    def reindex_all(self, verbose: bool = False) -> int:
+    def reindex_all(self, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> int:
         """
         Reindex all incidents from files.
-        
+
+        Unless *force* is True, files are skipped when unchanged.  The skip
+        check uses mtime first (fast) then MD5 hash.  Pass *skip_mtime* to
+        bypass the mtime shortcut and always compare hashes.
+
         Returns:
-            Number of incidents indexed
+            Number of incidents actually (re)indexed (skipped files not counted)
         """
-        # Clear existing index
-        self.index_db.clear_index()
-        
         # Get all incident files
         incident_ids = self.storage.list_incident_files()
-        
+
+        modifier = " (forced)" if force else (" (hash-only)" if skip_mtime else "")
         if verbose:
-            print(f"Reindexing {len(incident_ids)} records...")
-        
+            print(f"Reindexing {len(incident_ids)} records{modifier}...")
+
         indexed_count = 0
+        skipped_count = 0
         indexed_updates = 0
+        skipped_updates = 0
+
         for incident_id in incident_ids:
             incident_path = self.storage._get_incident_path(incident_id)
+
+            if not force and self.index_db.is_file_unchanged(incident_path, skip_mtime=skip_mtime):
+                skipped_count += 1
+                if verbose:
+                    print(f"  - {incident_id} (unchanged)")
+                # Still check notes even if record file is unchanged
+                updates_dir = self.storage._get_updates_dir(incident_id)
+                updates = self.storage.load_updates(incident_id)
+                for update in updates:
+                    note_path = updates_dir / f"{update.id}.md"
+                    if self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                        skipped_updates += 1
+                    else:
+                        self.index_db.index_update(update, file_path=note_path)
+                        indexed_updates += 1
+                continue
+
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
+                self.index_db.remove_incident_from_index(incident_id)
                 self.index_db.index_incident(
                     incident, self.project_config, file_path=incident_path
                 )
@@ -3903,73 +3967,105 @@ class IncidentReindexer:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
 
-            # Index updates for this incident
+            # Index notes for this incident
             updates_dir = self.storage._get_updates_dir(incident_id)
             updates = self.storage.load_updates(incident_id)
             for update in updates:
                 note_path = updates_dir / f"{update.id}.md"
-                self.index_db.index_update(update, file_path=note_path)
-                if verbose:
-                    print(f".", end="")
-                indexed_updates += 1
-            print()
+                if not force and self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                    skipped_updates += 1
+                    if verbose:
+                        print(f"-", end="")
+                else:
+                    self.index_db.index_update(update, file_path=note_path)
+                    indexed_updates += 1
+                    if verbose:
+                        print(f".", end="")
+            if verbose:
+                print()
+
         if verbose:
-            print(f"✓ Reindexed {indexed_count} records, {indexed_updates} updates")
+            print(
+                f"✓ Reindexed {indexed_count} records ({skipped_count} unchanged), "
+                f"{indexed_updates} notes ({skipped_updates} unchanged)"
+            )
 
         return indexed_count
 
-    def reindex_one(self, incident_id: str, verbose: bool = False) -> bool:
+    def reindex_one(self, incident_id: str, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> bool:
         """
         Reindex a single incident and all its notes from files.
+
+        Unless *force* is True, files are skipped when unchanged.  Pass
+        *skip_mtime* to bypass the mtime shortcut and always compare hashes.
 
         Args:
             incident_id: The record ID to reindex
             verbose: Print progress messages
+            force: Skip all change detection and always reindex
+            skip_mtime: Bypass mtime check; use MD5 hash comparison only
 
         Returns:
             True if successful, False if record not found
         """
         incident_path = self.storage._get_incident_path(incident_id)
-        incident = self.storage.load_incident(incident_id, self.project_config)
 
-        if not incident:
+        modifier = " (forced)" if force else (" (hash-only)" if skip_mtime else "")
+        if verbose:
+            print(f"Reindexing {incident_id}{modifier}...")
+
+        record_skipped = False
+        if not force and self.index_db.is_file_unchanged(incident_path, skip_mtime=skip_mtime):
+            record_skipped = True
             if verbose:
-                print(f"Record {incident_id} not found")
-            return False
+                print(f"  - Record file unchanged, skipping")
+        else:
+            incident = self.storage.load_incident(incident_id, self.project_config)
+            if not incident:
+                if verbose:
+                    print(f"Record {incident_id} not found")
+                return False
 
-        if verbose:
-            print(f"Reindexing {incident_id}...")
+            # Remove existing index entries and reindex
+            self.index_db.remove_incident_from_index(incident_id)
+            self.index_db.index_incident(
+                incident, self.project_config, file_path=incident_path
+            )
+            self.index_db.index_kv_data(incident, self.project_config)
+            if verbose:
+                print(f"  ✓ Record indexed")
 
-        # Remove existing index entries for this record
-        self.index_db.remove_incident_from_index(incident_id)
-
-        # Reindex the incident
-        self.index_db.index_incident(
-            incident, self.project_config, file_path=incident_path
-        )
-        self.index_db.index_kv_data(incident, self.project_config)
-
-        if verbose:
-            print(f"  ✓ Record indexed")
-
-        # Reindex all notes for this incident
+        # Reindex notes, skipping unchanged ones
         updates_dir = self.storage._get_updates_dir(incident_id)
         updates = self.storage.load_updates(incident_id)
 
-        if verbose and updates:
-            print(f"  Reindexing {len(updates)} notes...", end="")
+        if not updates:
+            if verbose and not record_skipped:
+                print(f"✓ Reindexed {incident_id} (no notes)")
+            elif verbose:
+                print(f"✓ {incident_id} unchanged (no notes)")
+            return True
+
+        indexed_notes = 0
+        skipped_notes = 0
+        if verbose:
+            print(f"  Checking {len(updates)} notes...", end="")
 
         for update in updates:
             note_path = updates_dir / f"{update.id}.md"
-            self.index_db.index_update(update, file_path=note_path)
-            if verbose:
-                print(".", end="", flush=True)
-
-        if verbose and updates:
-            print()  # Newline after dots
+            if not force and self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                skipped_notes += 1
+                if verbose:
+                    print("-", end="", flush=True)
+            else:
+                self.index_db.index_update(update, file_path=note_path)
+                indexed_notes += 1
+                if verbose:
+                    print(".", end="", flush=True)
 
         if verbose:
-            print(f"✓ Reindexed {incident_id} ({len(updates)} notes)")
+            print()
+            print(f"✓ {incident_id}: {indexed_notes} notes reindexed, {skipped_notes} unchanged")
 
         return True
 
@@ -7391,20 +7487,6 @@ class IncidentCLI:
 
         self.record_update_parser = record_update_parser
 
-        # record reindex
-        record_reindex_parser = record_subparsers.add_parser(
-            "reindex",
-            help="Reindex a specific record and all its notes from disk files",
-        )
-        
-        record_reindex_parser.add_argument(
-            "record_id",
-            help="Record ID to reindex"
-        )
-
-        self.record_reindex_parser = record_reindex_parser
-
-        
         # ====================================================================
         # NOTE COMMANDS
         # ====================================================================
@@ -7769,7 +7851,27 @@ class IncidentCLI:
         # admin reindex
         admin_reindex_parser = admin_subparsers.add_parser(
             "reindex",
-            help="Rebuild search index",
+            help="Rebuild search index (all records, or specific RECORD_IDs)",
+        )
+
+        admin_reindex_parser.add_argument(
+            "record_ids",
+            nargs="*",
+            metavar="RECORD_ID",
+            help="Record IDs to reindex (default: all records)",
+        )
+
+        admin_reindex_parser.add_argument(
+            "--force",
+            "-f",
+            action="store_true",
+            help="Force reindex even if mtime/hash are unchanged",
+        )
+
+        admin_reindex_parser.add_argument(
+            "--skip-mtime",
+            action="store_true",
+            help="Skip mtime check and rely on MD5 hash only",
         )
 
         admin_reindex_parser.add_argument(
@@ -7839,9 +7941,6 @@ class IncidentCLI:
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
                     self._cmd_update(parsed)
-                elif parsed.record_command == "reindex":
-                    self._cmd_record_reindex(parsed)
-                    
             elif parsed.command == "note":
                 if parsed.note_command == "add":
                     # Check for --help-fields
@@ -8705,20 +8804,6 @@ $update_kv
                 print(f"{e}", file=sys.stderr)
                 sys.exit(1)            
  
-    def _cmd_record_reindex(self, args):
-        """Reindex a specific record and its notes."""
-        manager = self._get_manager(args)
-        reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
-        
-        success = reindexer.reindex_one(
-            args.record_id,
-            verbose=True
-        )
-        
-        if not success:
-            print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
- 
     def _show_note_fields_help(self, record_id: str):
         """
         Show available fields for a specific record's notes.
@@ -9127,12 +9212,29 @@ $update_kv
             print(output)
             
     def _cmd_reindex(self, args):
-        """Rebuild search index."""
+        """Rebuild search index for all records or specific RECORD_IDs."""
         try:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
-            count = reindexer.reindex_all(verbose=args.verbose)
-            print(f"✓ Reindexed {count} records")
+            force = getattr(args, "force", False)
+            skip_mtime = getattr(args, "skip_mtime", False)
+            record_ids = getattr(args, "record_ids", [])
+
+            if record_ids:
+                failed = []
+                for record_id in record_ids:
+                    success = reindexer.reindex_one(
+                        record_id, verbose=True, force=force, skip_mtime=skip_mtime
+                    )
+                    if not success:
+                        failed.append(record_id)
+                if failed:
+                    for rid in failed:
+                        print(f"Error: Record {rid} not found", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                count = reindexer.reindex_all(verbose=args.verbose, force=force, skip_mtime=skip_mtime)
+                print(f"✓ Reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -10557,6 +10659,35 @@ $update_kv
                 raise RuntimeError(f"Template '{template_id}' not found")
 
             return self._build_template_data(config, template_id)
+
+        elif command == 'reindex':
+            # Optional: record_ids (list), force (bool), skip_mtime (bool)
+            record_ids = params.get('record_ids', [])
+            if isinstance(record_ids, str):
+                record_ids = [record_ids]
+            force = bool(params.get('force', False))
+            skip_mtime = bool(params.get('skip_mtime', False))
+
+            manager = get_manager_with_override()
+            reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
+
+            if record_ids:
+                failed = []
+                counts = {"reindexed": 0, "skipped": 0}
+                for record_id in record_ids:
+                    success = reindexer.reindex_one(
+                        record_id, verbose=False, force=force, skip_mtime=skip_mtime
+                    )
+                    if success:
+                        counts["reindexed"] += 1
+                    else:
+                        failed.append(record_id)
+                if failed:
+                    raise RuntimeError(f"Records not found: {', '.join(failed)}")
+                return {"reindexed": counts["reindexed"], "record_ids": record_ids}
+            else:
+                count = reindexer.reindex_all(verbose=False, force=force, skip_mtime=skip_mtime)
+                return {"reindexed": count}
 
         else:
             raise ValueError(f"Unknown command: {command}")

@@ -318,15 +318,13 @@ indexing:
     description: "Coordinates reindexing operations"
     key_methods:
       reindex_all:
-        line_start: 3723
-        signature: "reindex_all(self, verbose: bool = False) -> int"
-        description: "Rebuild entire index from filesystem"
+        line_start: 3911
+        signature: "reindex_all(self, verbose: bool = False, force: bool = False) -> int"
+        description: "Rebuild entire index from filesystem; skips unchanged files unless force=True"
       reindex_one:
-        line_start: 3759
-        signature: "reindex_one(self, incident_id: str, verbose: bool = False) -> bool"
-        description: "Reindex single record and its notes"
-        note: "Implemented - see line 3759"
-        important: "Note count includes the record itself (stored as first note)"
+        line_start: 3991
+        signature: "reindex_one(self, incident_id: str, verbose: bool = False, force: bool = False) -> bool"
+        description: "Reindex single record and its notes; skips unchanged files unless force=True"
 
 # ============================================================================
 # High-Level Manager API
@@ -397,7 +395,7 @@ cli:
         signature: "setup_commands(self)"
         description: "Configure all CLI parsers"
         subcommands:
-          - "record (new, view, list, update, reindex)"
+          - "record (new, view, list, update)"
           - "note (add, list, view, search)"
           - "admin (init, reindex, get-id, validate)"
           - "json (io, import-record, update-record, export-record, search-records, etc.)"
@@ -420,12 +418,6 @@ cli:
         line_start: 5068
         signature: "_cmd_record_update(self, args)"
         description: "Handle 'aver record update'"
-      _cmd_record_reindex:
-        line_start: 5609
-        signature: "_cmd_record_reindex(self, args)"
-        description: "Handle 'aver record reindex' (selective reindex)"
-        note: "New in latest version"
-    
     # Note commands
     note_commands:
       _cmd_note_add:
@@ -451,10 +443,10 @@ cli:
         line_start: 6034
         signature: "_cmd_admin_init(self, args)"
         description: "Handle 'aver admin init'"
-      _cmd_admin_reindex:
-        line_start: 8671
-        signature: "_cmd_admin_reindex(self, args)"
-        description: "Handle 'aver admin reindex' (full reindex)"
+      _cmd_reindex:
+        line_start: 9218
+        signature: "_cmd_reindex(self, args)"
+        description: "Handle 'aver admin reindex [RECORD_ID ...] [--force] [--verbose]' — full or selective reindex"
       _cmd_admin_get_id:
         line_start: 8685
         signature: "_cmd_admin_get_id(self, args)"
@@ -750,12 +742,12 @@ recent_additions:
     note: "Returns only an integer count. --count requires --ksearch for record list. Also adds count_only parameter to JSON IO search-records and search-notes commands."
     json_io_usage: '{"command": "search-records", "params": {"ksearch": "status=open", "count_only": true}}'
 
-  - feature: "Selective record reindex"
-    command: "aver record reindex RECORD_ID"
-    added: "2025-02-21"
+  - feature: "Unified reindex command with skip-on-unchanged optimization"
+    command: "aver admin reindex [RECORD_ID ...] [--force] [--skip-mtime] [--verbose]"
+    added: "2026-02-27"
     status: "✅ IMPLEMENTED"
-    line: 3759
-    note: "Reindex reports note count including record itself (minimum 1)"
+    note: "No RECORD_IDs = full reindex; one or more RECORD_IDs = selective. Skips files where mtime unchanged; falls back to MD5 hash check if mtime differs. --force bypasses all skip checks. --skip-mtime bypasses mtime shortcut and always compares MD5 hashes. Also available as JSON IO command 'reindex'."
+    json_io_usage: '{"command": "reindex", "params": {"record_ids": ["REC-123"], "force": false, "skip_mtime": false}}'
 
   - feature: "Admin get-id command"
     command: "aver admin get-id"

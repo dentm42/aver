@@ -70,7 +70,6 @@
 - [record new](#record-new)
 - [record update](#record-update)
 - [record list](#record-list)
-- [record reindex](#record-reindex)
 - [record search](#record-search)
 - [note add](#note-add)
 - [note list](#note-list)
@@ -749,7 +748,7 @@ This table is useful for:
 - Auditing when files were last indexed (`file_mtime`)
 - Building external tools that need to track file provenance
 
-The table is cleared and rebuilt by `admin reindex`.
+`admin reindex` uses this table to skip unchanged files. Entries are updated each time a file is reindexed. Use `--force` to bypass the table entirely and reindex everything unconditionally.
 
 ### Library Aliases
 
@@ -1001,12 +1000,42 @@ Returns only the integer count of matching notes with no other output.
 
 ### admin reindex
 
-Rebuild the search index.
+Rebuild the search index — all records, or a specific set of records.
 
 ```bash
+# Full reindex (all records)
 aver admin reindex
+
+# Selective reindex (one or more records)
+aver admin reindex REC-001
+aver admin reindex REC-001 BUG-042 FEAT-007
+
+# Verbose progress output
 aver admin reindex --verbose
+
+# Force reindex even if files appear unchanged
+aver admin reindex --force
+aver admin reindex REC-001 --force
+
+# Skip mtime shortcut; always compare MD5 hash
+aver admin reindex --skip-mtime
+aver admin reindex REC-001 --skip-mtime
 ```
+
+#### How change detection works
+
+`admin reindex` is optimised to skip files that have not changed, making repeated full reindexes fast on large record sets. The check proceeds in two steps:
+
+1. **mtime check** (fast): If the file's modification time matches the value stored in `file_index`, the file is assumed unchanged and skipped.
+2. **MD5 hash check** (slower, only if mtime differs): If the mtime has changed, the file is read and its MD5 hash is compared against the stored value. If the hash matches the file is still skipped; if it differs, the file is reindexed.
+
+| Flag | Behaviour |
+|------|-----------|
+| _(none)_ | mtime check → hash check on mtime miss → skip if match |
+| `--skip-mtime` | Skip mtime check; always read file and compare MD5 hash |
+| `--force` | Skip all change detection; always reindex every file |
+
+Use `--skip-mtime` when files may have been copied with preserved timestamps (e.g. `cp -p`, `rsync -a`, `git checkout`). Use `--force` after schema changes or to recover from a corrupted index.
 
 ### admin template-data
 
@@ -1087,16 +1116,9 @@ Template: bug
 
 This command is also available via **JSON IO** as the `template-data` command (see JSON IO documentation).
 
-### record reindex
+### Reindexing
 
-Reindex a single record (and all its notes) without rebuilding the entire database.
-
-```bash
-aver record reindex REC-001
-aver record reindex BUG-042
-```
-
-Use this after manually editing a record's Markdown file. For rebuilding the entire index, use `admin reindex`.
+Use `admin reindex` to reindex records after manually editing Markdown files. Pass one or more record IDs to reindex only those records; omit them for a full reindex. See [admin reindex](#admin-reindex) for the full reference including `--force` and `--skip-mtime`.
 
 ---
 

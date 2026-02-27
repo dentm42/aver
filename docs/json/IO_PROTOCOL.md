@@ -327,6 +327,59 @@ Get a reply template with quoted original note text.
 }
 ```
 
+### 12. reindex
+Reindex records from their Markdown files. Equivalent to `admin reindex` on the command line. Supports the same change-detection optimisation: files whose mtime (and, if mtime changed, MD5 hash) are unchanged are skipped unless overridden.
+
+**Parameters:**
+- `record_ids` (optional): String or array of record IDs to reindex. Omit to reindex all records.
+- `force` (optional, default: false): Skip all change detection; always reindex.
+- `skip_mtime` (optional, default: false): Skip the mtime shortcut; read each file and compare its MD5 hash.
+
+**Examples:**
+```json
+{"command": "reindex", "params": {}}
+```
+```json
+{"command": "reindex", "params": {"record_ids": ["REC-001", "BUG-042"]}}
+```
+```json
+{"command": "reindex", "params": {"record_ids": "REC-001", "force": true}}
+```
+```json
+{"command": "reindex", "params": {"skip_mtime": true}}
+```
+
+**Success Response (full reindex):**
+```json
+{
+  "success": true,
+  "result": {
+    "reindexed": 5
+  }
+}
+```
+
+**Success Response (selective reindex):**
+```json
+{
+  "success": true,
+  "result": {
+    "reindexed": 2,
+    "record_ids": ["REC-001", "BUG-042"]
+  }
+}
+```
+
+`reindexed` reflects only the files that were actually reindexed; files skipped due to unchanged mtime/hash are not counted.
+
+**Error Response (record not found):**
+```json
+{
+  "success": false,
+  "error": "Records not found: REC-MISSING"
+}
+```
+
 ### 11. template-data
 Get complete field definitions for a template (record fields and note fields). Intended for UI pre-validation — lets a client know what fields exist, their types, accepted values, defaults, and whether they are system-populated before creating or updating records.
 

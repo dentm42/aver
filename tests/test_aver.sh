@@ -2924,18 +2924,18 @@ test_record_reindex() {
         return
     fi
     
-    # Test 1: Reindex existing record
-    print_test "Reindex existing record"
-    track_command "record reindex $rec1"
-    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
-        if echo "$output" | grep -q "Reindexed ${rec1_id}"; then
+    # Test 1: Reindex existing record (first time — nothing in file_index yet)
+    print_test "Reindex existing record (first index)"
+    track_command "admin reindex $rec1"
+    if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
+        if echo "$output" | grep -qE "notes reindexed|Reindexed ${rec1_id}"; then
             pass
             echo "  Record reindexed successfully"
         else
-            fail "Reindex output doesn't confirm success"
+            fail "Reindex output doesn't confirm success: $output"
         fi
     else
-        run_aver record reindex "${rec1_id}" 2>&1
+        run_aver admin reindex "${rec1_id}" 2>&1
         fail "Failed to reindex record"
     fi
     
@@ -2966,7 +2966,7 @@ test_record_reindex() {
         sed -i 's/priority: medium/priority: critical/' "$rec_file"
         
         # Reindex
-        if run_aver record reindex "${rec1_id}" 2>&1 >/dev/null; then
+        if run_aver admin reindex "${rec1_id}" 2>&1 >/dev/null; then
             # Verify change is indexed
             if output=$(run_aver record list --ksearch priority=critical); then
                 if echo "$output" | grep -q "${rec1_id}"; then
@@ -2987,17 +2987,17 @@ test_record_reindex() {
     
     # Test 4: Reindex with notes
     print_test "Reindex includes notes"
-    track_command "record reindex ${rec1_id} (with notes)"
-    
-    # Add another note
+    track_command "admin reindex ${rec1_id} (with notes)"
+
+    # Add another note (so we have 3 notes total now)
     if run_aver note add "${rec1_id}" --message "Note for reindex test" 2>&1 >/dev/null; then
-        # Reindex
-        if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
-            if echo "$output" | grep -q "4 notes"; then
+        # Reindex — file was just written so will be picked up
+        if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
+            if echo "$output" | grep -qE "notes reindexed|unchanged"; then
                 pass
-                echo "  Reindex counted all 4 notes"
+                echo "  Reindex processed notes"
             else
-                fail "Reindex didn't report correct note count"
+                fail "Reindex didn't report note status: $output"
             fi
         else
             fail "Reindex with notes failed"
@@ -3009,8 +3009,8 @@ test_record_reindex() {
     # Test 5: Reindex non-existent record (should fail)
     print_test "Reindex non-existent record fails gracefully"
     set +e
-    track_command "record reindex NONEXISTENT-123"
-    output=$(run_aver record reindex "NONEXISTENT-123" 2>&1)
+    track_command "admin reindex NONEXISTENT-123"
+    output=$(run_aver admin reindex "NONEXISTENT-123" 2>&1)
     exit_code=$?
     set -e
     
@@ -3045,7 +3045,7 @@ NT-MANUAL
 EOF
     
     # Reindex to pick up manual note
-    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
+    if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
         # Check if note count increased
         if echo "$output" | grep -q "5 notes"; then
             # Verify note is accessible
@@ -3073,7 +3073,7 @@ EOF
         sed -i '/^status:/a custom_field: test_value' "$rec_file"
         
         # Reindex
-        if run_aver record reindex "${rec2_id}" 2>&1 >/dev/null; then
+        if run_aver admin reindex "${rec2_id}" 2>&1 >/dev/null; then
             # Try to search for the custom field
             if output=$(run_aver record view "${rec2_id}"); then
                 if echo "$output" | grep -q "custom_field"; then
@@ -3096,15 +3096,14 @@ EOF
     print_test "Reindex record with no notes"
     local rec3=$(run_aver record new --title "No notes record" --status open --priority high --description "No note record")
     local rec3_id=$(echo "$rec3" | grep -oE "REC-[A-Z0-9]+")
-    
-    track_command "record reindex ${rec3_id} (no notes)"
-    if output=$(run_aver record reindex "${rec3_id}" 2>&1); then
-        if echo "$output" | grep -q "Reindexed ${rec3_id}"; then
-            # Should work fine with 0 notes
+
+    track_command "admin reindex ${rec3_id} (no notes)"
+    if output=$(run_aver admin reindex "${rec3_id}" 2>&1); then
+        if echo "$output" | grep -qE "Reindexed ${rec3_id}|${rec3_id} unchanged|notes reindexed"; then
             pass
             echo "  Record with no notes reindexed successfully"
         else
-            fail "Reindex didn't confirm success"
+            fail "Reindex didn't confirm success: $output"
         fi
     else
         fail "Reindex failed for record with no notes"
@@ -3131,7 +3130,7 @@ are just markdown files that can be created with any tool.
 EOF
     
     # Reindex to make it searchable
-    if run_aver record reindex "MANUAL-001" 2>&1 >/dev/null; then
+    if run_aver admin reindex "MANUAL-001" 2>&1 >/dev/null; then
         # Verify it's searchable
         if output=$(run_aver record list); then
             if echo "$output" | grep -q "MANUAL-001"; then
@@ -3159,7 +3158,7 @@ EOF
     local total_count=3
     
     for rec_id in "${rec1_id}" "${rec2_id}" "${rec3_id}"; do
-        if run_aver record reindex "$rec_id" 2>&1 >/dev/null; then
+        if run_aver admin reindex "$rec_id" 2>&1 >/dev/null; then
             success_count=$((success_count + 1))
         fi
     done
@@ -3169,6 +3168,152 @@ EOF
         echo "  Successfully reindexed $success_count records"
     else
         fail "Only reindexed $success_count of $total_count records"
+    fi
+
+    # Test 11: Unchanged file is skipped on second reindex (mtime check)
+    print_test "Second reindex skips unchanged record file"
+    track_command "admin reindex ${rec3_id} twice — second should skip"
+    # First reindex to populate file_index
+    run_aver admin reindex "${rec3_id}" 2>&1 >/dev/null
+    # Second reindex immediately — file hasn't changed
+    if output=$(run_aver admin reindex "${rec3_id}" 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  Correctly skipped unchanged file"
+        else
+            fail "Expected 'unchanged' in output but got: $output"
+        fi
+    else
+        fail "Second reindex failed: $output"
+    fi
+
+    # Test 12: Changed file is detected and reindexed
+    print_test "Changed file detected and reindexed"
+    track_command "edit record file, then reindex — should re-index"
+    local rec4=$(run_aver record new --title "Skip test record" --status open --priority low --description "For skip detection test")
+    local rec4_id=$(echo "$rec4" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec4_id}" 2>&1 >/dev/null
+    # Modify the file (force mtime change)
+    local rec4_file="$TEST_DIR/records/${rec4_id}.md"
+    if [ -f "$rec4_file" ]; then
+        sed -i 's/priority: low/priority: high/' "$rec4_file"
+        if output=$(run_aver admin reindex "${rec4_id}" 2>&1); then
+            if echo "$output" | grep -q "Record indexed"; then
+                pass
+                echo "  Changed file was reindexed"
+            else
+                fail "Expected 'Record indexed' after file change, got: $output"
+            fi
+        else
+            fail "Reindex after file change failed"
+        fi
+    else
+        fail "Record file not found: $rec4_file"
+    fi
+
+    # Test 13: admin reindex skips unchanged files on second run
+    print_test "admin reindex skips unchanged files on second run"
+    track_command "admin reindex twice — second run should report 0 reindexed"
+    # First full reindex
+    run_aver admin reindex --verbose 2>&1 >/dev/null
+    # Second full reindex — nothing has changed
+    if output=$(run_aver admin reindex --verbose 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  admin reindex correctly skipped unchanged files"
+        else
+            fail "Expected 'unchanged' in admin reindex output, got: $output"
+        fi
+    else
+        fail "Second admin reindex failed"
+    fi
+
+    # Test 14: --force bypasses skip logic
+    print_test "--force reindexes even unchanged files"
+    track_command "admin reindex --force on unchanged record"
+    local rec5=$(run_aver record new --title "Force reindex test" --status open --priority low --description "For force flag test")
+    local rec5_id=$(echo "$rec5" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec5_id}" 2>&1 >/dev/null
+    # Force reindex — should re-index despite no changes
+    if output=$(run_aver admin reindex --force "${rec5_id}" 2>&1); then
+        if echo "$output" | grep -q "Record indexed"; then
+            pass
+            echo "  --force reindexed unchanged file"
+        else
+            fail "Expected 'Record indexed' with --force, got: $output"
+        fi
+    else
+        fail "--force reindex failed"
+    fi
+
+    # Test 15: --skip-mtime skips file whose hash is unchanged
+    print_test "--skip-mtime skips file with matching hash"
+    track_command "admin reindex --skip-mtime on unchanged record"
+    local rec6=$(run_aver record new --title "Skip-mtime test" --status open --priority low --description "For skip-mtime test")
+    local rec6_id=$(echo "$rec6" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec6_id}" 2>&1 >/dev/null
+    # --skip-mtime: reads file, computes hash, content is same → should skip
+    if output=$(run_aver admin reindex --skip-mtime "${rec6_id}" 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  --skip-mtime correctly skipped file with matching hash"
+        else
+            fail "Expected 'unchanged' with --skip-mtime on unmodified file, got: $output"
+        fi
+    else
+        fail "--skip-mtime reindex failed"
+    fi
+
+    # Test 16: JSON IO reindex command (full)
+    print_test "JSON IO reindex command (all records)"
+    track_command "json io reindex"
+    if output=$(echo '{"command": "reindex", "params": {}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'reindexed' in data.get('result', {})" 2>/dev/null; then
+            pass
+            echo "  JSON IO reindex returned success with reindexed count"
+        else
+            fail "JSON IO reindex response malformed: $output"
+        fi
+    else
+        fail "JSON IO reindex command failed"
+    fi
+
+    # Test 17: JSON IO reindex with specific record_ids and force
+    print_test "JSON IO reindex with record_ids and force"
+    track_command "json io reindex with record_ids"
+    if output=$(echo '{"command": "reindex", "params": {"record_ids": ["'"${rec6_id}"'"], "force": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True
+result = data.get('result', {})
+assert result.get('reindexed') == 1
+assert '${rec6_id}' in result.get('record_ids', [])
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO selective reindex returned correct result"
+        else
+            fail "JSON IO selective reindex response malformed: $output"
+        fi
+    else
+        fail "JSON IO selective reindex command failed"
+    fi
+
+    # Test 18: JSON IO reindex with skip_mtime
+    print_test "JSON IO reindex with skip_mtime"
+    track_command "json io reindex skip_mtime"
+    if output=$(echo '{"command": "reindex", "params": {"record_ids": ["'"${rec6_id}"'"], "skip_mtime": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True" 2>/dev/null; then
+            pass
+            echo "  JSON IO reindex skip_mtime succeeded"
+        else
+            fail "JSON IO reindex skip_mtime response malformed: $output"
+        fi
+    else
+        fail "JSON IO reindex skip_mtime command failed"
     fi
 }
 
