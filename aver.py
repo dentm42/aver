@@ -7609,8 +7609,13 @@ class IncidentCLI:
             required=True,
             help="JSON data as string, or '-' to read from stdin",
         )
-        
-        # json import-note  
+        json_import_record_parser.add_argument(
+            "--use-id",
+            dest="custom_id",
+            help="Use custom record ID (A-Z, a-z, 0-9, _, - only). Must be unique.",
+        )
+
+        # json import-note
         json_import_note_parser = json_subparsers.add_parser(
             "import-note",
             help="Import a note from JSON",
@@ -9470,8 +9475,9 @@ $update_kv
                     use_editor=False,
                     use_yaml_editor=False,
                     template_id=template_id or resolved_template_id,
+                    custom_id=getattr(args, 'custom_id', None),
                 )
-                
+
                 # Output JSON response
                 result = {
                     "success": True,
@@ -10311,35 +10317,36 @@ $update_kv
             
         elif command == 'import-record':
             # Required: content
-            # Optional: fields, template
+            # Optional: fields, template, record_id
             if 'content' not in params:
                 raise ValueError("Missing required parameter: content")
-            
+
             fields = params.get('fields', {})
             content = params['content']
             template_id = params.get('template')
-            
+            custom_id = params.get('record_id')
+
             # Create markdown content
             markdown_content = MarkdownDocument.create(fields, content)
-            
+
             # Write to temp file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
                 f.write(markdown_content)
                 temp_file = f.name
-            
+
             try:
                 manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
-                
+
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
                     manager,
                     args,
                     is_note=False,
                 )
-                
+
                 processed_content = MarkdownDocument.create(frontmatter, body)
                 temp_incident = Incident.from_markdown(processed_content, "TEMP", manager.project_config)
-                
+
                 record_id = manager.create_incident(
                     kv_strings=temp_incident.kv_strings,
                     kv_integers=temp_incident.kv_integers,
@@ -10348,8 +10355,9 @@ $update_kv
                     use_editor=False,
                     use_yaml_editor=False,
                     template_id=template_id or resolved_template_id,
+                    custom_id=custom_id,
                 )
-                
+
                 return {
                     "record_id": record_id,
                 }

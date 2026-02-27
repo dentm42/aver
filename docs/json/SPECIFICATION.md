@@ -100,6 +100,9 @@ Implemented 13 new methods in the `IncidentCLI` class:
 # From command line argument
 aver json import-record --data '{"content": "Bug report", "fields": {"status": "open"}}'
 
+# With a custom record ID
+aver json import-record --data '{"content": "Bug report", "fields": {"status": "open"}}' --use-id MY-CUSTOM-ID
+
 # From stdin
 echo '{"content": "Bug report", "fields": {"status": "open"}}' | aver json import-record --data -
 ```
@@ -208,7 +211,7 @@ All standard JSON commands are supported in IO mode:
 - `export-note` - params: `{record_id, note_id}`
 - `search-records` - params: `{ksearch?, ksort?, limit?, count_only?, max?}`
 - `search-notes` - params: `{ksearch?, limit?, count_only?}`
-- `import-record` - params: `{content, fields?, template?}`
+- `import-record` - params: `{content, fields?, template?, record_id?}`
 - `import-note` - params: `{record_id, content, fields?}`
 - `update-record` - params: `{record_id, content?, fields?}`
 - `schema-record` - params: `{template?}`

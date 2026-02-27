@@ -237,6 +237,12 @@ aver record new --title "Server down" --text location=us-west-2 --number error_c
 aver record new --from-file bug-report.md
 ```
 
+**With a custom record ID**:
+```bash
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
+```
+The ID must use only A-Z, a-z, 0-9, `_`, and `-`, and must be unique. If omitted, an ID is auto-generated.
+
 ### Using --help-fields for Records
 
 To see what special fields are available for records:
@@ -877,6 +883,11 @@ aver record new --template bug --help-fields
 **From file**:
 ```bash
 aver record new --from-file record.md
+```
+
+**With custom record ID**:
+```bash
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
 ```
 
 ### record update

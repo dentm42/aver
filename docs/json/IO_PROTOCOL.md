@@ -186,6 +186,7 @@ Create a new record.
 - `content` (required): Record content/description
 - `fields` (optional): Key-value field pairs
 - `template` (optional): Template identifier
+- `record_id` (optional): Custom record ID to use (A-Z, a-z, 0-9, `_`, `-` only). Must be unique. If omitted, an ID is auto-generated.
 
 **Example:**
 ```json
@@ -195,6 +196,18 @@ Create a new record.
     "content": "New bug discovered in authentication",
     "fields": {"status": "open", "priority": "critical", "component": "auth"},
     "template": "bug_report"
+  }
+}
+```
+
+**Example with custom ID:**
+```json
+{
+  "command": "import-record",
+  "params": {
+    "content": "New bug discovered in authentication",
+    "fields": {"status": "open"},
+    "record_id": "BUG-auth-001"
   }
 }
 ```
