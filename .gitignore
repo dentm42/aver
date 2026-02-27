@@ -3,3 +3,5 @@ CLAUDE.md
 .claude-tracking/
 .claude
 __pycache__/
+tools/aver/.venv
+helpers/repo.skel/tools/aver/.venv

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TOOL_DIR="$REPO_ROOT/tools/aver"
+SCRIPT_PATH="$TOOL_DIR/aver.py"
+
+# Path 1: Use uv if installed
+if command -v uv >/dev/null 2>&1; then
+    exec uv run "$SCRIPT_PATH" "$@"
+fi
+
+# Path 2: Fallback to standard venv and pip
+VENV_DIR="$TOOL_DIR/.venv"
+
+if [ ! -d "$VENV_DIR" ]; then
+    echo "uv not found. Falling back to standard venv..."
+    python3 -m venv "$VENV_DIR"
+    "$VENV_DIR/bin/pip" install --quiet -r "$TOOL_DIR/requirements.txt"
+fi
+
+exec "$VENV_DIR/bin/python" "$SCRIPT_PATH" "--location" "${REPO_ROOT}" "--override-repo-boundary" "--use-git-id" "$@"
