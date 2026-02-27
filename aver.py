@@ -4955,297 +4955,300 @@ class IncidentManager:
                 edited_incident.kv_floats[key] = original_incident.kv_floats[key].copy()
        
     def update_incident_info(
-        self,
-        incident_id: str,
-        kv_single: Optional[List[str]] = None,
-        kv_multi: Optional[List[str]] = None,
-        kv_strings: Optional[Dict[str, List[str]]] = None,
-        kv_integers: Optional[Dict[str, List[int]]] = None,
-        kv_floats: Optional[Dict[str, List[float]]] = None,
-        description: Optional[str] = None,
-        use_stdin: bool = False,
-        use_editor: bool = False,
-        use_yaml_editor: bool = True,
-        metadata_only: bool = False,
-        allow_validation_editor: bool = True,
-    ) -> bool:
-        """
-        Update incident fields from KV list/dicts and/or description.
-        
-        When use_editor=True and use_yaml_editor=True (default), presents the full
-        incident with yaml frontmatter for editing. Non-editable special fields are
-        filtered out during editing and restored afterwards.
-    
-        Args:
-            incident_id: Incident ID
-            kv_single: List of single-value KV strings to update/remove (replaces)
-            kv_multi: List of multi-value KV strings to update/remove (appends)
-            kv_strings: Direct KV strings dict (for --from-file)
-            kv_integers: Direct KV integers dict (for --from-file)
-            kv_floats: Direct KV floats dict (for --from-file)
-            description: Optional new description
-            use_stdin: Read description from STDIN
-            use_editor: Launch editor for description
-            use_yaml_editor: If True with use_editor, edit full record with yaml (default)
-    
-        Example:
-            manager.update_incident_info(
-                incident_id,
-                kv_single=["status$resolved"],
-                kv_multi=["assignees$alice"],
-                description="Fixed the issue"
-            )
-        """
-        incident = self.storage.load_incident(incident_id, self.project_config)
-        if not incident:
-            raise RuntimeError(f"Incident {incident_id} not found")
-    
-        # Detect template from incident's template_id field
-        incident_template_id = self._get_incident_template_id(incident)
-        if incident_template_id:
-            # Check if template still exists
-            if not self.project_config.has_template(incident_template_id):
-                print(
-                    f"\n{'='*70}",
-                    file=sys.stderr
-                )
-                print(
-                    f"WARNING: Record was created with template '{incident_template_id}'",
-                    file=sys.stderr
-                )
-                print(
-                    f"but that template no longer exists in the configuration.",
-                    file=sys.stderr
-                )
-                print(
-                    f"{'='*70}\n",
-                    file=sys.stderr
-                )
-                
-                response = input("Proceed with update using global fields only? (y/n): ").strip().lower()
-                if response != 'y':
-                    print("Update cancelled", file=sys.stderr)
-                    return False
-                
-                # Clear template_id so we use global fields
-                incident_template_id = None
-    
-        author = self.effective_user["handle"]
-        now = self._generate_timestamp()
-    
-        updated_fields = []
-        previous_content = None
-        orig_kv_strings=incident.kv_strings;
-        orig_kv_integers=incident.kv_integers;        
-        orig_kv_floats=incident.kv_floats;
-        
-        # Handle direct KV dicts (from --from-file)
-        if kv_strings is not None or kv_integers is not None or kv_floats is not None:
-            # Direct KV mode - replace incident's KV data entirely
-            if kv_strings:
-                incident.kv_strings = kv_strings.copy()
-            if kv_integers:
-                incident.kv_integers = kv_integers.copy()
-            if kv_floats:
-                incident.kv_floats = kv_floats.copy()
+            self,
+            incident_id: str,
+            kv_single: Optional[List[str]] = None,
+            kv_multi: Optional[List[str]] = None,
+            kv_strings: Optional[Dict[str, List[str]]] = None,
+            kv_integers: Optional[Dict[str, List[int]]] = None,
+            kv_floats: Optional[Dict[str, List[float]]] = None,
+            description: Optional[str] = None,
+            use_stdin: bool = False,
+            use_editor: bool = False,
+            use_yaml_editor: bool = True,
+            metadata_only: bool = False,
+            allow_validation_editor: bool = True,
+        ) -> bool:
+            """
+            Update incident fields from KV list/dicts and/or description.
             
-            # Skip the normal KV list processing
-            has_kv_to_process = False
-        else:
-            # Normal KV list mode
-            has_kv_to_process = bool(kv_single or kv_multi)
+            When use_editor=True and use_yaml_editor=True (default), presents the full
+            incident with yaml frontmatter for editing. Non-editable special fields are
+            filtered out during editing and restored afterwards.
         
-        # Define processor for update operations
-        def process_update_kv(inc, parsed_single, parsed_multi):
-            # Process single-value KV (replaces)
-            for key, kvtype, op, value in parsed_single:
-                if op == '-':
-                    # Removal
-                    self._remove_kv(inc, key)
-                    updated_fields.append(f"removed {key}")
-                else:
-                    # Update
-                    updated_fields.append(f"Set {key}: {value}")
-                    self._validate_and_store_kv_single(key, kvtype, value, inc)
-            
-            # Process multi-value KV (appends)
-            for key, kvtype, op, value in parsed_multi:
-                if op == '-':
-                    # Removal for multi-value
-                    self._remove_kv(inc, key, value)
-                    updated_fields.append(f"Removed {key}: {value}")
-                else:
-                    updated_fields.append(f"Add {key}: {value}")
-                    self._validate_and_store_kv_multi(key, kvtype, value, inc)
+            Args:
+                incident_id: Incident ID
+                kv_single: List of single-value KV strings to update/remove (replaces)
+                kv_multi: List of multi-value KV strings to update/remove (appends)
+                kv_strings: Direct KV strings dict (for --from-file)
+                kv_integers: Direct KV integers dict (for --from-file)
+                kv_floats: Direct KV floats dict (for --from-file)
+                description: Optional new description
+                use_stdin: Read description from STDIN
+                use_editor: Launch editor for description
+                use_yaml_editor: If True with use_editor, edit full record with yaml (default)
         
-        # Apply KV changes with validation retry loop
-        already_edited_in_validation = False
-        if has_kv_to_process:
-            try:
-                incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
-                    incident,
-                    kv_single,
-                    kv_multi,
-                    allow_validation_editor,
-                    process_update_kv,
+            Example:
+                manager.update_incident_info(
+                    incident_id,
+                    kv_single=["status$resolved"],
+                    kv_multi=["assignees$alice"],
+                    description="Fixed the issue"
                 )
-                if already_edited_in_validation:
-                    updated_fields = ["full record (edited to fix validation)"]
-            except ValueError:
-                # User abandoned validation
-                return False
-        # else: Using direct KV dicts from --from-file, already set above
-                
-        # Handle description/full record updates
-        if (not metadata_only) and (description or use_stdin or use_editor):
-            # Save previous content before updating
-            if incident.content:
-                previous_content = incident.content
-            else:
-                previous_content = None
-            
-            # Determine how to get new content
-            final_description = None
-            
-            # Skip editor if user already edited during validation
-            if already_edited_in_validation:
-                # User already edited the full record during validation error handling
-                # No need to open editor again - the incident is already updated
-                pass
-            elif use_editor and use_yaml_editor:
-                # NEW BEHAVIOR: Edit full record with yaml frontmatter
-                while True:  # ← NEW: Validation loop
-                    final_incident = self._edit_incident_with_yaml(incident)
+            """
+            incident = self.storage.load_incident(incident_id, self.project_config)
+            if not incident:
+                raise RuntimeError(f"Incident {incident_id} not found")
+        
+            # Detect template from incident's template_id field
+            incident_template_id = self._get_incident_template_id(incident)
+            if incident_template_id:
+                # Check if template still exists
+                if not self.project_config.has_template(incident_template_id):
+                    print(
+                        f"\n{'='*70}",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"WARNING: Record was created with template '{incident_template_id}'",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"but that template no longer exists in the configuration.",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"{'='*70}\n",
+                        file=sys.stderr
+                    )
                     
-                    if not final_incident:
-                        # User cancelled
+                    response = input("Proceed with update using global fields only? (y/n): ").strip().lower()
+                    if response != 'y':
+                        print("Update cancelled", file=sys.stderr)
                         return False
                     
-                    # NEW: Validate the edited incident
-                    try:
-                        self._validate_incident_fields(final_incident)
-                        # Validation passed - accept it
-                        incident = final_incident
-                        # updated_fields.append("full record (yaml edit)")
-                        break
+                    # Clear template_id so we use global fields
+                    incident_template_id = None
+        
+            author = self.effective_user["handle"]
+            now = self._generate_timestamp()
+        
+            updated_fields = []
+            previous_content = None
+            orig_kv_strings=incident.kv_strings;
+            orig_kv_integers=incident.kv_integers;        
+            orig_kv_floats=incident.kv_floats;
+            
+            # Handle direct KV dicts (from --from-file)
+            if kv_strings is not None or kv_integers is not None or kv_floats is not None:
+                # Direct KV mode - merge passed-in keys over existing KV data.
+                # Keys present in the passed-in dict overwrite existing values;
+                # keys present only in the existing dict are retained.
+                if kv_strings:
+                    incident.kv_strings = {**incident.kv_strings, **kv_strings}
+                if kv_integers:
+                    incident.kv_integers = {**incident.kv_integers, **kv_integers}
+                if kv_floats:
+                    incident.kv_floats = {**incident.kv_floats, **kv_floats}
+                
+                # Skip the normal KV list processing
+                has_kv_to_process = False
+            else:
+                # Normal KV list mode
+                has_kv_to_process = bool(kv_single or kv_multi)
+            
+            # Define processor for update operations
+            def process_update_kv(inc, parsed_single, parsed_multi):
+                # Process single-value KV (replaces)
+                for key, kvtype, op, value in parsed_single:
+                    if op == '-':
+                        # Removal
+                        self._remove_kv(inc, key)
+                        updated_fields.append(f"removed {key}")
+                    else:
+                        # Update
+                        updated_fields.append(f"Set {key}: {value}")
+                        self._validate_and_store_kv_single(key, kvtype, value, inc)
+                
+                # Process multi-value KV (appends)
+                for key, kvtype, op, value in parsed_multi:
+                    if op == '-':
+                        # Removal for multi-value
+                        self._remove_kv(inc, key, value)
+                        updated_fields.append(f"Removed {key}: {value}")
+                    else:
+                        updated_fields.append(f"Add {key}: {value}")
+                        self._validate_and_store_kv_multi(key, kvtype, value, inc)
+            
+            # Apply KV changes with validation retry loop
+            already_edited_in_validation = False
+            if has_kv_to_process:
+                try:
+                    incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                        incident,
+                        kv_single,
+                        kv_multi,
+                        allow_validation_editor,
+                        process_update_kv,
+                    )
+                    if already_edited_in_validation:
+                        updated_fields = ["full record (edited to fix validation)"]
+                except ValueError:
+                    # User abandoned validation
+                    return False
+            # else: Using direct KV dicts from --from-file, already merged above
+                    
+            # Handle description/full record updates
+            if (not metadata_only) and (description or use_stdin or use_editor):
+                # Save previous content before updating
+                if incident.content:
+                    previous_content = incident.content
+                else:
+                    previous_content = None
+                
+                # Determine how to get new content
+                final_description = None
+                
+                # Skip editor if user already edited during validation
+                if already_edited_in_validation:
+                    # User already edited the full record during validation error handling
+                    # No need to open editor again - the incident is already updated
+                    pass
+                elif use_editor and use_yaml_editor:
+                    # NEW BEHAVIOR: Edit full record with yaml frontmatter
+                    while True:  # ← NEW: Validation loop
+                        final_incident = self._edit_incident_with_yaml(incident)
                         
-                    except ValueError as e:
-                        # Validation failed - ask user
-                        print(f"\n{'='*70}", file=sys.stderr)
-                        print(f"VALIDATION ERROR in edited record", file=sys.stderr)
-                        print(f"{'='*70}", file=sys.stderr)
-                        print(f"{str(e)}", file=sys.stderr)
-                        print(f"{'='*70}\n", file=sys.stderr)
-                        
-                        print("Options:", file=sys.stderr)
-                        print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
-                        print("  [a] Abandon - cancel this update", file=sys.stderr)
-                        
-                        choice = input("\nChoice (e/a): ").strip().lower()
-                        
-                        if choice != 'e':
-                            # Abandon
+                        if not final_incident:
+                            # User cancelled
                             return False
                         
-                        # Loop back and reopen editor with the invalid incident
-                        incident = final_incident
-                        continue                    
-            elif description:
-                final_description = description
-            elif use_stdin and StdinHandler.has_stdin_data():
-                final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
-            elif use_editor:
-                # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
-                final_description = EditorConfig.launch_editor(
-                    initial_content=previous_content or "",
-                )
+                        # NEW: Validate the edited incident
+                        try:
+                            self._validate_incident_fields(final_incident)
+                            # Validation passed - accept it
+                            incident = final_incident
+                            # updated_fields.append("full record (yaml edit)")
+                            break
+                            
+                        except ValueError as e:
+                            # Validation failed - ask user
+                            print(f"\n{'='*70}", file=sys.stderr)
+                            print(f"VALIDATION ERROR in edited record", file=sys.stderr)
+                            print(f"{'='*70}", file=sys.stderr)
+                            print(f"{str(e)}", file=sys.stderr)
+                            print(f"{'='*70}\n", file=sys.stderr)
+                            
+                            print("Options:", file=sys.stderr)
+                            print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
+                            print("  [a] Abandon - cancel this update", file=sys.stderr)
+                            
+                            choice = input("\nChoice (e/a): ").strip().lower()
+                            
+                            if choice != 'e':
+                                # Abandon
+                                return False
+                            
+                            # Loop back and reopen editor with the invalid incident
+                            incident = final_incident
+                            continue                    
+                elif description:
+                    final_description = description
+                elif use_stdin and StdinHandler.has_stdin_data():
+                    final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+                elif use_editor:
+                    # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
+                    final_description = EditorConfig.launch_editor(
+                        initial_content=previous_content or "",
+                    )
+                
+                if final_description is not None:
+                    incident.content = final_description
+                    updated_fields.append("description")
+        
+            # Apply system fields for update (using incident's template if it has one)
+            self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
+        
+            # Save and reindex
+            written_content = self.storage.save_incident(incident, self.project_config)
+            self.index_db.index_incident(
+                incident, self.project_config,
+                file_path=self.storage._get_incident_path(incident.id),
+                file_content=written_content,
+            )
+            self.index_db.index_kv_data(incident, self.project_config)
+        
+            update_msg = ""
+                
+            # Append previous content to update message if it was changed
+            if previous_content and incident.content != previous_content:
+                update_msg += f"\n\n## Previous Content\n\n{previous_content}"
+            # Log update
+
+            if updated_fields:
+                updated_fields_str = '\n * '.join(updated_fields)
+                update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
+                update_msg += f"\n\n"
+
+            update_msg += f"\n\n## Previous Key/Vals\n"
             
-            if final_description is not None:
-                incident.content = final_description
-                updated_fields.append("description")
-    
-        # Apply system fields for update (using incident's template if it has one)
-        self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
-    
-        # Save and reindex
-        written_content = self.storage.save_incident(incident, self.project_config)
-        self.index_db.index_incident(
-            incident, self.project_config,
-            file_path=self.storage._get_incident_path(incident.id),
-            file_content=written_content,
-        )
-        self.index_db.index_kv_data(incident, self.project_config)
-    
-        update_msg = ""
+            # System fields to skip
+            skip_fields = {}
             
-        # Append previous content to update message if it was changed
-        if previous_content and incident.content != previous_content:
-            update_msg += f"\n\n## Previous Content\n\n{previous_content}"
-        # Log update
+            # Format all string KV that isn't in skip list
+            for key, values in orig_kv_strings.items():
+                if key not in skip_fields and values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
+            
+            # Format all integer KV
+            for key, values in orig_kv_integers.items():
+                if values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
+            
+            # Format all float KV
+            for key, values in orig_kv_floats.items():
+                if values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
 
-        if updated_fields:
-            updated_fields_str = '\n * '.join(updated_fields)
-            update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
-            update_msg += f"\n\n"
+            
+            update_id = IDGenerator.generate_update_id()
+            
+            # Get template_id from incident for the update
+            incident_template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                incident_template_id = incident.kv_strings['template_id'][0]
+            
+            # Create update with minimal info
+            incident_update = IncidentUpdate(
+                id=update_id,
+                message=update_msg,
+            )
+            
+            # Apply special fields
+            self._apply_special_fields(
+                incident_update,
+                is_create=True,
+                template_name=incident_template_id,
+                for_notes=True,
+            )
+            
+            # Set incident_id explicitly
+            if not incident_update.kv_strings:
+                incident_update.kv_strings = {}
+            incident_update.kv_strings['incident_id'] = [incident_id]
 
-        update_msg += f"\n\n## Previous Key/Vals\n"
-        
-        # System fields to skip
-        skip_fields = {}
-        
-        # Format all string KV that isn't in skip list
-        for key, values in orig_kv_strings.items():
-            if key not in skip_fields and values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
-        
-        # Format all integer KV
-        for key, values in orig_kv_integers.items():
-            if values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
-        
-        # Format all float KV
-        for key, values in orig_kv_floats.items():
-            if values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
+            written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
+            self.index_db.index_update(
+                incident_update,
+                file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
+                file_content=written_content,
+            )
 
-        
-        update_id = IDGenerator.generate_update_id()
-        
-        # Get template_id from incident for the update
-        incident_template_id = None
-        if incident.kv_strings and 'template_id' in incident.kv_strings:
-            incident_template_id = incident.kv_strings['template_id'][0]
-        
-        # Create update with minimal info
-        incident_update = IncidentUpdate(
-            id=update_id,
-            message=update_msg,
-        )
-        
-        # Apply special fields
-        self._apply_special_fields(
-            incident_update,
-            is_create=True,
-            template_name=incident_template_id,
-            for_notes=True,
-        )
-        
-        # Set incident_id explicitly
-        if not incident_update.kv_strings:
-            incident_update.kv_strings = {}
-        incident_update.kv_strings['incident_id'] = [incident_id]
+            return True
 
-        written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
-        self.index_db.index_update(
-            incident_update,
-            file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
-            file_content=written_content,
-        )
-
-        return True
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
