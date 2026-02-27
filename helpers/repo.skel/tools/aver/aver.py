@@ -1613,7 +1613,10 @@ class DatabaseDiscovery:
         
         # No config file is acceptable; return empty dict
         if not config_path.exists():
-            return {}
+            #return {}
+            config["user"]["email"]="nobody@example.com";
+            config["user"]["handle"]="(unknown user)";
+            return dict_to_configdict(config)
         
         try:
             with open(config_path, "rb") as f:
@@ -6831,7 +6834,7 @@ class IncidentCLI:
         - If prefer_git_identity = false (config): return None (use aver config)
         - If --use-git-id flag: return git identity, print notice about prefer_git_identity
         - If --no-use-git-id flag: return None (use aver config)
-        - Otherwise: raise RuntimeError with instructions
+        - Otherwise: Raise error and print error message.
         
         The caller is responsible for applying the returned identity via
         manager.set_user_override() if non-None.
