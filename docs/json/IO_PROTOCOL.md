@@ -113,9 +113,11 @@ Export a single note.
 Search for records.
 
 **Parameters:**
-- `ksearch` (optional): Search expression(s) - can be a string or array of strings
-- `ksort` (optional): Sort expression(s) - can be a string or array of strings  
+- `ksearch` (optional): Search expression(s) — string or array of strings. Multiple expressions are ANDed together. Use the `^` operator for OR within a single field (e.g. `"status^open|closed"`).
+- `ksort` (optional): Sort expression(s) — string or array of strings. Required when `max` is used.
 - `limit` (optional, default: 100): Maximum results to return
+- `count_only` (optional, default: false): If true, return only the count (integer), not the records
+- `max` (optional): String or array of strings — field key(s). After applying ksearch/ksort/limit, post-filters the result set to only those records that hold the maximum value for any of the specified keys. Requires `ksort`. Keys are evaluated independently (OR logic).
 
 **Examples:**
 ```json
@@ -126,7 +128,23 @@ Search for records.
 {"command": "search-records", "params": {"ksearch": ["status=open", "priority=high"], "ksort": ["created_at-"], "limit": 5}}
 ```
 
-**Success Response:**
+```json
+{"command": "search-records", "params": {"ksearch": "status^open|in_progress|closed"}}
+```
+
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "count_only": true}}
+```
+
+```json
+{"command": "search-records", "params": {"ksort": "severity", "max": "severity"}}
+```
+
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}
+```
+
+**Success Response (records):**
 ```json
 {
   "success": true,
@@ -140,16 +158,25 @@ Search for records.
 }
 ```
 
+**Success Response (count_only):**
+```json
+{"success": true, "result": {"count": 3}}
+
 ### 4. search-notes
 Search for notes across all records.
 
 **Parameters:**
-- `ksearch` (optional): Search query string
+- `ksearch` (optional): Search expression(s) — string or array of strings. Supports the `^` operator for OR within a single field.
 - `limit` (optional): Maximum results to return
+- `count_only` (optional, default: false): If true, return only the count (integer)
 
 **Example:**
 ```json
 {"command": "search-notes", "params": {"ksearch": "category=bugfix", "limit": 5}}
+```
+
+```json
+{"command": "search-notes", "params": {"ksearch": "category^bugfix|investigation"}}
 ```
 
 ### 5. import-record
@@ -299,6 +326,82 @@ Get a reply template with quoted original note text.
   }
 }
 ```
+
+### 11. template-data
+Get complete field definitions for a template (record fields and note fields). Intended for UI pre-validation — lets a client know what fields exist, their types, accepted values, defaults, and whether they are system-populated before creating or updating records.
+
+**Parameters:**
+- `template_id` (optional): Template to inspect. Omit to get global defaults (no template).
+
+**Examples:**
+```json
+{"command": "template-data", "params": {"template_id": "bug"}}
+```
+```json
+{"command": "template-data", "params": {}}
+```
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "result": {
+    "template_id": "bug",
+    "record_prefix": "BUG",
+    "note_prefix": "COMMENT",
+    "record_fields": {
+      "title": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": true
+      },
+      "status": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": true,
+        "accepted_values": ["new", "confirmed", "in_progress", "fixed", "verified", "closed"],
+        "default": "new"
+      },
+      "created_by": {
+        "type": "single",
+        "value_type": "string",
+        "editable": false,
+        "required": true,
+        "system_value": "user_name"
+      }
+    },
+    "note_fields": {
+      "author": {
+        "type": "single",
+        "value_type": "string",
+        "editable": false,
+        "required": true,
+        "system_value": "user_name"
+      },
+      "category": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": false,
+        "accepted_values": ["investigation", "bugfix", "workaround"]
+      }
+    }
+  }
+}
+```
+
+**Field definition keys:**
+| Key | Always present | Description |
+|-----|---------------|-------------|
+| `type` | yes | `"single"` or `"multi"` |
+| `value_type` | yes | `"string"`, `"integer"`, or `"float"` |
+| `editable` | yes | `false` = system-populated, do not submit |
+| `required` | yes | `true` = must provide a value |
+| `accepted_values` | if constrained | List of valid values |
+| `default` | if set | Default value (may be `"${datestamp}"` etc.) |
+| `system_value` | if auto-populated | System value source (e.g. `"user_name"`, `"datetime"`) |
 
 ## Integration Examples
 
