@@ -2025,7 +2025,7 @@ class DatabaseDiscovery:
                     if "email" in lib_config:
                         effective["email"] = lib_config["email"]
                     break
-        
+
         # Validate we have both required fields
         if not effective.get("handle") or not effective.get("email"):
             missing = [k for k in ("handle", "email") if not effective.get(k)]
@@ -4113,7 +4113,11 @@ class IncidentManager:
         self.project_config = ProjectConfig(self.db_root)
         
         # Resolve effective user identity (per-library override → global fallback)
-        self.effective_user = DatabaseDiscovery.get_effective_user(self.db_root)
+        # self.effective_user = DatabaseDiscovery.get_effective_user(self.db_root)
+        try:
+            self.effective_user = DatabaseDiscovery.get_effective_user(self.db_root)
+        except RuntimeError:
+            self.effective_user = None
 
     def _strip_type_suffix(self, key: str) -> str:
         """

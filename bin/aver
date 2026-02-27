@@ -18,4 +18,4 @@ if [ ! -d "$VENV_DIR" ]; then
     "$VENV_DIR/bin/pip" install --quiet -r "$TOOL_DIR/requirements.txt"
 fi
 
-exec "$VENV_DIR/bin/python" "$SCRIPT_PATH" "--location" "${REPO_ROOT}" "--override-repo-boundary" "--use-git-id" "$@"
+exec "$VENV_DIR/bin/python" "$SCRIPT_PATH" "--location" "${REPO_ROOT}/issues" "--override-repo-boundary" "--use-git-id" "$@"
