@@ -3619,6 +3619,187 @@ cleanup() {
 }
 
 #==============================================================================
+# Test: admin template-data command
+#==============================================================================
+
+test_template_data() {
+    print_section "Test: admin template-data"
+
+    # --- CLI: no template_id (list all) ---
+    print_test "admin template-data (all templates, human output)"
+    track_command "aver admin template-data"
+    if output=$(run_aver admin template-data 2>&1); then
+        if echo "$output" | grep -q "Global defaults" && \
+           echo "$output" | grep -q "bug" && \
+           echo "$output" | grep -q "feature"; then
+            pass
+            echo "  All templates shown"
+        else
+            fail "Missing expected template names in output"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data (no args) failed"
+    fi
+
+    # --- CLI: specific template ---
+    print_test "admin template-data bug (human output)"
+    track_command "aver admin template-data bug"
+    if output=$(run_aver admin template-data bug 2>&1); then
+        if echo "$output" | grep -q "bug" && \
+           echo "$output" | grep -q "record_fields\|Record fields" && \
+           echo "$output" | grep -q "note_fields\|Note fields"; then
+            pass
+            echo "  Bug template fields shown"
+        else
+            fail "Missing expected sections in bug template output"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data bug failed"
+    fi
+
+    # --- CLI: --json flag, specific template ---
+    print_test "admin template-data bug --json"
+    track_command "aver admin template-data bug --json"
+    if output=$(run_aver admin template-data bug --json 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['template_id'] == 'bug', 'template_id mismatch'
+assert 'record_fields' in data, 'missing record_fields'
+assert 'note_fields' in data, 'missing note_fields'
+assert 'severity' in data['record_fields'], 'missing severity in record_fields'
+assert 'category' in data['note_fields'], 'missing category in note_fields'
+# severity in bug template is required
+assert data['record_fields']['severity']['required'] == True, 'severity should be required'
+# accepted_values for severity
+assert '1' in data['record_fields']['severity']['accepted_values'], 'missing accepted_values'
+# record_prefix
+assert data['record_prefix'] == 'BUG', f\"wrong record_prefix: {data['record_prefix']}\"
+assert data['note_prefix'] == 'COMMENT', f\"wrong note_prefix: {data['note_prefix']}\"
+" 2>/dev/null; then
+            pass
+            echo "  Bug template JSON structure valid"
+        else
+            fail "Bug template JSON structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data bug --json failed"
+    fi
+
+    # --- CLI: --json flag, global defaults (no template_id) ---
+    print_test "admin template-data --json (global defaults)"
+    track_command "aver admin template-data --json"
+    if output=$(run_aver admin template-data --json 2>&1); then
+        # Returns an array of all templates
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert isinstance(data, list), 'expected list'
+ids = [d['template_id'] for d in data]
+assert None in ids, 'missing global defaults entry'
+assert 'bug' in ids, 'missing bug template'
+assert 'feature' in ids, 'missing feature template'
+" 2>/dev/null; then
+            pass
+            echo "  All templates returned as JSON array"
+        else
+            fail "All-templates JSON structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data --json (all) failed"
+    fi
+
+    # --- CLI: invalid template_id ---
+    print_test "admin template-data nonexistent-template (error)"
+    track_command "aver admin template-data nonexistent-template"
+    set +e
+    output=$(run_aver admin template-data nonexistent-template 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qi "not found"; then
+        pass
+        echo "  Proper error for unknown template"
+    else
+        fail "Should have errored on nonexistent template"
+        echo "  exit_code=$exit_code output=$output"
+    fi
+
+    # --- JSON IO: template-data with specific template ---
+    print_test "json io template-data (bug template)"
+    track_command "json io template-data bug"
+    if output=$(echo '{"command": "template-data", "params": {"template_id": "bug"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True, f\"not success: {data}\"
+r = data['result']
+assert r['template_id'] == 'bug', 'template_id mismatch'
+assert 'record_fields' in r, 'missing record_fields'
+assert 'note_fields' in r, 'missing note_fields'
+assert 'severity' in r['record_fields'], 'missing severity'
+assert 'category' in r['note_fields'], 'missing category'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data (bug) returned correct structure"
+        else
+            fail "IO template-data bug structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data bug failed"
+    fi
+
+    # --- JSON IO: template-data for global defaults (no template_id) ---
+    print_test "json io template-data (global defaults)"
+    track_command "json io template-data no template"
+    if output=$(echo '{"command": "template-data", "params": {}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True, f\"not success: {data}\"
+r = data['result']
+assert r['template_id'] is None, 'template_id should be None'
+assert 'record_fields' in r, 'missing record_fields'
+assert 'note_fields' in r, 'missing note_fields'
+assert 'status' in r['record_fields'], 'missing status in global record fields'
+assert 'author' in r['note_fields'], 'missing author in global note fields'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data (global) returned correct structure"
+        else
+            fail "IO template-data global structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data global failed"
+    fi
+
+    # --- JSON IO: template-data for invalid template ---
+    print_test "json io template-data (nonexistent template → error)"
+    track_command "json io template-data nonexistent"
+    if output=$(echo '{"command": "template-data", "params": {"template_id": "nonexistent"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == False, f\"should have failed: {data}\"
+assert 'error' in data, 'missing error key'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data error handled correctly"
+        else
+            fail "IO template-data nonexistent should return error"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data nonexistent failed to run"
+    fi
+}
+
+#==============================================================================
 # Main Test Runner
 #==============================================================================
 
@@ -3655,6 +3836,7 @@ main() {
     test_record_reindex
     test_count_flag
     test_max_flag
+    test_template_data
 
     # Summary
     print_section "Test Summary"
