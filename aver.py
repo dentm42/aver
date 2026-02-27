@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sqlite3
@@ -491,7 +492,7 @@ class Incident:
                 
                 if field.field_type == "single":
                     if field.value_type == "string":
-                        kv_strings[key_with_hint] = [value]
+                        kv_strings[key_with_hint] = [str(value)]
                     elif field.value_type == "integer":
                         kv_integers[key_with_hint] = [int(value)]
                     elif field.value_type == "float":
@@ -500,7 +501,7 @@ class Incident:
                     if not isinstance(value, list):
                         value = [value]
                     if field.value_type == "string":
-                        kv_strings[key_with_hint] = value
+                        kv_strings[key_with_hint] = [str(v) for v in value]
                     elif field.value_type == "integer":
                         kv_integers[key_with_hint] = [int(v) for v in value]
                     elif field.value_type == "float":
@@ -508,13 +509,13 @@ class Incident:
             else:
                 # Custom field - check for type hint
                 clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
-                
+
                 # Also check if clean_key is a special field (in case hint was added erroneously)
                 if clean_key in special_field_names:
                     field = special_fields[clean_key]
                     if field.field_type == "single":
                         if field.value_type == "string":
-                            kv_strings[clean_key] = [value]
+                            kv_strings[clean_key] = [str(value)]
                         elif field.value_type == "integer":
                             kv_integers[clean_key] = [int(value)]
                         elif field.value_type == "float":
@@ -523,7 +524,7 @@ class Incident:
                         if not isinstance(value, list):
                             value = [value]
                         if field.value_type == "string":
-                            kv_strings[clean_key] = value
+                            kv_strings[clean_key] = [str(v) for v in value]
                         elif field.value_type == "integer":
                             kv_integers[clean_key] = [int(v) for v in value]
                         elif field.value_type == "float":
@@ -1486,7 +1487,7 @@ class SystemValueDeriver:
             if template_name is None:
                 return ""
             return template_name
-        
+
         else:
             # Unknown system value type - return empty string
             return ""
@@ -2764,27 +2765,28 @@ class KVParser:
 class KVSearchParser:
     """Parse key-value search and sort expressions."""
     
-    VALID_OPERATORS = {'<', '>', '=', '<=', '>='}
-    
+    VALID_OPERATORS = {'<', '>', '=', '<=', '>=', '^'}
+
     @staticmethod
     def parse_ksearch(search_expr: str) -> tuple:
         """
         Parse key-value search expression.
-        
+
         Format: {key} {operator} {value}
-        Operators: <, >, =, <=, >=, <>, !=
-        
+        Operators: <, >, =, <=, >=, <>, !=, ^ (in)
+
         Examples:
         - "cost > 12.49"
         - "priority=high"
         - "count<=100"
-        
+        - "status^open|closed|resolved"
+
         Args:
             search_expr: Search expression string
-            
+
         Returns:
             (key, operator, value) tuple
-            
+
         Raises:
             ValueError: If format is invalid
         """
@@ -2793,22 +2795,23 @@ class KVSearchParser:
         # Try to find operators (check longer ones first)
         # NOTE: If you add more, make sure none of the PREVIOUS
         #       items in the list will match.
-        for op in ['<=', '>=', '!=', '<>', '=', '<', '>']:
+        # ^ must come first: its value may contain | but no other operator chars
+        for op in ['^', '<=', '>=', '!=', '<>', '=', '<', '>']:
             if op in search_expr:
                 parts = search_expr.split(op, 1)
                 if len(parts) == 2:
                     key = parts[0].strip()
                     value_str = parts[1].strip()
-                    
+
                     if not key or not value_str:
                         raise ValueError(f"Invalid search format: '{search_expr}'")
-                    
+
                     return (key, op, value_str)
-        
+
         raise ValueError(
             f"Invalid ksearch format: '{search_expr}'\n"
             f"Expected: '{{key}} {{operator}} {{value}}'\n"
-            f"Operators: <, >, =, <=, >=, <>, !="
+            f"Operators: <, >, =, <=, >=, <>, !=, ^ (in: 'status^open|closed')"
         )
     
     @staticmethod
@@ -2888,13 +2891,13 @@ class IncidentFileStorage:
         updates_dir.mkdir(parents=True, exist_ok=True)
         return updates_dir
             
-    def save_incident(self, incident: Incident, project_config: ProjectConfig):
-        """Save incident to Markdown file."""
+    def save_incident(self, incident: Incident, project_config: ProjectConfig) -> str:
+        """Save incident to Markdown file. Returns the content written."""
         path = self._get_incident_path(incident.id)
         content = incident.to_markdown(project_config)
-        
         with open(path, "w") as f:
             f.write(content)
+        return content
     
     def load_incident(
         self,
@@ -2928,10 +2931,10 @@ class IncidentFileStorage:
             incident_ids.append(file_path.stem)
         return sorted(incident_ids)
 
-    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None):
+    def save_update(self, incident_id: str, update: IncidentUpdate, project_config: Optional['ProjectConfig'] = None) -> str:
         """
-        Save update to Markdown file with yaml header.
-        
+        Save update to Markdown file with yaml header. Returns the content written.
+
         Args:
             incident_id: Parent incident ID
             update: IncidentUpdate to save (should have template_id set if using templates)
@@ -2950,6 +2953,7 @@ class IncidentFileStorage:
         
         content = update.to_markdown(project_config, parent_template_id=parent_template_id)
         update_file.write_text(content)
+        return content
     
 
     def load_updates(self, incident_id: str) -> List[IncidentUpdate]:
@@ -3001,20 +3005,107 @@ class IncidentIndexDatabase:
         """Generate ISO 8601 timestamp with Z suffix."""
         return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
-    def _ensure_schema(self):
-        """Create tables if they don't exist."""
+    @staticmethod
+    def _md5_of_content(content: str) -> str:
+        """Return the MD5 hex digest of UTF-8 encoded content."""
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _mtime_of_path(path: Path) -> str:
+        """Return the file's current mtime as an ISO 8601 UTC string.
+
+        Must only be called after the file has been written — callers in the
+        save-then-index path already ensure this ordering.  Falls back to the
+        current time if the path does not exist (e.g. during testing).
+        """
+        try:
+            mtime_ts = path.stat().st_mtime
+            return datetime.datetime.fromtimestamp(
+                mtime_ts, tz=datetime.timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+        except OSError:
+            return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+
+    def _get_file_index_entry(self, file_path: Path) -> Optional[tuple]:
+        """Return (file_hash, file_mtime) stored in file_index for *file_path*, or None."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-    
-        # Incidents index table
+        cursor.execute(
+            "SELECT file_hash, file_mtime FROM file_index WHERE file_path = ?",
+            (str(file_path),),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row  # None or (hash, mtime)
+
+    def is_file_unchanged(self, file_path: Path, skip_mtime: bool = False) -> bool:
+        """Return True if *file_path* can be skipped during reindex.
+
+        Decision logic:
+          1. If no entry exists in file_index → must index (return False).
+          2. If *skip_mtime* is False and mtime matches stored mtime → assume
+             unchanged (return True).
+          3. Read file and compare MD5 hash.
+             If hash matches → file is identical (return True).
+             Otherwise → file has changed (return False).
+        """
+        entry = self._get_file_index_entry(file_path)
+        if entry is None:
+            return False
+
+        stored_hash, stored_mtime = entry
+
+        if not skip_mtime:
+            current_mtime = self._mtime_of_path(file_path)
+            if current_mtime == stored_mtime:
+                return True
+
+        # mtime differs or skipped — check actual content
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return self._md5_of_content(content) == stored_hash
+
+    def _ensure_schema(self):
+        """Create tables if they don't exist, migrating legacy tables as needed."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+
+        # ----------------------------------------------------------------
+        # incidents_index → file_index migration
+        # The old incidents_index table only stored (id TEXT, indexed_at TEXT).
+        # We replace it with file_index which tracks the file path, MD5 hash,
+        # and mtime for every indexed file (records and notes).
+        # ----------------------------------------------------------------
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incidents_index'"
+        )
+        has_legacy = cursor.fetchone() is not None
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='file_index'"
+        )
+        has_file_index = cursor.fetchone() is not None
+
+        if has_legacy and not has_file_index:
+            cursor.execute("DROP TABLE incidents_index")
+
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS incidents_index (
-                id TEXT PRIMARY KEY,
-                indexed_at TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS file_index (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT    NOT NULL UNIQUE,
+                file_hash TEXT    NOT NULL,
+                file_mtime TEXT   NOT NULL
             )
             """
-        )    
+        )
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_index_path ON file_index(file_path)"
+        )
+
         # Full-text search index
         cursor.execute(
             """
@@ -3075,25 +3166,49 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
-    def index_incident(self, incident: Incident, project_config: ProjectConfig):
-        """Add or update incident in index."""
+    def index_incident(
+        self,
+        incident: Incident,
+        project_config: ProjectConfig,
+        file_path: Optional[Path] = None,
+        file_content: Optional[str] = None,
+    ):
+        """Add or update incident in index.
+
+        Args:
+            incident: The incident to index.
+            project_config: Project configuration.
+            file_path: Absolute path to the record's Markdown file. When provided,
+                the actual file mtime is read; if omitted, current time is used.
+            file_content: Raw Markdown content of the file (used for MD5 hash).
+                If omitted, the hash is computed from incident.to_markdown() output.
+        """
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-    
-        now = self._generate_timestamp()
-    
-        # Update minimal index entry
-        cursor.execute(
-            "INSERT OR REPLACE INTO incidents_index (id, indexed_at) VALUES (?, ?)",
-            (incident.id, now),
-        )
-    
+
+        # -- file_index entry -----------------------------------------------
+        if file_path is not None:
+            rel_path = str(file_path)
+            content_for_hash = file_content if file_content is not None else incident.to_markdown(project_config)
+            file_hash = self._md5_of_content(content_for_hash)
+            file_mtime = self._mtime_of_path(file_path)
+            cursor.execute(
+                """
+                INSERT INTO file_index (file_path, file_hash, file_mtime)
+                VALUES (?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash  = excluded.file_hash,
+                    file_mtime = excluded.file_mtime
+                """,
+                (rel_path, file_hash, file_mtime),
+            )
+
         # Index FTS for description and other content
         cursor.execute(
             "DELETE FROM incidents_fts WHERE incident_id = ? AND source = 'incident'",
             (incident.id,)
         )
-    
+
         # Get title and description from kv_store
         title = incident.kv_strings.get('title', [''])[0] if incident.kv_strings else ''
         description = incident.content
@@ -3102,107 +3217,46 @@ class IncidentIndexDatabase:
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
             (incident.id, "incident", incident.id, content),
         )
-    
+
         conn.commit()
 
-    def remove_incident_from_index(self, incident_id: str):
-        """Remove incident from index."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM incidents_index WHERE id = ?", (incident_id,))
-        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident_id,))
-        cursor.execute("DELETE FROM kv_store WHERE incident_id = ?", (incident_id,))
-        conn.commit()
-        conn.close()
-
-    def list_incidents_from_index(
+    def index_update(
         self,
-        project_config: ProjectConfig,
-        filters: Optional[Dict[str, Any]] = None,
-        search: Optional[str] = None,
-        limit: int = 50,
-    ) -> List[str]:
-        """List incident IDs from index with filters."""
-        conn = sqlite3.connect(self.database_path)
-        cursor = conn.cursor()
-    
-        # Start with all incidents
-        incident_ids_query = "SELECT id FROM incidents_index"
-        params = []
-    
-        # Apply special field filters
-        if filters:
-            for field_name, value in filters.items():
-                field = project_config.get_special_field(field_name, for_record=True)
-                if not field:
-                    continue  # Skip unknown fields
-            
-                if field.field_type == "single":
-                    incident_ids_query += f"""
-                        AND id IN (
-                            SELECT incident_id FROM kv_store
-                            WHERE key = ? AND (
-                                value_string = ? OR 
-                                value_integer = ? OR 
-                                value_float = ?
-                            ) AND update_id IS NULL
-                        )
-                    """
-                    params.extend([field_name, value, value, value])
-                else:  # multi - value must be in the list
-                    if isinstance(value, list):
-                        # Match ANY value in the list
-                        value_placeholders = ",".join("?" * len(value))
-                        incident_ids_query += f"""
-                            AND id IN (
-                                SELECT incident_id FROM kv_store
-                                WHERE key = ? AND (
-                                    value_string IN ({value_placeholders}) OR 
-                                    value_integer IN ({value_placeholders}) OR 
-                                    value_float IN ({value_placeholders})
-                                ) AND update_id IS NULL
-                            )
-                        """
-                        params.append(field_name)
-                        params.extend(value)
-                        params.extend(value)
-                        params.extend(value)
-                    else:
-                        incident_ids_query += f"""
-                            AND id IN (
-                                SELECT incident_id FROM kv_store
-                                WHERE key = ? AND (
-                                    value_string = ? OR 
-                                    value_integer = ? OR 
-                                    value_float = ?
-                                ) AND update_id IS NULL
-                            )
-                        """
-                        params.extend([field_name, value, value, value])
-     
-        # Apply FTS search
-        if search:
-            incident_ids_query += """
-                AND id IN (
-                    SELECT DISTINCT incident_id FROM incidents_fts
-                    WHERE incidents_fts MATCH ?
-                )
-            """
-            params.append(search)
-    
-        incident_ids_query += f" ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-    
-        cursor.execute(incident_ids_query, params)
-        incident_ids = [row[0] for row in cursor.fetchall()]
-    
-        conn.close()
-        return incident_ids
+        update: IncidentUpdate,
+        file_path: Optional[Path] = None,
+        file_content: Optional[str] = None,
+    ):
+        """Index update in FTS and record file metadata.
 
-    def index_update(self, update: IncidentUpdate):
-        """Index update in FTS and store KV data."""
+        Args:
+            update: The note to index.
+            file_path: Absolute path to the note's Markdown file. When provided,
+                the actual file mtime is read; if omitted, current time is used.
+            file_content: Raw Markdown content (used for MD5 hash).
+        """
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
+
+        # -- file_index entry -----------------------------------------------
+        if file_path is not None:
+            rel_path = str(file_path)
+            if file_content is not None:
+                content_for_hash = file_content
+            else:
+                content_for_hash = Path(file_path).read_text(encoding="utf-8")
+
+            file_hash = self._md5_of_content(content_for_hash)
+            file_mtime = self._mtime_of_path(file_path)
+            cursor.execute(
+                """
+                INSERT INTO file_index (file_path, file_hash, file_mtime)
+                VALUES (?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash  = excluded.file_hash,
+                    file_mtime = excluded.file_mtime
+                """,
+                (rel_path, file_hash, file_mtime),
+            )
 
         cursor.execute(
             "INSERT INTO incidents_fts (incident_id, source, source_id, content) VALUES (?, ?, ?, ?)",
@@ -3217,11 +3271,114 @@ class IncidentIndexDatabase:
         conn.commit()
         conn.close()
 
+    def remove_incident_from_index(self, incident_id: str):
+        """Remove incident and all its notes from index."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM incidents_fts WHERE incident_id = ?", (incident_id,))
+        cursor.execute("DELETE FROM kv_store WHERE incident_id = ?", (incident_id,))
+        conn.commit()
+        conn.close()
+
+    def remove_file_from_index(self, file_path: Path):
+        """Remove a specific file entry from file_index."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM file_index WHERE file_path = ?", (str(file_path),))
+        conn.commit()
+        conn.close()
+
+    def list_incidents_from_index(
+        self,
+        project_config: ProjectConfig,
+        filters: Optional[Dict[str, Any]] = None,
+        search: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[str]:
+        """List incident IDs from index with filters."""
+        conn = sqlite3.connect(self.database_path)
+        cursor = conn.cursor()
+    
+        # Start with all incidents (source_id = incident_id for incident rows in FTS)
+        incident_ids_query = (
+            "SELECT DISTINCT incident_id AS id FROM incidents_fts WHERE source = 'incident'"
+        )
+        params = []
+
+        # Apply special field filters
+        if filters:
+            for field_name, value in filters.items():
+                field = project_config.get_special_field(field_name, for_record=True)
+                if not field:
+                    continue  # Skip unknown fields
+
+                if field.field_type == "single":
+                    incident_ids_query += f"""
+                        AND incident_id IN (
+                            SELECT incident_id FROM kv_store
+                            WHERE key = ? AND (
+                                value_string = ? OR
+                                value_integer = ? OR
+                                value_float = ?
+                            ) AND update_id IS NULL
+                        )
+                    """
+                    params.extend([field_name, value, value, value])
+                else:  # multi - value must be in the list
+                    if isinstance(value, list):
+                        # Match ANY value in the list
+                        value_placeholders = ",".join("?" * len(value))
+                        incident_ids_query += f"""
+                            AND incident_id IN (
+                                SELECT incident_id FROM kv_store
+                                WHERE key = ? AND (
+                                    value_string IN ({value_placeholders}) OR
+                                    value_integer IN ({value_placeholders}) OR
+                                    value_float IN ({value_placeholders})
+                                ) AND update_id IS NULL
+                            )
+                        """
+                        params.append(field_name)
+                        params.extend(value)
+                        params.extend(value)
+                        params.extend(value)
+                    else:
+                        incident_ids_query += f"""
+                            AND incident_id IN (
+                                SELECT incident_id FROM kv_store
+                                WHERE key = ? AND (
+                                    value_string = ? OR
+                                    value_integer = ? OR
+                                    value_float = ?
+                                ) AND update_id IS NULL
+                            )
+                        """
+                        params.extend([field_name, value, value, value])
+
+        # Apply FTS search
+        if search:
+            incident_ids_query += """
+                AND incident_id IN (
+                    SELECT DISTINCT incident_id FROM incidents_fts
+                    WHERE incidents_fts MATCH ?
+                )
+            """
+            params.append(search)
+
+        incident_ids_query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+    
+        cursor.execute(incident_ids_query, params)
+        incident_ids = [row[0] for row in cursor.fetchall()]
+    
+        conn.close()
+        return incident_ids
+
     def clear_index(self):
         """Clear all entries from index."""
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM incidents_index")
+        cursor.execute("DELETE FROM file_index")
         cursor.execute("DELETE FROM incidents_fts")
         cursor.execute("DELETE FROM kv_store")
         conn.commit()
@@ -3444,22 +3601,25 @@ class IncidentIndexDatabase:
             ValueError: If operator is not in the allowed set
         """
         # Whitelist of allowed operators
-        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>=', "<>", "!="}
-        
+        ALLOWED_OPERATORS = {'=', '<', '>', '<=', '>=', "<>", "!=", "^"}
+
         conn = sqlite3.connect(self.database_path)
         cursor = conn.cursor()
-        
-        # Separate equality and inequality conditions
+
+        # Separate equality, inequality, and "in" conditions
         equality_conditions = []
         inequality_conditions = []
-        
+        in_conditions = []
+
         for key, operator, value in ksearch_list:
             # Validate operator
             if operator not in ALLOWED_OPERATORS:
                 raise ValueError(f"Invalid operator '{operator}'. Must be one of: {ALLOWED_OPERATORS}")
-            
+
             if operator in ('!=', '<>'):
                 inequality_conditions.append((key, operator, value))
+            elif operator == '^':
+                in_conditions.append((key, operator, value))
             else:
                 equality_conditions.append((key, operator, value))
         
@@ -3526,7 +3686,46 @@ class IncidentIndexDatabase:
                 key, str_val
             ])
         
-        # Build query for equality conditions
+        # Add each IN-condition as an INNER JOIN using IN (?, ?, ...)
+        for key, operator, value in in_conditions:
+            alias = f"kv{join_counter}"
+            join_counter += 1
+
+            # Split pipe-delimited values
+            values_list = [v.strip() for v in value.split('|') if v.strip()]
+            n = len(values_list)
+
+            float_placeholders = ",".join("?" * n)
+            int_placeholders = ",".join("?" * n)
+            str_placeholders = ",".join("?" * n)
+
+            join = f"""INNER JOIN kv_store {alias} ON
+                base.incident_id = {alias}.incident_id
+                AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
+                AND (
+                    ({alias}.key = ? AND {alias}.value_float IN ({float_placeholders}))
+                    OR ({alias}.key = ? AND {alias}.value_integer IN ({int_placeholders}))
+                    OR ({alias}.key = ? AND {alias}.value_string IN ({str_placeholders}))
+                )"""
+            joins.append(join)
+
+            float_vals = []
+            int_vals = []
+            str_vals = []
+            for v in values_list:
+                try:
+                    float_vals.append(float(v))
+                except (ValueError, TypeError):
+                    float_vals.append(None)
+                try:
+                    int_vals.append(int(v))
+                except (ValueError, TypeError):
+                    int_vals.append(None)
+                str_vals.append(str(v))
+
+            params.extend([key] + float_vals + [key] + int_vals + [key] + str_vals)
+
+        # Build query for equality/in conditions
         query_with_joins = select_clause + " " + from_clause
         for join in joins:
             query_with_joins += " " + join
@@ -3534,7 +3733,7 @@ class IncidentIndexDatabase:
 
         cursor.execute(query_with_joins, params)
         results = cursor.fetchall()
-        
+
         # If no inequality conditions, we're done
         if not inequality_conditions:
             conn.close()
@@ -3546,12 +3745,12 @@ class IncidentIndexDatabase:
                 return [row[1] if return_updates else row[0] for row in results]
         
         # Handle inequality conditions by EXCLUSION
-        # Start with the results from equality conditions (or all records if no equality conditions)
-        if equality_conditions:
-            # Use results from equality search as starting set
+        # Start with the results from equality/in conditions (or all records if none)
+        if equality_conditions or in_conditions:
+            # Use results from equality/in search as starting set
             candidate_set = set((row[0], row[1]) for row in results)
         else:
-            # No equality conditions - start with all records matching base filters
+            # No equality/in conditions - start with all records matching base filters
             cursor.execute(query_with_joins, params)
             candidate_set = set((row[0], row[1]) for row in cursor.fetchall())
         
@@ -3712,99 +3911,162 @@ class IncidentReindexer:
         self.index_db = index_db
         self.project_config = project_config
 
-    def reindex_all(self, verbose: bool = False) -> int:
+    def reindex_all(self, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> int:
         """
         Reindex all incidents from files.
-        
+
+        Unless *force* is True, files are skipped when unchanged.  The skip
+        check uses mtime first (fast) then MD5 hash.  Pass *skip_mtime* to
+        bypass the mtime shortcut and always compare hashes.
+
         Returns:
-            Number of incidents indexed
+            Number of incidents actually (re)indexed (skipped files not counted)
         """
-        # Clear existing index
-        self.index_db.clear_index()
-        
         # Get all incident files
         incident_ids = self.storage.list_incident_files()
-        
+
+        modifier = " (forced)" if force else (" (hash-only)" if skip_mtime else "")
         if verbose:
-            print(f"Reindexing {len(incident_ids)} records...")
-        
+            print(f"Reindexing {len(incident_ids)} records{modifier}...")
+
         indexed_count = 0
+        skipped_count = 0
         indexed_updates = 0
+        skipped_updates = 0
+
         for incident_id in incident_ids:
+            incident_path = self.storage._get_incident_path(incident_id)
+
+            if not force and self.index_db.is_file_unchanged(incident_path, skip_mtime=skip_mtime):
+                skipped_count += 1
+                if verbose:
+                    print(f"  - {incident_id} (unchanged)")
+                # Still check notes even if record file is unchanged
+                updates_dir = self.storage._get_updates_dir(incident_id)
+                updates = self.storage.load_updates(incident_id)
+                for update in updates:
+                    note_path = updates_dir / f"{update.id}.md"
+                    if self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                        skipped_updates += 1
+                    else:
+                        self.index_db.index_update(update, file_path=note_path)
+                        indexed_updates += 1
+                continue
+
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
-                self.index_db.index_incident(incident, self.project_config)
+                self.index_db.remove_incident_from_index(incident_id)
+                self.index_db.index_incident(
+                    incident, self.project_config, file_path=incident_path
+                )
                 self.index_db.index_kv_data(incident, self.project_config)
                 indexed_count += 1
                 if verbose:
-                    print(f"  ✓ {incident_id}",end=":")
+                    print(f"  ✓ {incident_id}", end=":")
             else:
                 if verbose:
                     print(f"  ✗ {incident_id} (failed to load)")
-            
-            # Index updates for this incident (moved inside the loop)
-            updates = self.storage.load_updates(incident_id)
 
+            # Index notes for this incident
+            updates_dir = self.storage._get_updates_dir(incident_id)
+            updates = self.storage.load_updates(incident_id)
             for update in updates:
-                self.index_db.index_update(update)
-                if verbose:
-                    print(f".",end="")
-                indexed_updates += 1
-            print()
+                note_path = updates_dir / f"{update.id}.md"
+                if not force and self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                    skipped_updates += 1
+                    if verbose:
+                        print(f"-", end="")
+                else:
+                    self.index_db.index_update(update, file_path=note_path)
+                    indexed_updates += 1
+                    if verbose:
+                        print(f".", end="")
+            if verbose:
+                print()
+
         if verbose:
-            print(f"✓ Reindexed {indexed_count} records, {indexed_updates} updates")
-        
+            print(
+                f"✓ Reindexed {indexed_count} records ({skipped_count} unchanged), "
+                f"{indexed_updates} notes ({skipped_updates} unchanged)"
+            )
+
         return indexed_count
-        
-    def reindex_one(self, incident_id: str, verbose: bool = False) -> bool:
+
+    def reindex_one(self, incident_id: str, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> bool:
         """
         Reindex a single incident and all its notes from files.
-        
+
+        Unless *force* is True, files are skipped when unchanged.  Pass
+        *skip_mtime* to bypass the mtime shortcut and always compare hashes.
+
         Args:
             incident_id: The record ID to reindex
             verbose: Print progress messages
-        
+            force: Skip all change detection and always reindex
+            skip_mtime: Bypass mtime check; use MD5 hash comparison only
+
         Returns:
             True if successful, False if record not found
         """
-        # Check if record exists
-        incident = self.storage.load_incident(incident_id, self.project_config)
-        
-        if not incident:
+        incident_path = self.storage._get_incident_path(incident_id)
+
+        modifier = " (forced)" if force else (" (hash-only)" if skip_mtime else "")
+        if verbose:
+            print(f"Reindexing {incident_id}{modifier}...")
+
+        record_skipped = False
+        if not force and self.index_db.is_file_unchanged(incident_path, skip_mtime=skip_mtime):
+            record_skipped = True
             if verbose:
-                print(f"Record {incident_id} not found")
-            return False
-        
-        if verbose:
-            print(f"Reindexing {incident_id}...")
-        
-        # Remove existing index entries for this record
-        self.index_db.remove_incident_from_index(incident_id)
-        
-        # Reindex the incident
-        self.index_db.index_incident(incident, self.project_config)
-        self.index_db.index_kv_data(incident, self.project_config)
-        
-        if verbose:
-            print(f"  ✓ Record indexed")
-        
-        # Reindex all notes for this incident
+                print(f"  - Record file unchanged, skipping")
+        else:
+            incident = self.storage.load_incident(incident_id, self.project_config)
+            if not incident:
+                if verbose:
+                    print(f"Record {incident_id} not found")
+                return False
+
+            # Remove existing index entries and reindex
+            self.index_db.remove_incident_from_index(incident_id)
+            self.index_db.index_incident(
+                incident, self.project_config, file_path=incident_path
+            )
+            self.index_db.index_kv_data(incident, self.project_config)
+            if verbose:
+                print(f"  ✓ Record indexed")
+
+        # Reindex notes, skipping unchanged ones
+        updates_dir = self.storage._get_updates_dir(incident_id)
         updates = self.storage.load_updates(incident_id)
-        
-        if verbose and updates:
-            print(f"  Reindexing {len(updates)} notes...", end="")
-        
-        for update in updates:
-            self.index_db.index_update(update)
-            if verbose:
-                print(".", end="", flush=True)
-        
-        if verbose and updates:
-            print()  # Newline after dots
-        
+
+        if not updates:
+            if verbose and not record_skipped:
+                print(f"✓ Reindexed {incident_id} (no notes)")
+            elif verbose:
+                print(f"✓ {incident_id} unchanged (no notes)")
+            return True
+
+        indexed_notes = 0
+        skipped_notes = 0
         if verbose:
-            print(f"✓ Reindexed {incident_id} ({len(updates)} notes)")
-        
+            print(f"  Checking {len(updates)} notes...", end="")
+
+        for update in updates:
+            note_path = updates_dir / f"{update.id}.md"
+            if not force and self.index_db.is_file_unchanged(note_path, skip_mtime=skip_mtime):
+                skipped_notes += 1
+                if verbose:
+                    print("-", end="", flush=True)
+            else:
+                self.index_db.index_update(update, file_path=note_path)
+                indexed_notes += 1
+                if verbose:
+                    print(".", end="", flush=True)
+
+        if verbose:
+            print()
+            print(f"✓ {incident_id}: {indexed_notes} notes reindexed, {skipped_notes} unchanged")
+
         return True
 
 
@@ -4693,289 +4955,300 @@ class IncidentManager:
                 edited_incident.kv_floats[key] = original_incident.kv_floats[key].copy()
        
     def update_incident_info(
-        self,
-        incident_id: str,
-        kv_single: Optional[List[str]] = None,
-        kv_multi: Optional[List[str]] = None,
-        kv_strings: Optional[Dict[str, List[str]]] = None,
-        kv_integers: Optional[Dict[str, List[int]]] = None,
-        kv_floats: Optional[Dict[str, List[float]]] = None,
-        description: Optional[str] = None,
-        use_stdin: bool = False,
-        use_editor: bool = False,
-        use_yaml_editor: bool = True,
-        metadata_only: bool = False,
-        allow_validation_editor: bool = True,
-    ) -> bool:
-        """
-        Update incident fields from KV list/dicts and/or description.
-        
-        When use_editor=True and use_yaml_editor=True (default), presents the full
-        incident with yaml frontmatter for editing. Non-editable special fields are
-        filtered out during editing and restored afterwards.
-    
-        Args:
-            incident_id: Incident ID
-            kv_single: List of single-value KV strings to update/remove (replaces)
-            kv_multi: List of multi-value KV strings to update/remove (appends)
-            kv_strings: Direct KV strings dict (for --from-file)
-            kv_integers: Direct KV integers dict (for --from-file)
-            kv_floats: Direct KV floats dict (for --from-file)
-            description: Optional new description
-            use_stdin: Read description from STDIN
-            use_editor: Launch editor for description
-            use_yaml_editor: If True with use_editor, edit full record with yaml (default)
-    
-        Example:
-            manager.update_incident_info(
-                incident_id,
-                kv_single=["status$resolved"],
-                kv_multi=["assignees$alice"],
-                description="Fixed the issue"
-            )
-        """
-        incident = self.storage.load_incident(incident_id, self.project_config)
-        if not incident:
-            raise RuntimeError(f"Incident {incident_id} not found")
-    
-        # Detect template from incident's template_id field
-        incident_template_id = self._get_incident_template_id(incident)
-        if incident_template_id:
-            # Check if template still exists
-            if not self.project_config.has_template(incident_template_id):
-                print(
-                    f"\n{'='*70}",
-                    file=sys.stderr
-                )
-                print(
-                    f"WARNING: Record was created with template '{incident_template_id}'",
-                    file=sys.stderr
-                )
-                print(
-                    f"but that template no longer exists in the configuration.",
-                    file=sys.stderr
-                )
-                print(
-                    f"{'='*70}\n",
-                    file=sys.stderr
-                )
-                
-                response = input("Proceed with update using global fields only? (y/n): ").strip().lower()
-                if response != 'y':
-                    print("Update cancelled", file=sys.stderr)
-                    return False
-                
-                # Clear template_id so we use global fields
-                incident_template_id = None
-    
-        author = self.effective_user["handle"]
-        now = self._generate_timestamp()
-    
-        updated_fields = []
-        previous_content = None
-        orig_kv_strings=incident.kv_strings;
-        orig_kv_integers=incident.kv_integers;        
-        orig_kv_floats=incident.kv_floats;
-        
-        # Handle direct KV dicts (from --from-file)
-        if kv_strings is not None or kv_integers is not None or kv_floats is not None:
-            # Direct KV mode - replace incident's KV data entirely
-            if kv_strings:
-                incident.kv_strings = kv_strings.copy()
-            if kv_integers:
-                incident.kv_integers = kv_integers.copy()
-            if kv_floats:
-                incident.kv_floats = kv_floats.copy()
+            self,
+            incident_id: str,
+            kv_single: Optional[List[str]] = None,
+            kv_multi: Optional[List[str]] = None,
+            kv_strings: Optional[Dict[str, List[str]]] = None,
+            kv_integers: Optional[Dict[str, List[int]]] = None,
+            kv_floats: Optional[Dict[str, List[float]]] = None,
+            description: Optional[str] = None,
+            use_stdin: bool = False,
+            use_editor: bool = False,
+            use_yaml_editor: bool = True,
+            metadata_only: bool = False,
+            allow_validation_editor: bool = True,
+        ) -> bool:
+            """
+            Update incident fields from KV list/dicts and/or description.
             
-            # Skip the normal KV list processing
-            has_kv_to_process = False
-        else:
-            # Normal KV list mode
-            has_kv_to_process = bool(kv_single or kv_multi)
+            When use_editor=True and use_yaml_editor=True (default), presents the full
+            incident with yaml frontmatter for editing. Non-editable special fields are
+            filtered out during editing and restored afterwards.
         
-        # Define processor for update operations
-        def process_update_kv(inc, parsed_single, parsed_multi):
-            # Process single-value KV (replaces)
-            for key, kvtype, op, value in parsed_single:
-                if op == '-':
-                    # Removal
-                    self._remove_kv(inc, key)
-                    updated_fields.append(f"removed {key}")
-                else:
-                    # Update
-                    updated_fields.append(f"Set {key}: {value}")
-                    self._validate_and_store_kv_single(key, kvtype, value, inc)
-            
-            # Process multi-value KV (appends)
-            for key, kvtype, op, value in parsed_multi:
-                if op == '-':
-                    # Removal for multi-value
-                    self._remove_kv(inc, key, value)
-                    updated_fields.append(f"Removed {key}: {value}")
-                else:
-                    updated_fields.append(f"Add {key}: {value}")
-                    self._validate_and_store_kv_multi(key, kvtype, value, inc)
+            Args:
+                incident_id: Incident ID
+                kv_single: List of single-value KV strings to update/remove (replaces)
+                kv_multi: List of multi-value KV strings to update/remove (appends)
+                kv_strings: Direct KV strings dict (for --from-file)
+                kv_integers: Direct KV integers dict (for --from-file)
+                kv_floats: Direct KV floats dict (for --from-file)
+                description: Optional new description
+                use_stdin: Read description from STDIN
+                use_editor: Launch editor for description
+                use_yaml_editor: If True with use_editor, edit full record with yaml (default)
         
-        # Apply KV changes with validation retry loop
-        already_edited_in_validation = False
-        if has_kv_to_process:
-            try:
-                incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
-                    incident,
-                    kv_single,
-                    kv_multi,
-                    allow_validation_editor,
-                    process_update_kv,
+            Example:
+                manager.update_incident_info(
+                    incident_id,
+                    kv_single=["status$resolved"],
+                    kv_multi=["assignees$alice"],
+                    description="Fixed the issue"
                 )
-                if already_edited_in_validation:
-                    updated_fields = ["full record (edited to fix validation)"]
-            except ValueError:
-                # User abandoned validation
-                return False
-        # else: Using direct KV dicts from --from-file, already set above
-                
-        # Handle description/full record updates
-        if (not metadata_only) and (description or use_stdin or use_editor):
-            # Save previous content before updating
-            if incident.content:
-                previous_content = incident.content
-            else:
-                previous_content = None
-            
-            # Determine how to get new content
-            final_description = None
-            
-            # Skip editor if user already edited during validation
-            if already_edited_in_validation:
-                # User already edited the full record during validation error handling
-                # No need to open editor again - the incident is already updated
-                pass
-            elif use_editor and use_yaml_editor:
-                # NEW BEHAVIOR: Edit full record with yaml frontmatter
-                while True:  # ← NEW: Validation loop
-                    final_incident = self._edit_incident_with_yaml(incident)
+            """
+            incident = self.storage.load_incident(incident_id, self.project_config)
+            if not incident:
+                raise RuntimeError(f"Incident {incident_id} not found")
+        
+            # Detect template from incident's template_id field
+            incident_template_id = self._get_incident_template_id(incident)
+            if incident_template_id:
+                # Check if template still exists
+                if not self.project_config.has_template(incident_template_id):
+                    print(
+                        f"\n{'='*70}",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"WARNING: Record was created with template '{incident_template_id}'",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"but that template no longer exists in the configuration.",
+                        file=sys.stderr
+                    )
+                    print(
+                        f"{'='*70}\n",
+                        file=sys.stderr
+                    )
                     
-                    if not final_incident:
-                        # User cancelled
+                    response = input("Proceed with update using global fields only? (y/n): ").strip().lower()
+                    if response != 'y':
+                        print("Update cancelled", file=sys.stderr)
                         return False
                     
-                    # NEW: Validate the edited incident
-                    try:
-                        self._validate_incident_fields(final_incident)
-                        # Validation passed - accept it
-                        incident = final_incident
-                        # updated_fields.append("full record (yaml edit)")
-                        break
+                    # Clear template_id so we use global fields
+                    incident_template_id = None
+        
+            author = self.effective_user["handle"]
+            now = self._generate_timestamp()
+        
+            updated_fields = []
+            previous_content = None
+            orig_kv_strings=incident.kv_strings;
+            orig_kv_integers=incident.kv_integers;        
+            orig_kv_floats=incident.kv_floats;
+            
+            # Handle direct KV dicts (from --from-file)
+            if kv_strings is not None or kv_integers is not None or kv_floats is not None:
+                # Direct KV mode - merge passed-in keys over existing KV data.
+                # Keys present in the passed-in dict overwrite existing values;
+                # keys present only in the existing dict are retained.
+                if kv_strings:
+                    incident.kv_strings = {**incident.kv_strings, **kv_strings}
+                if kv_integers:
+                    incident.kv_integers = {**incident.kv_integers, **kv_integers}
+                if kv_floats:
+                    incident.kv_floats = {**incident.kv_floats, **kv_floats}
+                
+                # Skip the normal KV list processing
+                has_kv_to_process = False
+            else:
+                # Normal KV list mode
+                has_kv_to_process = bool(kv_single or kv_multi)
+            
+            # Define processor for update operations
+            def process_update_kv(inc, parsed_single, parsed_multi):
+                # Process single-value KV (replaces)
+                for key, kvtype, op, value in parsed_single:
+                    if op == '-':
+                        # Removal
+                        self._remove_kv(inc, key)
+                        updated_fields.append(f"removed {key}")
+                    else:
+                        # Update
+                        updated_fields.append(f"Set {key}: {value}")
+                        self._validate_and_store_kv_single(key, kvtype, value, inc)
+                
+                # Process multi-value KV (appends)
+                for key, kvtype, op, value in parsed_multi:
+                    if op == '-':
+                        # Removal for multi-value
+                        self._remove_kv(inc, key, value)
+                        updated_fields.append(f"Removed {key}: {value}")
+                    else:
+                        updated_fields.append(f"Add {key}: {value}")
+                        self._validate_and_store_kv_multi(key, kvtype, value, inc)
+            
+            # Apply KV changes with validation retry loop
+            already_edited_in_validation = False
+            if has_kv_to_process:
+                try:
+                    incident, already_edited_in_validation = self._apply_kv_changes_with_validation(
+                        incident,
+                        kv_single,
+                        kv_multi,
+                        allow_validation_editor,
+                        process_update_kv,
+                    )
+                    if already_edited_in_validation:
+                        updated_fields = ["full record (edited to fix validation)"]
+                except ValueError:
+                    # User abandoned validation
+                    return False
+            # else: Using direct KV dicts from --from-file, already merged above
+                    
+            # Handle description/full record updates
+            if (not metadata_only) and (description or use_stdin or use_editor):
+                # Save previous content before updating
+                if incident.content:
+                    previous_content = incident.content
+                else:
+                    previous_content = None
+                
+                # Determine how to get new content
+                final_description = None
+                
+                # Skip editor if user already edited during validation
+                if already_edited_in_validation:
+                    # User already edited the full record during validation error handling
+                    # No need to open editor again - the incident is already updated
+                    pass
+                elif use_editor and use_yaml_editor:
+                    # NEW BEHAVIOR: Edit full record with yaml frontmatter
+                    while True:  # ← NEW: Validation loop
+                        final_incident = self._edit_incident_with_yaml(incident)
                         
-                    except ValueError as e:
-                        # Validation failed - ask user
-                        print(f"\n{'='*70}", file=sys.stderr)
-                        print(f"VALIDATION ERROR in edited record", file=sys.stderr)
-                        print(f"{'='*70}", file=sys.stderr)
-                        print(f"{str(e)}", file=sys.stderr)
-                        print(f"{'='*70}\n", file=sys.stderr)
-                        
-                        print("Options:", file=sys.stderr)
-                        print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
-                        print("  [a] Abandon - cancel this update", file=sys.stderr)
-                        
-                        choice = input("\nChoice (e/a): ").strip().lower()
-                        
-                        if choice != 'e':
-                            # Abandon
+                        if not final_incident:
+                            # User cancelled
                             return False
                         
-                        # Loop back and reopen editor with the invalid incident
-                        incident = final_incident
-                        continue                    
-            elif description:
-                final_description = description
-            elif use_stdin and StdinHandler.has_stdin_data():
-                final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
-            elif use_editor:
-                # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
-                final_description = EditorConfig.launch_editor(
-                    initial_content=previous_content or "",
-                )
+                        # NEW: Validate the edited incident
+                        try:
+                            self._validate_incident_fields(final_incident)
+                            # Validation passed - accept it
+                            incident = final_incident
+                            # updated_fields.append("full record (yaml edit)")
+                            break
+                            
+                        except ValueError as e:
+                            # Validation failed - ask user
+                            print(f"\n{'='*70}", file=sys.stderr)
+                            print(f"VALIDATION ERROR in edited record", file=sys.stderr)
+                            print(f"{'='*70}", file=sys.stderr)
+                            print(f"{str(e)}", file=sys.stderr)
+                            print(f"{'='*70}\n", file=sys.stderr)
+                            
+                            print("Options:", file=sys.stderr)
+                            print("  [e] Edit - reopen editor to correct the error", file=sys.stderr)
+                            print("  [a] Abandon - cancel this update", file=sys.stderr)
+                            
+                            choice = input("\nChoice (e/a): ").strip().lower()
+                            
+                            if choice != 'e':
+                                # Abandon
+                                return False
+                            
+                            # Loop back and reopen editor with the invalid incident
+                            incident = final_incident
+                            continue                    
+                elif description:
+                    final_description = description
+                elif use_stdin and StdinHandler.has_stdin_data():
+                    final_description = StdinHandler.read_stdin_with_timeout(timeout=2.0)
+                elif use_editor:
+                    # OLD BEHAVIOR (when use_yaml_editor=False): Edit description only
+                    final_description = EditorConfig.launch_editor(
+                        initial_content=previous_content or "",
+                    )
+                
+                if final_description is not None:
+                    incident.content = final_description
+                    updated_fields.append("description")
+        
+            # Apply system fields for update (using incident's template if it has one)
+            self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
+        
+            # Save and reindex
+            written_content = self.storage.save_incident(incident, self.project_config)
+            self.index_db.index_incident(
+                incident, self.project_config,
+                file_path=self.storage._get_incident_path(incident.id),
+                file_content=written_content,
+            )
+            self.index_db.index_kv_data(incident, self.project_config)
+        
+            update_msg = ""
+                
+            # Append previous content to update message if it was changed
+            if previous_content and incident.content != previous_content:
+                update_msg += f"\n\n## Previous Content\n\n{previous_content}"
+            # Log update
+
+            if updated_fields:
+                updated_fields_str = '\n * '.join(updated_fields)
+                update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
+                update_msg += f"\n\n"
+
+            update_msg += f"\n\n## Previous Key/Vals\n"
             
-            if final_description is not None:
-                incident.content = final_description
-                updated_fields.append("description")
-    
-        # Apply system fields for update (using incident's template if it has one)
-        self._apply_special_fields(incident, is_create=False, template_name=incident_template_id, for_notes=False)
-    
-        # Save and reindex
-        self.storage.save_incident(incident, self.project_config)
-        self.index_db.index_incident(incident, self.project_config)
-        self.index_db.index_kv_data(incident, self.project_config)
-    
-        update_msg = ""
+            # System fields to skip
+            skip_fields = {}
             
-        # Append previous content to update message if it was changed
-        if previous_content and incident.content != previous_content:
-            update_msg += f"\n\n## Previous Content\n\n{previous_content}"
-        # Log update
+            # Format all string KV that isn't in skip list
+            for key, values in orig_kv_strings.items():
+                if key not in skip_fields and values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
+            
+            # Format all integer KV
+            for key, values in orig_kv_integers.items():
+                if values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
+            
+            # Format all float KV
+            for key, values in orig_kv_floats.items():
+                if values:
+                    values_str = ', '.join(str(v) for v in values)
+                    update_msg += f"{key}: {values_str}\n"
 
-        if updated_fields:
-            updated_fields_str = '\n * '.join(updated_fields)
-            update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
-            update_msg += f"\n\n"
+            
+            update_id = IDGenerator.generate_update_id()
+            
+            # Get template_id from incident for the update
+            incident_template_id = None
+            if incident.kv_strings and 'template_id' in incident.kv_strings:
+                incident_template_id = incident.kv_strings['template_id'][0]
+            
+            # Create update with minimal info
+            incident_update = IncidentUpdate(
+                id=update_id,
+                message=update_msg,
+            )
+            
+            # Apply special fields
+            self._apply_special_fields(
+                incident_update,
+                is_create=True,
+                template_name=incident_template_id,
+                for_notes=True,
+            )
+            
+            # Set incident_id explicitly
+            if not incident_update.kv_strings:
+                incident_update.kv_strings = {}
+            incident_update.kv_strings['incident_id'] = [incident_id]
 
-        update_msg += f"\n\n## Previous Key/Vals\n"
-        
-        # System fields to skip
-        skip_fields = {}
-        
-        # Format all string KV that isn't in skip list
-        for key, values in orig_kv_strings.items():
-            if key not in skip_fields and values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
-        
-        # Format all integer KV
-        for key, values in orig_kv_integers.items():
-            if values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
-        
-        # Format all float KV
-        for key, values in orig_kv_floats.items():
-            if values:
-                values_str = ', '.join(str(v) for v in values)
-                update_msg += f"{key}: {values_str}\n"
+            written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
+            self.index_db.index_update(
+                incident_update,
+                file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
+                file_content=written_content,
+            )
 
-        
-        update_id = IDGenerator.generate_update_id()
-        
-        # Get template_id from incident for the update
-        incident_template_id = None
-        if incident.kv_strings and 'template_id' in incident.kv_strings:
-            incident_template_id = incident.kv_strings['template_id'][0]
-        
-        # Create update with minimal info
-        incident_update = IncidentUpdate(
-            id=update_id,
-            message=update_msg,
-        )
-        
-        # Apply special fields
-        self._apply_special_fields(
-            incident_update,
-            is_create=True,
-            template_name=incident_template_id,
-            for_notes=True,
-        )
-        
-        # Set incident_id explicitly
-        if not incident_update.kv_strings:
-            incident_update.kv_strings = {}
-        incident_update.kv_strings['incident_id'] = [incident_id]
+            return True
 
-        self.storage.save_update(incident_id, incident_update, self.project_config)
-        self.index_db.index_update(incident_update)
-    
-        return True
     
     def get_incident(self, incident_id: str) -> Optional[Incident]:
         """Get incident from file storage."""
@@ -5442,12 +5715,16 @@ class IncidentManager:
                 raise RuntimeError(f"Record creation failed: {str(e)}")
 
         # Save to file
-        self.storage.save_incident(incident, self.project_config)
-        
+        written_content = self.storage.save_incident(incident, self.project_config)
+
         # Update index
-        self.index_db.index_incident(incident, self.project_config)
+        self.index_db.index_incident(
+            incident, self.project_config,
+            file_path=self.storage._get_incident_path(incident.id),
+            file_content=written_content,
+        )
         self.index_db.index_kv_data(incident, self.project_config)
-        
+
         # Create initial update
         initial_message = self._format_incident_update(incident.id)
         update_id = IDGenerator.generate_update_id()
@@ -5477,9 +5754,13 @@ class IncidentManager:
             initial_update.kv_strings = {}
         initial_update.kv_strings['incident_id'] = [incident_id]
         
-        self.storage.save_update(incident_id, initial_update, self.project_config)
-        self.index_db.index_update(initial_update)
-        
+        written_content = self.storage.save_update(incident_id, initial_update, self.project_config)
+        self.index_db.index_update(
+            initial_update,
+            file_path=self.storage._get_updates_dir(incident_id) / f"{initial_update.id}.md",
+            file_content=written_content,
+        )
+
         return incident_id
     
     def list_incidents(
@@ -5996,9 +6277,13 @@ class IncidentManager:
         update.kv_strings['incident_id'] = [incident_id]
         
         # Save update
-        self.storage.save_update(incident_id, update, self.project_config)
-        self.index_db.index_update(update)
-        
+        written_content = self.storage.save_update(incident_id, update, self.project_config)
+        self.index_db.index_update(
+            update,
+            file_path=self.storage._get_updates_dir(incident_id) / f"{update.id}.md",
+            file_content=written_content,
+        )
+
         # Index update KV data (completely independent from incident KV)
         self.index_db.index_update_kv_data(
             incident_id,
@@ -7129,7 +7414,7 @@ class IncidentCLI:
             "--ksearch",
             action="append",
             dest="ksearch",
-            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
+            help="Search by key-value: 'key=value', 'cost>100', 'status^open|closed' (can use multiple times)",
         )
         record_list_parser.add_argument(
             "--ksort",
@@ -7205,20 +7490,6 @@ class IncidentCLI:
 
         self.record_update_parser = record_update_parser
 
-        # record reindex
-        record_reindex_parser = record_subparsers.add_parser(
-            "reindex",
-            help="Reindex a specific record and all its notes from disk files",
-        )
-        
-        record_reindex_parser.add_argument(
-            "record_id",
-            help="Record ID to reindex"
-        )
-
-        self.record_reindex_parser = record_reindex_parser
-
-        
         # ====================================================================
         # NOTE COMMANDS
         # ====================================================================
@@ -7296,7 +7567,7 @@ class IncidentCLI:
             action="append",
             dest="ksearch",
             required=True,
-            help="Search by note KV: 'key=value' (required, can use multiple times)",
+            help="Search by note KV: 'key=value', 'status^open|closed' (required, can use multiple times)",
         )
         note_search_parser.add_argument(
             "--ids-only",
@@ -7341,8 +7612,13 @@ class IncidentCLI:
             required=True,
             help="JSON data as string, or '-' to read from stdin",
         )
-        
-        # json import-note  
+        json_import_record_parser.add_argument(
+            "--use-id",
+            dest="custom_id",
+            help="Use custom record ID (A-Z, a-z, 0-9, _, - only). Must be unique.",
+        )
+
+        # json import-note
         json_import_note_parser = json_subparsers.add_parser(
             "import-note",
             help="Import a note from JSON",
@@ -7410,7 +7686,7 @@ class IncidentCLI:
             "--ksearch",
             action="append",
             dest="ksearch",
-            help="Search by key-value: 'key=value', 'cost>100' (can use multiple times)",
+            help="Search by key-value: 'key=value', 'cost>100', 'status^open|closed' (can use multiple times)",
         )
         json_search_records_parser.add_argument(
             "--ksort",
@@ -7583,7 +7859,27 @@ class IncidentCLI:
         # admin reindex
         admin_reindex_parser = admin_subparsers.add_parser(
             "reindex",
-            help="Rebuild search index",
+            help="Rebuild search index (all records, or specific RECORD_IDs)",
+        )
+
+        admin_reindex_parser.add_argument(
+            "record_ids",
+            nargs="*",
+            metavar="RECORD_ID",
+            help="Record IDs to reindex (default: all records)",
+        )
+
+        admin_reindex_parser.add_argument(
+            "--force",
+            "-f",
+            action="store_true",
+            help="Force reindex even if mtime/hash are unchanged",
+        )
+
+        admin_reindex_parser.add_argument(
+            "--skip-mtime",
+            action="store_true",
+            help="Skip mtime check and rely on MD5 hash only",
         )
 
         admin_reindex_parser.add_argument(
@@ -7597,6 +7893,23 @@ class IncidentCLI:
         admin_list_databases_parser = admin_subparsers.add_parser(
             "list-databases",
             help="Show all available databases",
+        )
+
+        # admin template-data
+        admin_template_data_parser = admin_subparsers.add_parser(
+            "template-data",
+            help="Show field definitions for a template (record and note fields)",
+        )
+        admin_template_data_parser.add_argument(
+            "template_id",
+            nargs="?",
+            default=None,
+            help="Template ID to inspect (omit to list all templates)",
+        )
+        admin_template_data_parser.add_argument(
+            "--json",
+            action="store_true",
+            help="Output as JSON (suitable for UI pre-validation)",
         )
 
     def run(self, args: Optional[List[str]] = None):
@@ -7636,9 +7949,6 @@ class IncidentCLI:
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
                     self._cmd_update(parsed)
-                elif parsed.record_command == "reindex":
-                    self._cmd_record_reindex(parsed)
-                    
             elif parsed.command == "note":
                 if parsed.note_command == "add":
                     # Check for --help-fields
@@ -7684,6 +7994,8 @@ class IncidentCLI:
                     self._cmd_reindex(parsed)
                 elif parsed.admin_command == "list-databases":
                     self._cmd_list_databases(parsed)
+                elif parsed.admin_command == "template-data":
+                    self._cmd_admin_template_data(parsed)
                     
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -8500,20 +8812,6 @@ $update_kv
                 print(f"{e}", file=sys.stderr)
                 sys.exit(1)            
  
-    def _cmd_record_reindex(self, args):
-        """Reindex a specific record and its notes."""
-        manager = self._get_manager(args)
-        reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
-        
-        success = reindexer.reindex_one(
-            args.record_id,
-            verbose=True
-        )
-        
-        if not success:
-            print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
- 
     def _show_note_fields_help(self, record_id: str):
         """
         Show available fields for a specific record's notes.
@@ -8922,12 +9220,29 @@ $update_kv
             print(output)
             
     def _cmd_reindex(self, args):
-        """Rebuild search index."""
+        """Rebuild search index for all records or specific RECORD_IDs."""
         try:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
-            count = reindexer.reindex_all(verbose=args.verbose)
-            print(f"✓ Reindexed {count} records")
+            force = getattr(args, "force", False)
+            skip_mtime = getattr(args, "skip_mtime", False)
+            record_ids = getattr(args, "record_ids", [])
+
+            if record_ids:
+                failed = []
+                for record_id in record_ids:
+                    success = reindexer.reindex_one(
+                        record_id, verbose=True, force=force, skip_mtime=skip_mtime
+                    )
+                    if not success:
+                        failed.append(record_id)
+                if failed:
+                    for rid in failed:
+                        print(f"Error: Record {rid} not found", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                count = reindexer.reindex_all(verbose=args.verbose, force=force, skip_mtime=skip_mtime)
+                print(f"✓ Reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -8964,6 +9279,127 @@ $update_kv
         print("     --choose to select interactively")
         print("     --location PATH to specify explicitly")
         print("="*70 + "\n")
+
+    def _build_template_data(self, project_config, template_id: Optional[str]) -> dict:
+        """
+        Build field data for a template (or global defaults if template_id is None).
+
+        Returns a dict with record_fields and note_fields, each containing the
+        full SpecialField info suitable for UI pre-validation.
+        """
+        record_fields_raw = project_config.get_special_fields_for_template(
+            template_id, for_record=True
+        )
+        note_fields_raw = project_config.get_special_fields_for_template(
+            template_id, for_record=False
+        )
+
+        def _serialize_fields(fields_dict):
+            out = {}
+            for field_name, field_def in fields_dict.items():
+                if not field_def.enabled:
+                    continue
+                entry = {
+                    "type": field_def.field_type,
+                    "value_type": field_def.value_type,
+                    "editable": field_def.editable,
+                    "required": field_def.required,
+                }
+                if field_def.accepted_values:
+                    entry["accepted_values"] = field_def.accepted_values
+                if field_def.default is not None:
+                    entry["default"] = field_def.default
+                if field_def.system_value:
+                    entry["system_value"] = field_def.system_value
+                out[field_name] = entry
+            return out
+
+        template = project_config.get_template(template_id) if template_id else None
+        result = {
+            "template_id": template_id,
+            "record_prefix": template.record_prefix if template else project_config.default_record_prefix,
+            "note_prefix": template.note_prefix if template else project_config.default_note_prefix,
+            "record_fields": _serialize_fields(record_fields_raw),
+            "note_fields": _serialize_fields(note_fields_raw),
+        }
+        return result
+
+    def _cmd_admin_template_data(self, args):
+        """Show field definitions for a template (record and note fields)."""
+        try:
+            manager = self._get_manager(args)
+            config = manager.project_config
+
+            use_json = getattr(args, 'json', False)
+
+            if args.template_id:
+                # Single template
+                if not config.has_template(args.template_id):
+                    print(f"Error: Template '{args.template_id}' not found", file=sys.stderr)
+                    available = list(config._templates.keys())
+                    if available:
+                        print(f"Available templates: {', '.join(available)}", file=sys.stderr)
+                    else:
+                        print("No templates configured.", file=sys.stderr)
+                    sys.exit(1)
+
+                data = self._build_template_data(config, args.template_id)
+
+                if use_json:
+                    print(json.dumps(data, indent=2))
+                else:
+                    self._print_template_data_human(data)
+
+            else:
+                # No template_id: show all templates including global defaults
+                template_ids = [None] + list(config._templates.keys())
+
+                if use_json:
+                    all_data = []
+                    for tid in template_ids:
+                        all_data.append(self._build_template_data(config, tid))
+                    print(json.dumps(all_data, indent=2))
+                else:
+                    for tid in template_ids:
+                        data = self._build_template_data(config, tid)
+                        self._print_template_data_human(data)
+
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def _print_template_data_human(self, data: dict):
+        """Print template field data in human-readable format."""
+        template_id = data["template_id"]
+        label = f"Template: {template_id}" if template_id else "Global defaults (no template)"
+        print()
+        print("=" * 70)
+        print(label)
+        print(f"  Record prefix: {data['record_prefix']}")
+        print(f"  Note prefix:   {data['note_prefix']}")
+        print("=" * 70)
+
+        for section, key in [("Record fields", "record_fields"), ("Note fields", "note_fields")]:
+            fields = data[key]
+            print(f"\n  {section}:")
+            if not fields:
+                print("    (none)")
+            else:
+                for field_name, field_def in sorted(fields.items()):
+                    flags = []
+                    if field_def.get("required"):
+                        flags.append("required")
+                    if not field_def.get("editable", True):
+                        flags.append("read-only")
+                    if field_def.get("system_value"):
+                        flags.append(f"system:{field_def['system_value']}")
+                    flag_str = f"  [{', '.join(flags)}]" if flags else ""
+                    print(f"    {field_name}  ({field_def['type']}, {field_def['value_type']}){flag_str}")
+                    if field_def.get("accepted_values"):
+                        print(f"      Accepted: {', '.join(field_def['accepted_values'])}")
+                    if field_def.get("default") is not None:
+                        print(f"      Default:  {field_def['default']}")
+        print()
 
     # ====================================================================
     # JSON INTERFACE COMMANDS
@@ -9042,8 +9478,9 @@ $update_kv
                     use_editor=False,
                     use_yaml_editor=False,
                     template_id=template_id or resolved_template_id,
+                    custom_id=getattr(args, 'custom_id', None),
                 )
-                
+
                 # Output JSON response
                 result = {
                     "success": True,
@@ -9883,35 +10320,36 @@ $update_kv
             
         elif command == 'import-record':
             # Required: content
-            # Optional: fields, template
+            # Optional: fields, template, record_id
             if 'content' not in params:
                 raise ValueError("Missing required parameter: content")
-            
+
             fields = params.get('fields', {})
             content = params['content']
             template_id = params.get('template')
-            
+            custom_id = params.get('record_id')
+
             # Create markdown content
             markdown_content = MarkdownDocument.create(fields, content)
-            
+
             # Write to temp file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
                 f.write(markdown_content)
                 temp_file = f.name
-            
+
             try:
                 manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
-                
+
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
                     manager,
                     args,
                     is_note=False,
                 )
-                
+
                 processed_content = MarkdownDocument.create(frontmatter, body)
                 temp_incident = Incident.from_markdown(processed_content, "TEMP", manager.project_config)
-                
+
                 record_id = manager.create_incident(
                     kv_strings=temp_incident.kv_strings,
                     kv_integers=temp_incident.kv_integers,
@@ -9920,8 +10358,9 @@ $update_kv
                     use_editor=False,
                     use_yaml_editor=False,
                     template_id=template_id or resolved_template_id,
+                    custom_id=custom_id,
                 )
-                
+
                 return {
                     "record_id": record_id,
                 }
@@ -10219,7 +10658,48 @@ $update_kv
             return {
                 "templates": templates,
             }
-            
+
+        elif command == 'template-data':
+            # Optional: template_id (omit for global defaults)
+            template_id = params.get('template_id', None)
+
+            manager = get_manager_with_override()
+            config = manager.project_config
+
+            if template_id is not None and not config.has_template(template_id):
+                raise RuntimeError(f"Template '{template_id}' not found")
+
+            return self._build_template_data(config, template_id)
+
+        elif command == 'reindex':
+            # Optional: record_ids (list), force (bool), skip_mtime (bool)
+            record_ids = params.get('record_ids', [])
+            if isinstance(record_ids, str):
+                record_ids = [record_ids]
+            force = bool(params.get('force', False))
+            skip_mtime = bool(params.get('skip_mtime', False))
+
+            manager = get_manager_with_override()
+            reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
+
+            if record_ids:
+                failed = []
+                counts = {"reindexed": 0, "skipped": 0}
+                for record_id in record_ids:
+                    success = reindexer.reindex_one(
+                        record_id, verbose=False, force=force, skip_mtime=skip_mtime
+                    )
+                    if success:
+                        counts["reindexed"] += 1
+                    else:
+                        failed.append(record_id)
+                if failed:
+                    raise RuntimeError(f"Records not found: {', '.join(failed)}")
+                return {"reindexed": counts["reindexed"], "record_ids": record_ids}
+            else:
+                count = reindexer.reindex_all(verbose=False, force=force, skip_mtime=skip_mtime)
+                return {"reindexed": count}
+
         else:
             raise ValueError(f"Unknown command: {command}")
 

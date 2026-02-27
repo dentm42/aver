@@ -2,7 +2,7 @@
 
 ## Summary
 
-Successfully integrated a comprehensive JSON interface into `aver.py` to enable scripting and programmatic integration. The interface provides 11 commands including an interactive IO mode for stream-based communication.
+Successfully integrated a comprehensive JSON interface into `aver.py` to enable scripting and programmatic integration. The interface provides 13 commands including an interactive IO mode for stream-based communication.
 
 ## Changes Made
 
@@ -99,6 +99,9 @@ Implemented 13 new methods in the `IncidentCLI` class:
 ```bash
 # From command line argument
 aver json import-record --data '{"content": "Bug report", "fields": {"status": "open"}}'
+
+# With a custom record ID
+aver json import-record --data '{"content": "Bug report", "fields": {"status": "open"}}' --use-id MY-CUSTOM-ID
 
 # From stdin
 echo '{"content": "Bug report", "fields": {"status": "open"}}' | aver json import-record --data -
@@ -206,14 +209,16 @@ proc.wait()
 All standard JSON commands are supported in IO mode:
 - `export-record` - params: `{record_id, include_notes?}`
 - `export-note` - params: `{record_id, note_id}`
-- `search-records` - params: `{ksearch?, limit?}`
-- `search-notes` - params: `{ksearch?, limit?}`
-- `import-record` - params: `{content, fields?, template?}`
+- `search-records` - params: `{ksearch?, ksort?, limit?, count_only?, max?}`
+- `search-notes` - params: `{ksearch?, limit?, count_only?}`
+- `import-record` - params: `{content, fields?, template?, record_id?}`
 - `import-note` - params: `{record_id, content, fields?}`
 - `update-record` - params: `{record_id, content?, fields?}`
 - `schema-record` - params: `{template?}`
 - `schema-note` - params: `{record_id}`
 - `reply-template` - params: `{record_id, note_id}`
+- `template-data` - params: `{template_id?}`
+- `reindex` - params: `{record_ids?, force?, skip_mtime?}`
 
 ### IO Mode Benefits
 

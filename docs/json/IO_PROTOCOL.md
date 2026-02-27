@@ -113,9 +113,11 @@ Export a single note.
 Search for records.
 
 **Parameters:**
-- `ksearch` (optional): Search expression(s) - can be a string or array of strings
-- `ksort` (optional): Sort expression(s) - can be a string or array of strings  
+- `ksearch` (optional): Search expression(s) — string or array of strings. Multiple expressions are ANDed together. Use the `^` operator for OR within a single field (e.g. `"status^open|closed"`).
+- `ksort` (optional): Sort expression(s) — string or array of strings. Required when `max` is used.
 - `limit` (optional, default: 100): Maximum results to return
+- `count_only` (optional, default: false): If true, return only the count (integer), not the records
+- `max` (optional): String or array of strings — field key(s). After applying ksearch/ksort/limit, post-filters the result set to only those records that hold the maximum value for any of the specified keys. Requires `ksort`. Keys are evaluated independently (OR logic).
 
 **Examples:**
 ```json
@@ -126,7 +128,23 @@ Search for records.
 {"command": "search-records", "params": {"ksearch": ["status=open", "priority=high"], "ksort": ["created_at-"], "limit": 5}}
 ```
 
-**Success Response:**
+```json
+{"command": "search-records", "params": {"ksearch": "status^open|in_progress|closed"}}
+```
+
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "count_only": true}}
+```
+
+```json
+{"command": "search-records", "params": {"ksort": "severity", "max": "severity"}}
+```
+
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}
+```
+
+**Success Response (records):**
 ```json
 {
   "success": true,
@@ -140,16 +158,25 @@ Search for records.
 }
 ```
 
+**Success Response (count_only):**
+```json
+{"success": true, "result": {"count": 3}}
+
 ### 4. search-notes
 Search for notes across all records.
 
 **Parameters:**
-- `ksearch` (optional): Search query string
+- `ksearch` (optional): Search expression(s) — string or array of strings. Supports the `^` operator for OR within a single field.
 - `limit` (optional): Maximum results to return
+- `count_only` (optional, default: false): If true, return only the count (integer)
 
 **Example:**
 ```json
 {"command": "search-notes", "params": {"ksearch": "category=bugfix", "limit": 5}}
+```
+
+```json
+{"command": "search-notes", "params": {"ksearch": "category^bugfix|investigation"}}
 ```
 
 ### 5. import-record
@@ -159,6 +186,7 @@ Create a new record.
 - `content` (required): Record content/description
 - `fields` (optional): Key-value field pairs
 - `template` (optional): Template identifier
+- `record_id` (optional): Custom record ID to use (A-Z, a-z, 0-9, `_`, `-` only). Must be unique. If omitted, an ID is auto-generated.
 
 **Example:**
 ```json
@@ -168,6 +196,18 @@ Create a new record.
     "content": "New bug discovered in authentication",
     "fields": {"status": "open", "priority": "critical", "component": "auth"},
     "template": "bug_report"
+  }
+}
+```
+
+**Example with custom ID:**
+```json
+{
+  "command": "import-record",
+  "params": {
+    "content": "New bug discovered in authentication",
+    "fields": {"status": "open"},
+    "record_id": "BUG-auth-001"
   }
 }
 ```
@@ -299,6 +339,135 @@ Get a reply template with quoted original note text.
   }
 }
 ```
+
+### 12. reindex
+Reindex records from their Markdown files. Equivalent to `admin reindex` on the command line. Supports the same change-detection optimisation: files whose mtime (and, if mtime changed, MD5 hash) are unchanged are skipped unless overridden.
+
+**Parameters:**
+- `record_ids` (optional): String or array of record IDs to reindex. Omit to reindex all records.
+- `force` (optional, default: false): Skip all change detection; always reindex.
+- `skip_mtime` (optional, default: false): Skip the mtime shortcut; read each file and compare its MD5 hash.
+
+**Examples:**
+```json
+{"command": "reindex", "params": {}}
+```
+```json
+{"command": "reindex", "params": {"record_ids": ["REC-001", "BUG-042"]}}
+```
+```json
+{"command": "reindex", "params": {"record_ids": "REC-001", "force": true}}
+```
+```json
+{"command": "reindex", "params": {"skip_mtime": true}}
+```
+
+**Success Response (full reindex):**
+```json
+{
+  "success": true,
+  "result": {
+    "reindexed": 5
+  }
+}
+```
+
+**Success Response (selective reindex):**
+```json
+{
+  "success": true,
+  "result": {
+    "reindexed": 2,
+    "record_ids": ["REC-001", "BUG-042"]
+  }
+}
+```
+
+`reindexed` reflects only the files that were actually reindexed; files skipped due to unchanged mtime/hash are not counted.
+
+**Error Response (record not found):**
+```json
+{
+  "success": false,
+  "error": "Records not found: REC-MISSING"
+}
+```
+
+### 11. template-data
+Get complete field definitions for a template (record fields and note fields). Intended for UI pre-validation — lets a client know what fields exist, their types, accepted values, defaults, and whether they are system-populated before creating or updating records.
+
+**Parameters:**
+- `template_id` (optional): Template to inspect. Omit to get global defaults (no template).
+
+**Examples:**
+```json
+{"command": "template-data", "params": {"template_id": "bug"}}
+```
+```json
+{"command": "template-data", "params": {}}
+```
+
+**Success Response:**
+```json
+{
+  "success": true,
+  "result": {
+    "template_id": "bug",
+    "record_prefix": "BUG",
+    "note_prefix": "COMMENT",
+    "record_fields": {
+      "title": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": true
+      },
+      "status": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": true,
+        "accepted_values": ["new", "confirmed", "in_progress", "fixed", "verified", "closed"],
+        "default": "new"
+      },
+      "created_by": {
+        "type": "single",
+        "value_type": "string",
+        "editable": false,
+        "required": true,
+        "system_value": "user_name"
+      }
+    },
+    "note_fields": {
+      "author": {
+        "type": "single",
+        "value_type": "string",
+        "editable": false,
+        "required": true,
+        "system_value": "user_name"
+      },
+      "category": {
+        "type": "single",
+        "value_type": "string",
+        "editable": true,
+        "required": false,
+        "accepted_values": ["investigation", "bugfix", "workaround"]
+      }
+    }
+  }
+}
+```
+
+**Field definition keys:**
+| Key | Always present | Description |
+|-----|---------------|-------------|
+| `type` | yes | `"single"` or `"multi"` |
+| `value_type` | yes | `"string"`, `"integer"`, or `"float"` |
+| `editable` | yes | `false` = system-populated, do not submit |
+| `required` | yes | `true` = must provide a value |
+| `accepted_values` | if constrained | List of valid values |
+| `default` | if set | Default value (may be `"${datestamp}"` etc.) |
+| `system_value` | if auto-populated | System value source (e.g. `"user_name"`, `"datetime"`) |
 
 ## Integration Examples
 

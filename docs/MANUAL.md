@@ -65,6 +65,8 @@
 ### 9. Command Reference
 - [admin init](#admin-init)
 - [admin config](#admin-config)
+- [admin reindex](#admin-reindex)
+- [admin template-data](#admin-template-data)
 - [record new](#record-new)
 - [record update](#record-update)
 - [record list](#record-list)
@@ -72,7 +74,6 @@
 - [note add](#note-add)
 - [note list](#note-list)
 - [note search](#note-search)
-- [admin reindex](#admin-reindex)
 
 ### 10. Administrator's Guide
 - [Setting Up Special Fields](#setting-up-special-fields)
@@ -235,6 +236,12 @@ aver record new --title "Server down" --text location=us-west-2 --number error_c
 ```bash
 aver record new --from-file bug-report.md
 ```
+
+**With a custom record ID**:
+```bash
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
+```
+The ID must use only A-Z, a-z, 0-9, `_`, and `-`, and must be unique. If omitted, an ID is auto-generated.
 
 ### Using --help-fields for Records
 
@@ -683,6 +690,40 @@ aver note search --ksearch category=bugfix
 aver note search --ksearch priority=critical
 ```
 
+#### Search Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `=`  | Equals | `status=open` |
+| `!=` | Not equals | `status!=closed` |
+| `>`  | Greater than | `severity>2` |
+| `<`  | Less than | `severity<4` |
+| `>=` | Greater or equal | `severity>=3` |
+| `<=` | Less or equal | `severity<=3` |
+| `^`  | In (matches any of a pipe-delimited list) | `status^open\|in_progress` |
+
+#### The `^` (In) Operator
+
+The `^` operator matches records or notes where the field value is any one of a pipe-delimited list of values. It is equivalent to a SQL `IN(...)` clause.
+
+```bash
+# Match records where status is open OR closed
+aver record list --ksearch 'status^open|closed'
+
+# Match records where priority is high OR critical
+aver record list --ksearch 'priority^high|critical'
+
+# Combine with other filters (AND logic between different --ksearch flags)
+aver record list --ksearch 'status^open|in_progress' --ksearch priority=high
+
+# Works with note search too
+aver note search --ksearch 'category^bugfix|investigation'
+```
+
+A single-value `^` expression (`status^open`) is equivalent to `status=open`.
+
+Multiple `--ksearch` flags are always combined with AND logic; the `^` operator provides OR logic **within a single field**.
+
 ### Database Management
 
 **Initialize a new database**:
@@ -694,6 +735,26 @@ aver admin init
 ```bash
 aver admin reindex
 ```
+
+#### The `file_index` Table
+
+Every time a record or note is indexed, Aver records three pieces of file metadata in the `file_index` SQLite table (`.aver/aver.db`):
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `file_path` | TEXT | Absolute path to the Markdown file |
+| `file_hash` | TEXT | MD5 hex digest of the file's UTF-8 content |
+| `file_mtime` | TEXT | File modification time (ISO 8601 UTC) at index time |
+
+When **indexing from existing files** (e.g., `admin reindex`), `file_mtime` is read from the filesystem. When a file is indexed **immediately after being written** (e.g., `record new`, `note add`), `file_mtime` reflects the mtime of the newly written file.
+
+This table is useful for:
+- Detecting files that have changed since the last index (`file_hash` mismatch)
+- Auditing when files were last indexed (`file_mtime`)
+- Building external tools that need to track file provenance
+
+`admin reindex` uses this table to skip unchanged files. Entries are updated each time a file is reindexed. Use `--force` to bypass the table entirely and reindex everything unconditionally.
 
 ### Library Aliases
 
@@ -824,6 +885,11 @@ aver record new --template bug --help-fields
 aver record new --from-file record.md
 ```
 
+**With custom record ID**:
+```bash
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
+```
+
 ### record update
 
 Update an existing record.
@@ -869,6 +935,13 @@ required to ensure the relevant records are within the result window.
 - `--max` may be specified more than once.
 - Keys are evaluated independently — a record is included if it has the max
   for **any** of the keys.
+
+The `max` parameter is also available via **JSON IO** as a `search-records` parameter:
+
+```json
+{"command": "search-records", "params": {"ksort": "severity", "max": "severity"}}
+{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}
+```
 
 ### record search
 
@@ -938,12 +1011,125 @@ Returns only the integer count of matching notes with no other output.
 
 ### admin reindex
 
-Rebuild the search index.
+Rebuild the search index — all records, or a specific set of records.
 
 ```bash
+# Full reindex (all records)
 aver admin reindex
+
+# Selective reindex (one or more records)
+aver admin reindex REC-001
+aver admin reindex REC-001 BUG-042 FEAT-007
+
+# Verbose progress output
 aver admin reindex --verbose
+
+# Force reindex even if files appear unchanged
+aver admin reindex --force
+aver admin reindex REC-001 --force
+
+# Skip mtime shortcut; always compare MD5 hash
+aver admin reindex --skip-mtime
+aver admin reindex REC-001 --skip-mtime
 ```
+
+#### How change detection works
+
+`admin reindex` is optimised to skip files that have not changed, making repeated full reindexes fast on large record sets. The check proceeds in two steps:
+
+1. **mtime check** (fast): If the file's modification time matches the value stored in `file_index`, the file is assumed unchanged and skipped.
+2. **MD5 hash check** (slower, only if mtime differs): If the mtime has changed, the file is read and its MD5 hash is compared against the stored value. If the hash matches the file is still skipped; if it differs, the file is reindexed.
+
+| Flag | Behaviour |
+|------|-----------|
+| _(none)_ | mtime check → hash check on mtime miss → skip if match |
+| `--skip-mtime` | Skip mtime check; always read file and compare MD5 hash |
+| `--force` | Skip all change detection; always reindex every file |
+
+Use `--skip-mtime` when files may have been copied with preserved timestamps (e.g. `cp -p`, `rsync -a`, `git checkout`). Use `--force` after schema changes or to recover from a corrupted index.
+
+### admin template-data
+
+Show field definitions for a template — record fields and note fields — as defined in `config.toml`. Useful for building UIs or validating data before submission.
+
+**Show all templates (human-readable)**:
+```bash
+aver admin template-data
+```
+
+**Show a specific template**:
+```bash
+aver admin template-data bug
+```
+
+**JSON output (for programmatic use)**:
+```bash
+aver admin template-data bug --json
+aver admin template-data --json        # all templates as a JSON array
+```
+
+When no `template_id` is given, global defaults (no template) are also included.
+
+**Example human-readable output**:
+```
+======================================================================
+Template: bug
+  Record prefix: BUG
+  Note prefix:   COMMENT
+======================================================================
+
+  Record fields:
+    created_at  (single, string)  [read-only, system:datetime]
+    created_by  (single, string)  [required, read-only, system:user_name]
+    severity    (single, integer)  [required]
+      Accepted: 1, 2, 3, 4, 5
+      Default:  3
+    status      (single, string)  [required]
+      Accepted: new, confirmed, in_progress, fixed, verified, closed
+      Default:  new
+    title       (single, string)  [required]
+
+  Note fields:
+    author      (single, string)  [required, read-only, system:user_name]
+    category    (single, string)
+      Accepted: investigation, bugfix, workaround, regression, documentation
+    timestamp   (single, string)  [required, read-only, system:datetime]
+```
+
+**Example JSON output** (single template):
+```json
+{
+  "template_id": "bug",
+  "record_prefix": "BUG",
+  "note_prefix": "COMMENT",
+  "record_fields": {
+    "title":      {"type": "single", "value_type": "string", "editable": true, "required": true},
+    "status":     {"type": "single", "value_type": "string", "editable": true, "required": true,
+                   "accepted_values": ["new","confirmed","in_progress","fixed","verified","closed"],
+                   "default": "new"},
+    "severity":   {"type": "single", "value_type": "integer", "editable": true, "required": true,
+                   "accepted_values": ["1","2","3","4","5"], "default": "3"},
+    "created_by": {"type": "single", "value_type": "string", "editable": false, "required": true,
+                   "system_value": "user_name"},
+    "created_at": {"type": "single", "value_type": "string", "editable": false, "required": false,
+                   "system_value": "datetime"}
+  },
+  "note_fields": {
+    "author":    {"type": "single", "value_type": "string", "editable": false, "required": true,
+                  "system_value": "user_name"},
+    "timestamp": {"type": "single", "value_type": "string", "editable": false, "required": true,
+                  "system_value": "datetime"},
+    "category":  {"type": "single", "value_type": "string", "editable": true, "required": false,
+                  "accepted_values": ["investigation","bugfix","workaround","regression","documentation"]}
+  }
+}
+```
+
+This command is also available via **JSON IO** as the `template-data` command (see JSON IO documentation).
+
+### Reindexing
+
+Use `admin reindex` to reindex records after manually editing Markdown files. Pass one or more record IDs to reindex only those records; omit them for a full reindex. See [admin reindex](#admin-reindex) for the full reference including `--force` and `--skip-mtime`.
 
 ---
 

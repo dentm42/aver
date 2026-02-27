@@ -8,7 +8,7 @@
 | `export-note` | Export single note as JSON | |
 | `search-records` | Search records, return JSON array | `--ksearch`, `--limit` |
 | `search-notes` | Search notes, return JSON array | `--ksearch`, `--limit` |
-| `import-record` | Create record from JSON | `--data` |
+| `import-record` | Create record from JSON | `--data`, `--use-id` |
 | `import-note` | Add note from JSON | `--data` |
 | `update-record` | Update record from JSON | `--data` |
 | `schema-record` | Get record field definitions | `--template` |
@@ -46,6 +46,9 @@ aver json search-records --ksearch "status=open" --ksort "created_at-" --limit 1
 ```bash
 # From command line
 aver json import-record --data '{"content": "Bug description", "fields": {"title": "Bug title", "status": "open"}}'
+
+# With a custom record ID
+aver json import-record --data '{"content": "Bug description", "fields": {"status": "open"}}' --use-id MY-CUSTOM-ID
 
 # From stdin
 cat data.json | aver json import-record --data -

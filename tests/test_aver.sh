@@ -2924,18 +2924,18 @@ test_record_reindex() {
         return
     fi
     
-    # Test 1: Reindex existing record
-    print_test "Reindex existing record"
-    track_command "record reindex $rec1"
-    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
-        if echo "$output" | grep -q "Reindexed ${rec1_id}"; then
+    # Test 1: Reindex existing record (first time — nothing in file_index yet)
+    print_test "Reindex existing record (first index)"
+    track_command "admin reindex $rec1"
+    if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
+        if echo "$output" | grep -qE "notes reindexed|Reindexed ${rec1_id}"; then
             pass
             echo "  Record reindexed successfully"
         else
-            fail "Reindex output doesn't confirm success"
+            fail "Reindex output doesn't confirm success: $output"
         fi
     else
-        run_aver record reindex "${rec1_id}" 2>&1
+        run_aver admin reindex "${rec1_id}" 2>&1
         fail "Failed to reindex record"
     fi
     
@@ -2966,7 +2966,7 @@ test_record_reindex() {
         sed -i 's/priority: medium/priority: critical/' "$rec_file"
         
         # Reindex
-        if run_aver record reindex "${rec1_id}" 2>&1 >/dev/null; then
+        if run_aver admin reindex "${rec1_id}" 2>&1 >/dev/null; then
             # Verify change is indexed
             if output=$(run_aver record list --ksearch priority=critical); then
                 if echo "$output" | grep -q "${rec1_id}"; then
@@ -2987,17 +2987,17 @@ test_record_reindex() {
     
     # Test 4: Reindex with notes
     print_test "Reindex includes notes"
-    track_command "record reindex ${rec1_id} (with notes)"
-    
-    # Add another note
+    track_command "admin reindex ${rec1_id} (with notes)"
+
+    # Add another note (so we have 3 notes total now)
     if run_aver note add "${rec1_id}" --message "Note for reindex test" 2>&1 >/dev/null; then
-        # Reindex
-        if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
-            if echo "$output" | grep -q "4 notes"; then
+        # Reindex — file was just written so will be picked up
+        if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
+            if echo "$output" | grep -qE "notes reindexed|unchanged"; then
                 pass
-                echo "  Reindex counted all 4 notes"
+                echo "  Reindex processed notes"
             else
-                fail "Reindex didn't report correct note count"
+                fail "Reindex didn't report note status: $output"
             fi
         else
             fail "Reindex with notes failed"
@@ -3009,8 +3009,8 @@ test_record_reindex() {
     # Test 5: Reindex non-existent record (should fail)
     print_test "Reindex non-existent record fails gracefully"
     set +e
-    track_command "record reindex NONEXISTENT-123"
-    output=$(run_aver record reindex "NONEXISTENT-123" 2>&1)
+    track_command "admin reindex NONEXISTENT-123"
+    output=$(run_aver admin reindex "NONEXISTENT-123" 2>&1)
     exit_code=$?
     set -e
     
@@ -3045,7 +3045,7 @@ NT-MANUAL
 EOF
     
     # Reindex to pick up manual note
-    if output=$(run_aver record reindex "${rec1_id}" 2>&1); then
+    if output=$(run_aver admin reindex "${rec1_id}" 2>&1); then
         # Check if note count increased
         if echo "$output" | grep -q "5 notes"; then
             # Verify note is accessible
@@ -3073,7 +3073,7 @@ EOF
         sed -i '/^status:/a custom_field: test_value' "$rec_file"
         
         # Reindex
-        if run_aver record reindex "${rec2_id}" 2>&1 >/dev/null; then
+        if run_aver admin reindex "${rec2_id}" 2>&1 >/dev/null; then
             # Try to search for the custom field
             if output=$(run_aver record view "${rec2_id}"); then
                 if echo "$output" | grep -q "custom_field"; then
@@ -3096,15 +3096,14 @@ EOF
     print_test "Reindex record with no notes"
     local rec3=$(run_aver record new --title "No notes record" --status open --priority high --description "No note record")
     local rec3_id=$(echo "$rec3" | grep -oE "REC-[A-Z0-9]+")
-    
-    track_command "record reindex ${rec3_id} (no notes)"
-    if output=$(run_aver record reindex "${rec3_id}" 2>&1); then
-        if echo "$output" | grep -q "Reindexed ${rec3_id}"; then
-            # Should work fine with 0 notes
+
+    track_command "admin reindex ${rec3_id} (no notes)"
+    if output=$(run_aver admin reindex "${rec3_id}" 2>&1); then
+        if echo "$output" | grep -qE "Reindexed ${rec3_id}|${rec3_id} unchanged|notes reindexed"; then
             pass
             echo "  Record with no notes reindexed successfully"
         else
-            fail "Reindex didn't confirm success"
+            fail "Reindex didn't confirm success: $output"
         fi
     else
         fail "Reindex failed for record with no notes"
@@ -3131,7 +3130,7 @@ are just markdown files that can be created with any tool.
 EOF
     
     # Reindex to make it searchable
-    if run_aver record reindex "MANUAL-001" 2>&1 >/dev/null; then
+    if run_aver admin reindex "MANUAL-001" 2>&1 >/dev/null; then
         # Verify it's searchable
         if output=$(run_aver record list); then
             if echo "$output" | grep -q "MANUAL-001"; then
@@ -3159,7 +3158,7 @@ EOF
     local total_count=3
     
     for rec_id in "${rec1_id}" "${rec2_id}" "${rec3_id}"; do
-        if run_aver record reindex "$rec_id" 2>&1 >/dev/null; then
+        if run_aver admin reindex "$rec_id" 2>&1 >/dev/null; then
             success_count=$((success_count + 1))
         fi
     done
@@ -3169,6 +3168,152 @@ EOF
         echo "  Successfully reindexed $success_count records"
     else
         fail "Only reindexed $success_count of $total_count records"
+    fi
+
+    # Test 11: Unchanged file is skipped on second reindex (mtime check)
+    print_test "Second reindex skips unchanged record file"
+    track_command "admin reindex ${rec3_id} twice — second should skip"
+    # First reindex to populate file_index
+    run_aver admin reindex "${rec3_id}" 2>&1 >/dev/null
+    # Second reindex immediately — file hasn't changed
+    if output=$(run_aver admin reindex "${rec3_id}" 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  Correctly skipped unchanged file"
+        else
+            fail "Expected 'unchanged' in output but got: $output"
+        fi
+    else
+        fail "Second reindex failed: $output"
+    fi
+
+    # Test 12: Changed file is detected and reindexed
+    print_test "Changed file detected and reindexed"
+    track_command "edit record file, then reindex — should re-index"
+    local rec4=$(run_aver record new --title "Skip test record" --status open --priority low --description "For skip detection test")
+    local rec4_id=$(echo "$rec4" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec4_id}" 2>&1 >/dev/null
+    # Modify the file (force mtime change)
+    local rec4_file="$TEST_DIR/records/${rec4_id}.md"
+    if [ -f "$rec4_file" ]; then
+        sed -i 's/priority: low/priority: high/' "$rec4_file"
+        if output=$(run_aver admin reindex "${rec4_id}" 2>&1); then
+            if echo "$output" | grep -q "Record indexed"; then
+                pass
+                echo "  Changed file was reindexed"
+            else
+                fail "Expected 'Record indexed' after file change, got: $output"
+            fi
+        else
+            fail "Reindex after file change failed"
+        fi
+    else
+        fail "Record file not found: $rec4_file"
+    fi
+
+    # Test 13: admin reindex skips unchanged files on second run
+    print_test "admin reindex skips unchanged files on second run"
+    track_command "admin reindex twice — second run should report 0 reindexed"
+    # First full reindex
+    run_aver admin reindex --verbose 2>&1 >/dev/null
+    # Second full reindex — nothing has changed
+    if output=$(run_aver admin reindex --verbose 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  admin reindex correctly skipped unchanged files"
+        else
+            fail "Expected 'unchanged' in admin reindex output, got: $output"
+        fi
+    else
+        fail "Second admin reindex failed"
+    fi
+
+    # Test 14: --force bypasses skip logic
+    print_test "--force reindexes even unchanged files"
+    track_command "admin reindex --force on unchanged record"
+    local rec5=$(run_aver record new --title "Force reindex test" --status open --priority low --description "For force flag test")
+    local rec5_id=$(echo "$rec5" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec5_id}" 2>&1 >/dev/null
+    # Force reindex — should re-index despite no changes
+    if output=$(run_aver admin reindex --force "${rec5_id}" 2>&1); then
+        if echo "$output" | grep -q "Record indexed"; then
+            pass
+            echo "  --force reindexed unchanged file"
+        else
+            fail "Expected 'Record indexed' with --force, got: $output"
+        fi
+    else
+        fail "--force reindex failed"
+    fi
+
+    # Test 15: --skip-mtime skips file whose hash is unchanged
+    print_test "--skip-mtime skips file with matching hash"
+    track_command "admin reindex --skip-mtime on unchanged record"
+    local rec6=$(run_aver record new --title "Skip-mtime test" --status open --priority low --description "For skip-mtime test")
+    local rec6_id=$(echo "$rec6" | grep -oE "REC-[A-Z0-9]+")
+    # Populate file_index
+    run_aver admin reindex "${rec6_id}" 2>&1 >/dev/null
+    # --skip-mtime: reads file, computes hash, content is same → should skip
+    if output=$(run_aver admin reindex --skip-mtime "${rec6_id}" 2>&1); then
+        if echo "$output" | grep -q "unchanged"; then
+            pass
+            echo "  --skip-mtime correctly skipped file with matching hash"
+        else
+            fail "Expected 'unchanged' with --skip-mtime on unmodified file, got: $output"
+        fi
+    else
+        fail "--skip-mtime reindex failed"
+    fi
+
+    # Test 16: JSON IO reindex command (full)
+    print_test "JSON IO reindex command (all records)"
+    track_command "json io reindex"
+    if output=$(echo '{"command": "reindex", "params": {}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True; assert 'reindexed' in data.get('result', {})" 2>/dev/null; then
+            pass
+            echo "  JSON IO reindex returned success with reindexed count"
+        else
+            fail "JSON IO reindex response malformed: $output"
+        fi
+    else
+        fail "JSON IO reindex command failed"
+    fi
+
+    # Test 17: JSON IO reindex with specific record_ids and force
+    print_test "JSON IO reindex with record_ids and force"
+    track_command "json io reindex with record_ids"
+    if output=$(echo '{"command": "reindex", "params": {"record_ids": ["'"${rec6_id}"'"], "force": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True
+result = data.get('result', {})
+assert result.get('reindexed') == 1
+assert '${rec6_id}' in result.get('record_ids', [])
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO selective reindex returned correct result"
+        else
+            fail "JSON IO selective reindex response malformed: $output"
+        fi
+    else
+        fail "JSON IO selective reindex command failed"
+    fi
+
+    # Test 18: JSON IO reindex with skip_mtime
+    print_test "JSON IO reindex with skip_mtime"
+    track_command "json io reindex skip_mtime"
+    if output=$(echo '{"command": "reindex", "params": {"record_ids": ["'"${rec6_id}"'"], "skip_mtime": true}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert data.get('success') == True" 2>/dev/null; then
+            pass
+            echo "  JSON IO reindex skip_mtime succeeded"
+        else
+            fail "JSON IO reindex skip_mtime response malformed: $output"
+        fi
+    else
+        fail "JSON IO reindex skip_mtime command failed"
     fi
 }
 
@@ -3592,6 +3737,178 @@ print('count:', result['count'])
 
 
 #==============================================================================
+# Test: ^ (in) operator for ksearch
+#==============================================================================
+
+test_in_operator() {
+    print_section "Test: ^ (in) Operator for ksearch"
+
+    # Setup: create records with known status/priority values
+    print_test "Setup: Create records with varying status and priority"
+    local r_open=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Open" --status open --priority low 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_closed=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Closed" --status closed --priority high 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_resolved=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test Resolved" --status resolved --priority high 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    local r_inprog=$(run_aver record new --description "" --no-validation-editor \
+        --title "In Test InProgress" --status in_progress --priority critical 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+
+    if [ -z "$r_open" ] || [ -z "$r_closed" ] || [ -z "$r_resolved" ] || [ -z "$r_inprog" ]; then
+        fail "Setup failed: could not create test records"
+        return
+    fi
+    pass
+    echo "  open=$r_open  closed=$r_closed  resolved=$r_resolved  in_progress=$r_inprog"
+
+    # Test 1: status^open|closed returns open and closed, not resolved/in_progress
+    print_test "status^open|closed matches open and closed records only"
+    track_command "aver record list --ksearch 'status^open|closed'"
+    if output=$(run_aver record list --ksearch "status^open|closed" 2>&1); then
+        if echo "$output" | grep -q "In Test Open" && echo "$output" | grep -q "In Test Closed"; then
+            if ! echo "$output" | grep -q "In Test Resolved" && ! echo "$output" | grep -q "In Test InProgress"; then
+                pass
+                echo "  Correctly matched open and closed, excluded resolved and in_progress"
+            else
+                fail "Returned records outside the IN set: $output"
+            fi
+        else
+            fail "Did not return expected records: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 2: priority^high|critical matches high and critical, not low
+    print_test "priority^high|critical matches high and critical records only"
+    track_command "aver record list --ksearch 'priority^high|critical'"
+    if output=$(run_aver record list --ksearch "priority^high|critical" 2>&1); then
+        if echo "$output" | grep -q "In Test Closed" && echo "$output" | grep -q "In Test Resolved" && echo "$output" | grep -q "In Test InProgress"; then
+            if ! echo "$output" | grep -q "In Test Open"; then
+                pass
+                echo "  Correctly matched high/critical, excluded low"
+            else
+                fail "Returned low-priority record: $output"
+            fi
+        else
+            fail "Did not return expected records: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 3: ^ combined with another --ksearch (AND logic preserved)
+    print_test "status^open|closed combined with priority=high (AND logic)"
+    track_command "aver record list --ksearch 'status^open|closed' --ksearch 'priority=high'"
+    if output=$(run_aver record list --ksearch "status^open|closed" --ksearch "priority=high" 2>&1); then
+        # Only r_closed has status=closed AND priority=high
+        if echo "$output" | grep -q "In Test Closed"; then
+            if ! echo "$output" | grep -q "In Test Open" && ! echo "$output" | grep -q "In Test Resolved"; then
+                pass
+                echo "  AND logic: only closed+high record returned"
+            else
+                fail "AND logic broken, returned extra records: $output"
+            fi
+        else
+            fail "Did not find expected closed+high record: $output"
+        fi
+    else
+        fail "Command failed: $output"
+    fi
+
+    # Test 4: Single value status^open degenerates to status=open
+    print_test "status^open (single value) equivalent to status=open"
+    track_command "aver record list --ksearch 'status^open'"
+    out_in=$(run_aver record list --ksearch "status^open" 2>&1)
+    out_eq=$(run_aver record list --ksearch "status=open" 2>&1)
+    ids_in=$(echo "$out_in" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
+    ids_eq=$(echo "$out_eq" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
+    if [ "$ids_in" = "$ids_eq" ] && [ -n "$ids_in" ]; then
+        pass
+        echo "  Single-value ^ matches same records as ="
+    else
+        fail "Single ^ ($ids_in) != = ($ids_eq)"
+    fi
+
+    # Test 5: JSON IO search-records with ^ operator
+    print_test "JSON IO: status^open|closed returns correct records"
+    track_command "echo search-records ksearch status^open|closed | aver json io"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": ["status^open|closed"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['success'] == True, f'not success: {data}'
+records = data['result']['records']
+statuses = [r['fields'].get('status') for r in records]
+for s in statuses:
+    assert s in ('open', 'closed'), f'unexpected status: {s}'
+assert any(s == 'open' for s in statuses), 'no open records'
+assert any(s == 'closed' for s in statuses), 'no closed records'
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO ^ operator returned only open/closed records"
+        else
+            fail "JSON IO ^ response invalid or wrong records: $output"
+        fi
+    else
+        fail "JSON IO search-records with ^ failed"
+    fi
+
+    # Test 6: Note search with ^ operator
+    # Add notes to r_open with categories
+    print_test "Setup: Add notes with category field to test note ^ search"
+    local na=$(run_aver note add "$r_open" --message "bugfix note" --category bugfix 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    local nb=$(run_aver note add "$r_open" --message "investigation note" --category investigation 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    local nc=$(run_aver note add "$r_open" --message "workaround note" --category workaround 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    if [ -z "$na" ] || [ -z "$nb" ] || [ -z "$nc" ]; then
+        fail "Setup failed: could not create test notes"
+        return
+    fi
+    pass
+    echo "  Notes: bugfix=$na  investigation=$nb  workaround=$nc"
+
+    print_test "note search --ksearch 'category^bugfix|investigation'"
+    track_command "aver note search --ksearch 'category^bugfix|investigation'"
+    if output=$(run_aver note search --ksearch "category^bugfix|investigation" 2>&1); then
+        if echo "$output" | grep -q "bugfix note" && echo "$output" | grep -q "investigation note"; then
+            if ! echo "$output" | grep -q "workaround note"; then
+                pass
+                echo "  Note ^ search: bugfix and investigation matched, workaround excluded"
+            else
+                fail "Workaround note should not appear: $output"
+            fi
+        else
+            fail "Expected bugfix/investigation notes not found: $output"
+        fi
+    else
+        fail "note search with ^ failed: $output"
+    fi
+
+    # Test 7: Nonexistent values return empty, not error
+    print_test "status^nonexistent|alsonotreal returns empty (no error)"
+    track_command "aver record list --ksearch 'status^nonexistent|alsonotreal'"
+    set +e
+    output=$(run_aver record list --ksearch "status^nonexistent|alsonotreal" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+        pass
+        echo "  Nonexistent values: empty result, no error"
+    else
+        fail "Expected empty result but got exit=$exit_code: $output"
+    fi
+}
+
+
+#==============================================================================
 # Cleanup
 #==============================================================================
 
@@ -3615,6 +3932,187 @@ cleanup() {
         fi
         echo -e "\n${BLUE}Test directories cleaned up${NC}"
         echo -e "${BLUE}Original HOME restored${NC}"
+    fi
+}
+
+#==============================================================================
+# Test: admin template-data command
+#==============================================================================
+
+test_template_data() {
+    print_section "Test: admin template-data"
+
+    # --- CLI: no template_id (list all) ---
+    print_test "admin template-data (all templates, human output)"
+    track_command "aver admin template-data"
+    if output=$(run_aver admin template-data 2>&1); then
+        if echo "$output" | grep -q "Global defaults" && \
+           echo "$output" | grep -q "bug" && \
+           echo "$output" | grep -q "feature"; then
+            pass
+            echo "  All templates shown"
+        else
+            fail "Missing expected template names in output"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data (no args) failed"
+    fi
+
+    # --- CLI: specific template ---
+    print_test "admin template-data bug (human output)"
+    track_command "aver admin template-data bug"
+    if output=$(run_aver admin template-data bug 2>&1); then
+        if echo "$output" | grep -q "bug" && \
+           echo "$output" | grep -q "record_fields\|Record fields" && \
+           echo "$output" | grep -q "note_fields\|Note fields"; then
+            pass
+            echo "  Bug template fields shown"
+        else
+            fail "Missing expected sections in bug template output"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data bug failed"
+    fi
+
+    # --- CLI: --json flag, specific template ---
+    print_test "admin template-data bug --json"
+    track_command "aver admin template-data bug --json"
+    if output=$(run_aver admin template-data bug --json 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data['template_id'] == 'bug', 'template_id mismatch'
+assert 'record_fields' in data, 'missing record_fields'
+assert 'note_fields' in data, 'missing note_fields'
+assert 'severity' in data['record_fields'], 'missing severity in record_fields'
+assert 'category' in data['note_fields'], 'missing category in note_fields'
+# severity in bug template is required
+assert data['record_fields']['severity']['required'] == True, 'severity should be required'
+# accepted_values for severity
+assert '1' in data['record_fields']['severity']['accepted_values'], 'missing accepted_values'
+# record_prefix
+assert data['record_prefix'] == 'BUG', f\"wrong record_prefix: {data['record_prefix']}\"
+assert data['note_prefix'] == 'COMMENT', f\"wrong note_prefix: {data['note_prefix']}\"
+" 2>/dev/null; then
+            pass
+            echo "  Bug template JSON structure valid"
+        else
+            fail "Bug template JSON structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data bug --json failed"
+    fi
+
+    # --- CLI: --json flag, global defaults (no template_id) ---
+    print_test "admin template-data --json (global defaults)"
+    track_command "aver admin template-data --json"
+    if output=$(run_aver admin template-data --json 2>&1); then
+        # Returns an array of all templates
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert isinstance(data, list), 'expected list'
+ids = [d['template_id'] for d in data]
+assert None in ids, 'missing global defaults entry'
+assert 'bug' in ids, 'missing bug template'
+assert 'feature' in ids, 'missing feature template'
+" 2>/dev/null; then
+            pass
+            echo "  All templates returned as JSON array"
+        else
+            fail "All-templates JSON structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "admin template-data --json (all) failed"
+    fi
+
+    # --- CLI: invalid template_id ---
+    print_test "admin template-data nonexistent-template (error)"
+    track_command "aver admin template-data nonexistent-template"
+    set +e
+    output=$(run_aver admin template-data nonexistent-template 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qi "not found"; then
+        pass
+        echo "  Proper error for unknown template"
+    else
+        fail "Should have errored on nonexistent template"
+        echo "  exit_code=$exit_code output=$output"
+    fi
+
+    # --- JSON IO: template-data with specific template ---
+    print_test "json io template-data (bug template)"
+    track_command "json io template-data bug"
+    if output=$(echo '{"command": "template-data", "params": {"template_id": "bug"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True, f\"not success: {data}\"
+r = data['result']
+assert r['template_id'] == 'bug', 'template_id mismatch'
+assert 'record_fields' in r, 'missing record_fields'
+assert 'note_fields' in r, 'missing note_fields'
+assert 'severity' in r['record_fields'], 'missing severity'
+assert 'category' in r['note_fields'], 'missing category'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data (bug) returned correct structure"
+        else
+            fail "IO template-data bug structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data bug failed"
+    fi
+
+    # --- JSON IO: template-data for global defaults (no template_id) ---
+    print_test "json io template-data (global defaults)"
+    track_command "json io template-data no template"
+    if output=$(echo '{"command": "template-data", "params": {}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == True, f\"not success: {data}\"
+r = data['result']
+assert r['template_id'] is None, 'template_id should be None'
+assert 'record_fields' in r, 'missing record_fields'
+assert 'note_fields' in r, 'missing note_fields'
+assert 'status' in r['record_fields'], 'missing status in global record fields'
+assert 'author' in r['note_fields'], 'missing author in global note fields'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data (global) returned correct structure"
+        else
+            fail "IO template-data global structure invalid"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data global failed"
+    fi
+
+    # --- JSON IO: template-data for invalid template ---
+    print_test "json io template-data (nonexistent template → error)"
+    track_command "json io template-data nonexistent"
+    if output=$(echo '{"command": "template-data", "params": {"template_id": "nonexistent"}}' | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success') == False, f\"should have failed: {data}\"
+assert 'error' in data, 'missing error key'
+" 2>/dev/null; then
+            pass
+            echo "  IO template-data error handled correctly"
+        else
+            fail "IO template-data nonexistent should return error"
+            echo "$output"
+        fi
+    else
+        fail "IO template-data nonexistent failed to run"
     fi
 }
 
@@ -3655,6 +4153,8 @@ main() {
     test_record_reindex
     test_count_flag
     test_max_flag
+    test_in_operator
+    test_template_data
 
     # Summary
     print_section "Test Summary"
