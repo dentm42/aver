@@ -1218,7 +1218,7 @@ class ProjectConfig:
     
     def get_note_special_fields(
         self,
-        parent_template_name: Optional[str],
+        parent_template_name: Optional[str] = None,
         note_template_name: Optional[str] = None,
     ) -> Dict[str, SpecialField]:
         """
