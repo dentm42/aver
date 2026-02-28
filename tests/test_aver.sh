@@ -374,6 +374,16 @@ required = false
 accepted_values = ["low", "medium", "high", "critical"]
 index_values = true
 
+# Regression: editable=false with NO system_value — user supplies value on creation.
+# This field was previously dropped by the non_editable_fields filter bug.
+[note_special_fields.note_type]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+index_values = true
+
 # Bug template
 [template.bug]
 record_prefix = "BUG"
@@ -413,6 +423,26 @@ enabled = true
 required = false
 accepted_values = ["low", "medium", "high", "critical"]
 default = "medium"
+
+# Regression: float field in template — must NOT get type hint suffix in stored markdown.
+[template.bug.record_special_fields.impact_score]
+type = "single"
+value_type = "float"
+editable = true
+enabled = true
+required = false
+default = "0.0"
+index_values = true
+
+# Template-specific note field: editable=false, no system_value.
+# User supplies on creation; must not be dropped by filter.
+[template.bug.note_special_fields.resolution]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+index_values = true
 
 # Feature template
 [template.feature]
@@ -3131,8 +3161,8 @@ EOF
     
     # Reindex to make it searchable
     if run_aver admin reindex "MANUAL-001" 2>&1 >/dev/null; then
-        # Verify it's searchable
-        if output=$(run_aver record list); then
+        # Verify it's searchable — search by title to avoid hitting default limit
+        if output=$(run_aver record list --ksearch 'title=Manually Created Record' 2>&1); then
             if echo "$output" | grep -q "MANUAL-001"; then
                 if run_aver record view "MANUAL-001" 2>&1 | grep -q "Manually Created Record"; then
                     pass
@@ -3767,8 +3797,8 @@ test_in_operator() {
 
     # Test 1: status^open|closed returns open and closed, not resolved/in_progress
     print_test "status^open|closed matches open and closed records only"
-    track_command "aver record list --ksearch 'status^open|closed'"
-    if output=$(run_aver record list --ksearch "status^open|closed" 2>&1); then
+    track_command "aver record list --ksearch 'status^open|closed' --ksearch 'title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress'"
+    if output=$(run_aver record list --ksearch "status^open|closed" --ksearch "title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress" 2>&1); then
         if echo "$output" | grep -q "In Test Open" && echo "$output" | grep -q "In Test Closed"; then
             if ! echo "$output" | grep -q "In Test Resolved" && ! echo "$output" | grep -q "In Test InProgress"; then
                 pass
@@ -3785,8 +3815,8 @@ test_in_operator() {
 
     # Test 2: priority^high|critical matches high and critical, not low
     print_test "priority^high|critical matches high and critical records only"
-    track_command "aver record list --ksearch 'priority^high|critical'"
-    if output=$(run_aver record list --ksearch "priority^high|critical" 2>&1); then
+    track_command "aver record list --ksearch 'priority^high|critical' --ksearch 'title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress'"
+    if output=$(run_aver record list --ksearch "priority^high|critical" --ksearch "title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress" 2>&1); then
         if echo "$output" | grep -q "In Test Closed" && echo "$output" | grep -q "In Test Resolved" && echo "$output" | grep -q "In Test InProgress"; then
             if ! echo "$output" | grep -q "In Test Open"; then
                 pass
@@ -3803,8 +3833,8 @@ test_in_operator() {
 
     # Test 3: ^ combined with another --ksearch (AND logic preserved)
     print_test "status^open|closed combined with priority=high (AND logic)"
-    track_command "aver record list --ksearch 'status^open|closed' --ksearch 'priority=high'"
-    if output=$(run_aver record list --ksearch "status^open|closed" --ksearch "priority=high" 2>&1); then
+    track_command "aver record list --ksearch 'status^open|closed' --ksearch 'priority=high' --ksearch 'title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress'"
+    if output=$(run_aver record list --ksearch "status^open|closed" --ksearch "priority=high" --ksearch "title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress" 2>&1); then
         # Only r_closed has status=closed AND priority=high
         if echo "$output" | grep -q "In Test Closed"; then
             if ! echo "$output" | grep -q "In Test Open" && ! echo "$output" | grep -q "In Test Resolved"; then
@@ -3821,10 +3851,13 @@ test_in_operator() {
     fi
 
     # Test 4: Single value status^open degenerates to status=open
+    # Scope to our test records by title to avoid 50-record default limit issues
     print_test "status^open (single value) equivalent to status=open"
-    track_command "aver record list --ksearch 'status^open'"
-    out_in=$(run_aver record list --ksearch "status^open" 2>&1)
-    out_eq=$(run_aver record list --ksearch "status=open" 2>&1)
+    track_command "aver record list --ksearch 'status^open' --ksearch 'title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress'"
+    out_in=$(run_aver record list --ksearch "status^open" \
+        --ksearch "title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress" 2>&1)
+    out_eq=$(run_aver record list --ksearch "status=open" \
+        --ksearch "title^In Test Open|In Test Closed|In Test Resolved|In Test InProgress" 2>&1)
     ids_in=$(echo "$out_in" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
     ids_eq=$(echo "$out_eq" | grep -oE "In Test [A-Za-z]+" | sort | tr '\n' ',')
     if [ "$ids_in" = "$ids_eq" ] && [ -n "$ids_in" ]; then
@@ -3876,17 +3909,17 @@ assert any(s == 'closed' for s in statuses), 'no closed records'
     echo "  Notes: bugfix=$na  investigation=$nb  workaround=$nc"
 
     print_test "note search --ksearch 'category^bugfix|investigation'"
-    track_command "aver note search --ksearch 'category^bugfix|investigation'"
-    if output=$(run_aver note search --ksearch "category^bugfix|investigation" 2>&1); then
-        if echo "$output" | grep -q "bugfix note" && echo "$output" | grep -q "investigation note"; then
-            if ! echo "$output" | grep -q "workaround note"; then
+    track_command "aver note search --ksearch 'category^bugfix|investigation' scoped to test record"
+    if output=$(run_aver note search --ksearch "category^bugfix|investigation" --ksearch "incident_id=$r_open" 2>&1); then
+        if echo "$output" | grep -q "$na" && echo "$output" | grep -q "$nb"; then
+            if ! echo "$output" | grep -q "$nc"; then
                 pass
                 echo "  Note ^ search: bugfix and investigation matched, workaround excluded"
             else
                 fail "Workaround note should not appear: $output"
             fi
         else
-            fail "Expected bugfix/investigation notes not found: $output"
+            fail "Expected bugfix ($na) and investigation ($nb) notes not found: $output"
         fi
     else
         fail "note search with ^ failed: $output"
@@ -4117,6 +4150,1207 @@ assert 'error' in data, 'missing error key'
 }
 
 #==============================================================================
+# Test: Note Contract (field round-trip, type fidelity, all injection paths)
+#==============================================================================
+#
+# Contracts tested:
+#   A. Special field editable=false, no system_value  → stored/returned as supplied
+#   B. Special field with system_value                → system value wins, caller value discarded
+#   C. Custom string field                            → disk has __string suffix, export has none
+#   D. Custom integer field                           → disk has __integer suffix, export is numeric
+#   E. Template-specific note field (editable=false)  → stored/returned as supplied
+#   F. Global note fields apply to templated records  → both global and template fields present
+#
+# Injection paths tested for each contract:
+#   1. CLI:     note add --from-file <file>
+#   2. CLI-JSON: json import-note RECORD_ID --data '{...}'
+#   3. JSON-IO:  json io  {"command": "import-note", ...}
+#==============================================================================
+
+test_note_contract() {
+    print_section "Note Contract: Field Round-Trip and Type Fidelity"
+
+    # -------------------------------------------------------------------------
+    # Setup: records to attach notes to
+    # -------------------------------------------------------------------------
+    local plain_rec bug_rec
+
+    plain_rec=$(run_aver record new --description "" --no-validation-editor \
+        --title "Note Contract Plain" --status open 2>&1 | grep -oE "REC-[A-Z0-9]+" || echo "")
+
+    if [ -f "$TEST_DIR/bug_rec_id.txt" ]; then
+        bug_rec=$(cat "$TEST_DIR/bug_rec_id.txt")
+    else
+        bug_rec=$(run_aver json import-record \
+            --data '{"content":"Bug for note contract","fields":{"title":"Note Contract Bug","status":"new"},"template":"bug"}' \
+            2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null || echo "")
+    fi
+
+    if [ -z "$plain_rec" ] || [ -z "$bug_rec" ]; then
+        echo -e "${RED}Setup failed: could not create records for note contract tests${NC}"
+        return
+    fi
+    echo "  Plain record: $plain_rec  |  Bug record: $bug_rec"
+
+    # =========================================================================
+    # CONTRACT A: Special field editable=false, no system_value
+    # note_type is defined in [note_special_fields.note_type] editable=false, no system_value
+    # Must be stored WITHOUT a type-hint suffix and returned as supplied.
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract A (special field editable=false) via CLI --from-file"
+    cat > "$TEST_DIR/nc_a1.md" << 'EOF'
+---
+note_type: bug-report
+---
+Contract A path 1 body.
+EOF
+    if run_aver note add "$plain_rec" --from-file "$TEST_DIR/nc_a1.md" > /dev/null 2>&1; then
+        local nf=$(ls -t "$TEST_DIR/updates/$plain_rec/"*.md 2>/dev/null | head -1)
+        if [ -n "$nf" ] && grep -q "^note_type: bug-report" "$nf" && ! grep -q "note_type__" "$nf"; then
+            pass
+            echo "  On disk: note_type: bug-report (no type-hint suffix)"
+        else
+            fail "note_type not stored correctly on disk"
+            [ -n "$nf" ] && cat "$nf"
+        fi
+    else
+        fail "note add --from-file failed"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-note ---
+    print_test "Contract A (special field editable=false) via json import-note"
+    local out2
+    if out2=$(run_aver json import-note "$plain_rec" \
+        --data '{"content":"Contract A path 2 body.","fields":{"note_type":"bug-report"}}' 2>&1); then
+        local note_id2
+        note_id2=$(echo "$out2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf2="$TEST_DIR/updates/$plain_rec/${note_id2}.md"
+        if [ -n "$note_id2" ] && [ -f "$nf2" ] && grep -q "^note_type: bug-report" "$nf2" && ! grep -q "note_type__" "$nf2"; then
+            pass
+            echo "  On disk: note_type: bug-report (no type-hint suffix)"
+        else
+            fail "note_type not stored correctly on disk"
+            [ -f "$nf2" ] && cat "$nf2"
+        fi
+    else
+        fail "json import-note failed: $out2"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract A (special field editable=false) via json io import-note"
+    local out3
+    if out3=$(echo '{"command":"import-note","params":{"record_id":"'"$plain_rec"'","content":"Contract A path 3 body.","fields":{"note_type":"bug-report"}}}' \
+        | run_aver json io 2>&1); then
+        local note_id3
+        note_id3=$(echo "$out3" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('note_id',''))" 2>/dev/null)
+        local nf3="$TEST_DIR/updates/$plain_rec/${note_id3}.md"
+        if [ -n "$note_id3" ] && [ -f "$nf3" ] && grep -q "^note_type: bug-report" "$nf3" && ! grep -q "note_type__" "$nf3"; then
+            pass
+            echo "  On disk: note_type: bug-report (no type-hint suffix)"
+        else
+            fail "note_type not stored correctly on disk"
+            [ -f "$nf3" ] && cat "$nf3"
+        fi
+    else
+        fail "json io import-note failed: $out3"
+    fi
+
+    # --- Export verification: note_type appears in export ---
+    print_test "Contract A: exported notes contain note_type field"
+    if out=$(run_aver json export-record "$plain_rec" --include-notes 2>&1); then
+        if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+notes = d.get('notes', [])
+found = any(n.get('fields', {}).get('note_type') == 'bug-report' for n in notes)
+assert found, 'No note with note_type=bug-report found'
+" 2>/dev/null; then
+            pass
+            echo "  note_type: bug-report present in exported notes"
+        else
+            fail "note_type not found in export"
+            echo "$out" | python3 -c "import sys,json; import pprint; pprint.pprint(json.load(sys.stdin))" 2>/dev/null
+        fi
+    else
+        fail "export-record failed"
+    fi
+
+    # =========================================================================
+    # CONTRACT B: System-value field — system value must win over caller input
+    # timestamp has system_value="datetime" — caller-supplied value must be discarded
+    # =========================================================================
+
+    print_test "Contract B (system_value overrides caller) via json import-note"
+    local fake_ts="1999-01-01 00:00:00"
+    local out_b
+    if out_b=$(run_aver json import-note "$plain_rec" \
+        --data "{\"content\":\"Contract B body.\",\"fields\":{\"timestamp\":\"$fake_ts\"}}" 2>&1); then
+        local note_id_b
+        note_id_b=$(echo "$out_b" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf_b="$TEST_DIR/updates/$plain_rec/${note_id_b}.md"
+        if [ -n "$note_id_b" ] && [ -f "$nf_b" ]; then
+            # The file must have a timestamp field, but NOT the fake value
+            if grep -q "timestamp:" "$nf_b" && ! grep -q "$fake_ts" "$nf_b"; then
+                pass
+                echo "  System timestamp present; fake value discarded"
+            else
+                fail "System value did not override caller-supplied timestamp"
+                cat "$nf_b"
+            fi
+        else
+            fail "Note not found on disk: $note_id_b"
+        fi
+    else
+        fail "json import-note failed for Contract B: $out_b"
+    fi
+
+    # =========================================================================
+    # CONTRACT C: Custom string field
+    # On disk: foo__string: hello
+    # Exported: fields.foo = "hello"
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract C (custom string field) via CLI --from-file"
+    cat > "$TEST_DIR/nc_c1.md" << 'EOF'
+---
+extra_info: hello
+---
+Contract C path 1 body.
+EOF
+    if run_aver note add "$plain_rec" --from-file "$TEST_DIR/nc_c1.md" > /dev/null 2>&1; then
+        local nf_c1=$(ls -t "$TEST_DIR/updates/$plain_rec/"*.md 2>/dev/null | head -1)
+        if [ -n "$nf_c1" ] && grep -q "extra_info__string: hello" "$nf_c1"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -n "$nf_c1" ] && cat "$nf_c1"
+        fi
+    else
+        fail "note add --from-file failed for Contract C"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-note ---
+    print_test "Contract C (custom string field) via json import-note"
+    local out_c2
+    if out_c2=$(run_aver json import-note "$plain_rec" \
+        --data '{"content":"Contract C path 2 body.","fields":{"extra_info":"hello"}}' 2>&1); then
+        local note_id_c2
+        note_id_c2=$(echo "$out_c2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf_c2="$TEST_DIR/updates/$plain_rec/${note_id_c2}.md"
+        if [ -n "$note_id_c2" ] && [ -f "$nf_c2" ] && grep -q "extra_info__string: hello" "$nf_c2"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -f "$nf_c2" ] && cat "$nf_c2"
+        fi
+    else
+        fail "json import-note failed for Contract C: $out_c2"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract C (custom string field) via json io import-note"
+    local out_c3
+    if out_c3=$(echo '{"command":"import-note","params":{"record_id":"'"$plain_rec"'","content":"Contract C path 3 body.","fields":{"extra_info":"hello"}}}' \
+        | run_aver json io 2>&1); then
+        local note_id_c3
+        note_id_c3=$(echo "$out_c3" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('note_id',''))" 2>/dev/null)
+        local nf_c3="$TEST_DIR/updates/$plain_rec/${note_id_c3}.md"
+        if [ -n "$note_id_c3" ] && [ -f "$nf_c3" ] && grep -q "extra_info__string: hello" "$nf_c3"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -f "$nf_c3" ] && cat "$nf_c3"
+        fi
+    else
+        fail "json io import-note failed for Contract C: $out_c3"
+    fi
+
+    # --- Export verification: extra_info returned without suffix ---
+    print_test "Contract C: custom string field exported without type-hint"
+    if out=$(run_aver json export-record "$plain_rec" --include-notes 2>&1); then
+        if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+notes = d.get('notes', [])
+found = any(n.get('fields', {}).get('extra_info') == 'hello' for n in notes)
+assert found, 'No note with extra_info=hello found'
+" 2>/dev/null; then
+            pass
+            echo "  extra_info: hello present in exported notes (no suffix)"
+        else
+            fail "custom field extra_info not found in export or has wrong value"
+        fi
+    else
+        fail "export-record failed"
+    fi
+
+    # =========================================================================
+    # CONTRACT D: Custom integer field
+    # On disk: retry_count__integer: 3
+    # Exported: fields.retry_count = 3  (integer, not string)
+    # =========================================================================
+
+    # --- Path 2: CLI json import-note (representative path) ---
+    print_test "Contract D (custom integer field) via json import-note"
+    local out_d
+    if out_d=$(run_aver json import-note "$plain_rec" \
+        --data '{"content":"Contract D body.","fields":{"retry_count__integer":3}}' 2>&1); then
+        local note_id_d
+        note_id_d=$(echo "$out_d" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf_d="$TEST_DIR/updates/$plain_rec/${note_id_d}.md"
+        if [ -n "$note_id_d" ] && [ -f "$nf_d" ] && grep -q "retry_count__integer: 3" "$nf_d"; then
+            pass
+            echo "  On disk: retry_count__integer: 3"
+        else
+            fail "Custom integer field not stored with type-hint on disk"
+            [ -f "$nf_d" ] && cat "$nf_d"
+        fi
+    else
+        fail "json import-note failed for Contract D: $out_d"
+    fi
+
+    print_test "Contract D: custom integer field exported as integer type"
+    local out_d_export
+    if out_d_export=$(run_aver json export-record "$plain_rec" --include-notes 2>&1); then
+        if echo "$out_d_export" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+notes = d.get('notes', [])
+found = any(isinstance(n.get('fields', {}).get('retry_count'), int) and
+            n['fields']['retry_count'] == 3
+            for n in notes)
+assert found, 'No note with retry_count=3 (integer) found'
+" 2>/dev/null; then
+            pass
+            echo "  retry_count exported as integer 3"
+        else
+            fail "retry_count not found as integer in export"
+        fi
+    else
+        fail "export-record failed"
+    fi
+
+    # =========================================================================
+    # CONTRACT E: Template-specific note field (editable=false, no system_value)
+    # resolution is in [template.bug.note_special_fields.resolution]
+    # Must be stored without type-hint suffix, returned as supplied.
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract E (template note field editable=false) via CLI --from-file"
+    cat > "$TEST_DIR/nc_e1.md" << 'EOF'
+---
+resolution: fixed
+---
+Contract E path 1 body.
+EOF
+    if run_aver note add "$bug_rec" --from-file "$TEST_DIR/nc_e1.md" > /dev/null 2>&1; then
+        local nf_e1=$(ls -t "$TEST_DIR/updates/$bug_rec/"*.md 2>/dev/null | head -1)
+        if [ -n "$nf_e1" ] && grep -q "^resolution: fixed" "$nf_e1" && ! grep -q "resolution__" "$nf_e1"; then
+            pass
+            echo "  On disk: resolution: fixed (no type-hint suffix)"
+        else
+            fail "Template note field resolution not stored correctly"
+            [ -n "$nf_e1" ] && cat "$nf_e1"
+        fi
+    else
+        fail "note add --from-file failed for Contract E"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-note ---
+    print_test "Contract E (template note field editable=false) via json import-note"
+    local out_e2
+    if out_e2=$(run_aver json import-note "$bug_rec" \
+        --data '{"content":"Contract E path 2 body.","fields":{"resolution":"fixed"}}' 2>&1); then
+        local note_id_e2
+        note_id_e2=$(echo "$out_e2" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf_e2="$TEST_DIR/updates/$bug_rec/${note_id_e2}.md"
+        if [ -n "$note_id_e2" ] && [ -f "$nf_e2" ] && grep -q "^resolution: fixed" "$nf_e2" && ! grep -q "resolution__" "$nf_e2"; then
+            pass
+            echo "  On disk: resolution: fixed (no type-hint suffix)"
+        else
+            fail "Template note field resolution not stored correctly"
+            [ -f "$nf_e2" ] && cat "$nf_e2"
+        fi
+    else
+        fail "json import-note failed for Contract E: $out_e2"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract E (template note field editable=false) via json io import-note"
+    local out_e3
+    if out_e3=$(echo '{"command":"import-note","params":{"record_id":"'"$bug_rec"'","content":"Contract E path 3 body.","fields":{"resolution":"fixed"}}}' \
+        | run_aver json io 2>&1); then
+        local note_id_e3
+        note_id_e3=$(echo "$out_e3" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('note_id',''))" 2>/dev/null)
+        local nf_e3="$TEST_DIR/updates/$bug_rec/${note_id_e3}.md"
+        if [ -n "$note_id_e3" ] && [ -f "$nf_e3" ] && grep -q "^resolution: fixed" "$nf_e3" && ! grep -q "resolution__" "$nf_e3"; then
+            pass
+            echo "  On disk: resolution: fixed (no type-hint suffix)"
+        else
+            fail "Template note field resolution not stored correctly"
+            [ -f "$nf_e3" ] && cat "$nf_e3"
+        fi
+    else
+        fail "json io import-note failed for Contract E: $out_e3"
+    fi
+
+    # --- Export verification ---
+    print_test "Contract E: template note field exported correctly"
+    if out=$(run_aver json export-record "$bug_rec" --include-notes 2>&1); then
+        if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+notes = d.get('notes', [])
+found = any(n.get('fields', {}).get('resolution') == 'fixed' for n in notes)
+assert found, 'No note with resolution=fixed found'
+" 2>/dev/null; then
+            pass
+            echo "  resolution: fixed present in exported bug record notes"
+        else
+            fail "resolution field not found in export"
+        fi
+    else
+        fail "export-record failed"
+    fi
+
+    # =========================================================================
+    # CONTRACT F: Global note fields apply to templated record notes
+    # A note on a bug record should have BOTH global fields (note_type, timestamp)
+    # AND template fields (resolution, category) present.
+    # =========================================================================
+
+    print_test "Contract F: global and template note fields coexist on templated record"
+    local out_f
+    if out_f=$(run_aver json import-note "$bug_rec" \
+        --data '{"content":"Contract F body.","fields":{"note_type":"regression","resolution":"workaround"}}' 2>&1); then
+        local note_id_f
+        note_id_f=$(echo "$out_f" | python3 -c "import sys,json; print(json.load(sys.stdin).get('note_id',''))" 2>/dev/null)
+        local nf_f="$TEST_DIR/updates/$bug_rec/${note_id_f}.md"
+        if [ -n "$note_id_f" ] && [ -f "$nf_f" ]; then
+            # Must have: note_type (global), resolution (template), timestamp (global system)
+            if grep -q "^note_type: regression" "$nf_f" && \
+               grep -q "^resolution: workaround" "$nf_f" && \
+               grep -q "^timestamp:" "$nf_f"; then
+                pass
+                echo "  Global (note_type, timestamp) and template (resolution) fields all present"
+            else
+                fail "Not all expected fields present in note"
+                cat "$nf_f"
+            fi
+        else
+            fail "Note not found on disk"
+        fi
+    else
+        fail "json import-note failed for Contract F: $out_f"
+    fi
+}
+
+#==============================================================================
+# Test: Record Contract (field round-trip, type fidelity, all injection paths)
+#==============================================================================
+#
+# Contracts tested:
+#   A. Special field (editable=true, no system_value)  → stored/returned as supplied, no type-hint
+#   B. Special field with system_value (created_at)    → system value wins on create
+#   C. Custom string field                             → disk has __string suffix, export has none
+#   D. Custom integer field                            → disk has __integer suffix, export is numeric
+#   E. Template float field (impact_score)             → stored WITHOUT __float suffix on disk
+#   F. Template integer field (severity)               → stored WITHOUT __integer suffix on disk
+#   G. Type fidelity survives update round-trip        → update-record preserves field types
+#
+# Injection paths tested:
+#   1. CLI:      record new --from-file <file>
+#   2. CLI-JSON: json import-record --data '{...}'
+#   3. JSON-IO:  json io  {"command": "import-record", ...}
+#==============================================================================
+
+test_record_contract() {
+    print_section "Record Contract: Field Round-Trip and Type Fidelity"
+
+    # =========================================================================
+    # CONTRACT A: Global special field, no system_value
+    # title and status are plain string special fields — no type-hint on disk.
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract A (plain special field) via CLI --from-file"
+    cat > "$TEST_DIR/rc_a1.md" << 'EOF'
+---
+title: Contract A CLI
+status: open
+priority: high
+---
+Contract A path 1 body.
+EOF
+    local rec_a1
+    if out=$(run_aver record new --from-file "$TEST_DIR/rc_a1.md" --no-validation-editor 2>&1); then
+        rec_a1=$(echo "$out" | grep -oE "REC-[A-Z0-9]+" | head -1)
+        local rf_a1="$TEST_DIR/records/${rec_a1}.md"
+        if [ -n "$rec_a1" ] && [ -f "$rf_a1" ] && \
+           grep -q "^title: Contract A CLI" "$rf_a1" && \
+           grep -q "^status: open" "$rf_a1" && \
+           ! grep -q "title__\|status__\|priority__" "$rf_a1"; then
+            pass
+            echo "  Special fields stored without type-hint suffixes: $rec_a1"
+        else
+            fail "Special fields have unexpected type-hints or wrong values on disk"
+            [ -f "$rf_a1" ] && cat "$rf_a1"
+        fi
+    else
+        fail "record new --from-file failed: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-record ---
+    print_test "Contract A (plain special field) via json import-record"
+    local rec_a2
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract A path 2 body.","fields":{"title":"Contract A JSON","status":"open","priority":"high"}}' 2>&1); then
+        rec_a2=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_a2="$TEST_DIR/records/${rec_a2}.md"
+        if [ -n "$rec_a2" ] && [ -f "$rf_a2" ] && \
+           grep -q "^title: Contract A JSON" "$rf_a2" && \
+           ! grep -q "title__\|status__\|priority__" "$rf_a2"; then
+            pass
+            echo "  Special fields stored without type-hint suffixes: $rec_a2"
+        else
+            fail "Special fields have unexpected type-hints on disk"
+            [ -f "$rf_a2" ] && cat "$rf_a2"
+        fi
+    else
+        fail "json import-record failed: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract A (plain special field) via json io import-record"
+    local rec_a3
+    if out=$(echo '{"command":"import-record","params":{"content":"Contract A path 3 body.","fields":{"title":"Contract A IO","status":"open","priority":"high"}}}' \
+        | run_aver json io 2>&1); then
+        rec_a3=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('record_id',''))" 2>/dev/null)
+        local rf_a3="$TEST_DIR/records/${rec_a3}.md"
+        if [ -n "$rec_a3" ] && [ -f "$rf_a3" ] && \
+           grep -q "^title: Contract A IO" "$rf_a3" && \
+           ! grep -q "title__\|status__\|priority__" "$rf_a3"; then
+            pass
+            echo "  Special fields stored without type-hint suffixes: $rec_a3"
+        else
+            fail "Special fields have unexpected type-hints on disk"
+            [ -f "$rf_a3" ] && cat "$rf_a3"
+        fi
+    else
+        fail "json io import-record failed: $out"
+    fi
+
+    # --- Export verification ---
+    print_test "Contract A: special fields exported with correct values"
+    if [ -n "$rec_a2" ]; then
+        if out=$(run_aver json export-record "$rec_a2" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+assert f.get('title') == 'Contract A JSON', f'title wrong: {f.get(\"title\")}'
+assert f.get('status') == 'open', f'status wrong: {f.get(\"status\")}'
+assert f.get('priority') == 'high', f'priority wrong: {f.get(\"priority\")}'
+" 2>/dev/null; then
+                pass
+                echo "  title, status, priority all correct in export"
+            else
+                fail "Exported field values incorrect"
+                echo "$out"
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record from path 2 to export"
+    fi
+
+    # =========================================================================
+    # CONTRACT B: system_value field — system wins on creation
+    # created_at has system_value="datetime" — caller value must be discarded.
+    # =========================================================================
+
+    print_test "Contract B (system_value overrides caller) via json import-record"
+    local fake_dt="1999-01-01 00:00:00"
+    local rec_b
+    if out=$(run_aver json import-record \
+        --data "{\"content\":\"Contract B body.\",\"fields\":{\"title\":\"Contract B\",\"status\":\"open\",\"created_at\":\"$fake_dt\"}}" 2>&1); then
+        rec_b=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_b="$TEST_DIR/records/${rec_b}.md"
+        if [ -n "$rec_b" ] && [ -f "$rf_b" ] && \
+           grep -q "^created_at:" "$rf_b" && ! grep -q "$fake_dt" "$rf_b"; then
+            pass
+            echo "  created_at present with system value; fake value discarded"
+        else
+            fail "System value did not override caller-supplied created_at"
+            [ -f "$rf_b" ] && cat "$rf_b"
+        fi
+    else
+        fail "json import-record failed for Contract B: $out"
+    fi
+
+    # =========================================================================
+    # CONTRACT C: Custom string field
+    # On disk: foo__string: hello
+    # Exported: fields.foo = "hello"
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract C (custom string field) via CLI --from-file"
+    cat > "$TEST_DIR/rc_c1.md" << 'EOF'
+---
+title: Contract C CLI
+status: open
+extra_info: hello
+---
+Contract C path 1 body.
+EOF
+    local rec_c1
+    if out=$(run_aver record new --from-file "$TEST_DIR/rc_c1.md" --no-validation-editor 2>&1); then
+        rec_c1=$(echo "$out" | grep -oE "REC-[A-Z0-9]+" | head -1)
+        local rf_c1="$TEST_DIR/records/${rec_c1}.md"
+        if [ -n "$rec_c1" ] && [ -f "$rf_c1" ] && grep -q "extra_info__string: hello" "$rf_c1"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -f "$rf_c1" ] && cat "$rf_c1"
+        fi
+    else
+        fail "record new --from-file failed for Contract C: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-record ---
+    print_test "Contract C (custom string field) via json import-record"
+    local rec_c2
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract C path 2 body.","fields":{"title":"Contract C JSON","status":"open","extra_info":"hello"}}' 2>&1); then
+        rec_c2=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_c2="$TEST_DIR/records/${rec_c2}.md"
+        if [ -n "$rec_c2" ] && [ -f "$rf_c2" ] && grep -q "extra_info__string: hello" "$rf_c2"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -f "$rf_c2" ] && cat "$rf_c2"
+        fi
+    else
+        fail "json import-record failed for Contract C: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract C (custom string field) via json io import-record"
+    local rec_c3
+    if out=$(echo '{"command":"import-record","params":{"content":"Contract C path 3 body.","fields":{"title":"Contract C IO","status":"open","extra_info":"hello"}}}' \
+        | run_aver json io 2>&1); then
+        rec_c3=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('record_id',''))" 2>/dev/null)
+        local rf_c3="$TEST_DIR/records/${rec_c3}.md"
+        if [ -n "$rec_c3" ] && [ -f "$rf_c3" ] && grep -q "extra_info__string: hello" "$rf_c3"; then
+            pass
+            echo "  On disk: extra_info__string: hello"
+        else
+            fail "Custom string field not stored with type-hint on disk"
+            [ -f "$rf_c3" ] && cat "$rf_c3"
+        fi
+    else
+        fail "json io import-record failed for Contract C: $out"
+    fi
+
+    # --- Export verification: no suffix in returned field name ---
+    print_test "Contract C: custom string field exported without type-hint"
+    if [ -n "$rec_c2" ]; then
+        if out=$(run_aver json export-record "$rec_c2" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+assert f.get('extra_info') == 'hello', f'extra_info wrong or missing: {f}'
+assert 'extra_info__string' not in f, 'type-hint suffix leaked into export'
+" 2>/dev/null; then
+                pass
+                echo "  extra_info: hello in export, no suffix"
+            else
+                fail "extra_info not found or has type-hint suffix in export"
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record from path 2 to export"
+    fi
+
+    # =========================================================================
+    # CONTRACT D: Custom integer field
+    # On disk: retry_count__integer: 3
+    # Exported: fields.retry_count = 3 (integer, not string)
+    # =========================================================================
+
+    print_test "Contract D (custom integer field) via json import-record"
+    local rec_d
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract D body.","fields":{"title":"Contract D","status":"open","retry_count__integer":3}}' 2>&1); then
+        rec_d=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_d="$TEST_DIR/records/${rec_d}.md"
+        if [ -n "$rec_d" ] && [ -f "$rf_d" ] && grep -q "retry_count__integer: 3" "$rf_d"; then
+            pass
+            echo "  On disk: retry_count__integer: 3"
+        else
+            fail "Custom integer field not stored with type-hint on disk"
+            [ -f "$rf_d" ] && cat "$rf_d"
+        fi
+    else
+        fail "json import-record failed for Contract D: $out"
+    fi
+
+    print_test "Contract D: custom integer field exported as integer type"
+    if [ -n "$rec_d" ]; then
+        if out=$(run_aver json export-record "$rec_d" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+v = f.get('retry_count')
+assert isinstance(v, int) and v == 3, f'retry_count wrong type or value: {v!r}'
+" 2>/dev/null; then
+                pass
+                echo "  retry_count exported as integer 3"
+            else
+                fail "retry_count not integer in export"
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record from Contract D to export"
+    fi
+
+    # =========================================================================
+    # CONTRACT E: Template float field (impact_score) — NO type-hint suffix on disk
+    # impact_score is defined in [template.bug.record_special_fields.impact_score]
+    # value_type=float — must be stored as "impact_score: 2.5", not "impact_score__float: 2.5"
+    # =========================================================================
+
+    # --- Path 1: CLI --from-file ---
+    print_test "Contract E (template float field, no suffix) via CLI --from-file"
+    cat > "$TEST_DIR/rc_e1.md" << 'EOF'
+---
+title: Contract E CLI
+status: new
+severity: 2
+impact_score: 2.5
+---
+Contract E path 1 body.
+EOF
+    local rec_e1
+    if out=$(run_aver record new --from-file "$TEST_DIR/rc_e1.md" --no-validation-editor --template bug 2>&1); then
+        rec_e1=$(echo "$out" | grep -oE "BUG-[A-Z0-9]+" | head -1)
+        local rf_e1="$TEST_DIR/records/${rec_e1}.md"
+        if [ -n "$rec_e1" ] && [ -f "$rf_e1" ] && \
+           grep -q "^impact_score: 2.5" "$rf_e1" && ! grep -q "impact_score__" "$rf_e1"; then
+            pass
+            echo "  On disk: impact_score: 2.5 (no __float suffix)"
+        else
+            fail "Template float field has unexpected type-hint suffix or wrong value"
+            [ -f "$rf_e1" ] && cat "$rf_e1"
+        fi
+    else
+        fail "record new --from-file failed for Contract E: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 2: CLI json import-record ---
+    print_test "Contract E (template float field, no suffix) via json import-record"
+    local rec_e2
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract E path 2 body.","fields":{"title":"Contract E JSON","status":"new","severity":2,"impact_score":2.5},"template":"bug"}' 2>&1); then
+        rec_e2=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_e2="$TEST_DIR/records/${rec_e2}.md"
+        if [ -n "$rec_e2" ] && [ -f "$rf_e2" ] && \
+           grep -q "^impact_score: 2.5" "$rf_e2" && ! grep -q "impact_score__" "$rf_e2"; then
+            pass
+            echo "  On disk: impact_score: 2.5 (no __float suffix)"
+        else
+            fail "Template float field has unexpected type-hint suffix on disk"
+            [ -f "$rf_e2" ] && cat "$rf_e2"
+        fi
+    else
+        fail "json import-record failed for Contract E: $out"
+    fi
+
+    sleep 0.25
+    # --- Path 3: JSON IO ---
+    print_test "Contract E (template float field, no suffix) via json io import-record"
+    local rec_e3
+    if out=$(echo '{"command":"import-record","params":{"content":"Contract E path 3 body.","fields":{"title":"Contract E IO","status":"new","severity":2,"impact_score":2.5},"template":"bug"}}' \
+        | run_aver json io 2>&1); then
+        rec_e3=$(echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('record_id',''))" 2>/dev/null)
+        local rf_e3="$TEST_DIR/records/${rec_e3}.md"
+        if [ -n "$rec_e3" ] && [ -f "$rf_e3" ] && \
+           grep -q "^impact_score: 2.5" "$rf_e3" && ! grep -q "impact_score__" "$rf_e3"; then
+            pass
+            echo "  On disk: impact_score: 2.5 (no __float suffix)"
+        else
+            fail "Template float field has unexpected type-hint suffix on disk"
+            [ -f "$rf_e3" ] && cat "$rf_e3"
+        fi
+    else
+        fail "json io import-record failed for Contract E: $out"
+    fi
+
+    # --- Export: float returned as numeric type ---
+    print_test "Contract E: template float field exported as float type"
+    if [ -n "$rec_e2" ]; then
+        if out=$(run_aver json export-record "$rec_e2" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+v = f.get('impact_score')
+assert isinstance(v, float), f'impact_score not float: {v!r}'
+assert v == 2.5, f'impact_score wrong value: {v}'
+" 2>/dev/null; then
+                pass
+                echo "  impact_score exported as float 2.5"
+            else
+                fail "impact_score not exported as float"
+                echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('fields',{}))" 2>/dev/null
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record from path 2 to export"
+    fi
+
+    # =========================================================================
+    # CONTRACT F: Template integer field (severity) — NO type-hint suffix on disk
+    # severity is in [template.bug.record_special_fields.severity] value_type=integer
+    # =========================================================================
+
+    print_test "Contract F (template integer field, no suffix) via json import-record"
+    local rec_f
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract F body.","fields":{"title":"Contract F","status":"new","severity":4,"impact_score":1.0},"template":"bug"}' 2>&1); then
+        rec_f=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        local rf_f="$TEST_DIR/records/${rec_f}.md"
+        if [ -n "$rec_f" ] && [ -f "$rf_f" ] && \
+           grep -q "^severity: 4" "$rf_f" && ! grep -q "severity__" "$rf_f"; then
+            pass
+            echo "  On disk: severity: 4 (no __integer suffix)"
+        else
+            fail "Template integer field has unexpected type-hint suffix on disk"
+            [ -f "$rf_f" ] && cat "$rf_f"
+        fi
+    else
+        fail "json import-record failed for Contract F: $out"
+    fi
+
+    print_test "Contract F: template integer field exported as integer type"
+    if [ -n "$rec_f" ]; then
+        if out=$(run_aver json export-record "$rec_f" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+v = f.get('severity')
+assert isinstance(v, int), f'severity not int: {v!r}'
+assert v == 4, f'severity wrong value: {v}'
+" 2>/dev/null; then
+                pass
+                echo "  severity exported as integer 4"
+            else
+                fail "severity not exported as integer"
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record from Contract F to export"
+    fi
+
+    # =========================================================================
+    # CONTRACT G: Type fidelity survives update round-trip
+    # Create a templated bug record, update it with new values,
+    # verify types are still correct on disk and in export.
+    # =========================================================================
+
+    print_test "Contract G setup: create bug record for update round-trip"
+    local rec_g
+    if out=$(run_aver json import-record \
+        --data '{"content":"Contract G body.","fields":{"title":"Contract G","status":"new","severity":2,"impact_score":1.0},"template":"bug"}' 2>&1); then
+        rec_g=$(echo "$out" | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null)
+        if [ -n "$rec_g" ]; then
+            pass
+            echo "  Created: $rec_g"
+        else
+            fail "No record ID returned"
+        fi
+    else
+        fail "Setup failed for Contract G: $out"
+    fi
+
+    print_test "Contract G (update round-trip) via json update-record"
+    if [ -n "$rec_g" ]; then
+        if out=$(run_aver json update-record "$rec_g" \
+            --data '{"fields":{"severity":5,"impact_score":9.9,"status":"confirmed"}}' 2>&1); then
+            local rf_g="$TEST_DIR/records/${rec_g}.md"
+            if grep -q "^severity: 5" "$rf_g" && ! grep -q "severity__" "$rf_g" && \
+               grep -q "^impact_score: 9.9" "$rf_g" && ! grep -q "impact_score__" "$rf_g"; then
+                pass
+                echo "  After update: severity: 5, impact_score: 9.9 — no type-hint suffixes"
+            else
+                fail "Type-hint suffixes appeared after update or values wrong"
+                cat "$rf_g"
+            fi
+        else
+            fail "json update-record failed for Contract G: $out"
+        fi
+    else
+        fail "No record from setup to update"
+    fi
+
+    print_test "Contract G (update round-trip) via json io update-record"
+    if [ -n "$rec_g" ]; then
+        if out=$(echo '{"command":"update-record","params":{"record_id":"'"$rec_g"'","fields":{"severity":3,"impact_score":5.5}}}' \
+            | run_aver json io 2>&1); then
+            local rf_g="$TEST_DIR/records/${rec_g}.md"
+            if grep -q "^severity: 3" "$rf_g" && ! grep -q "severity__" "$rf_g" && \
+               grep -q "^impact_score: 5.5" "$rf_g" && ! grep -q "impact_score__" "$rf_g"; then
+                pass
+                echo "  After IO update: severity: 3, impact_score: 5.5 — no type-hint suffixes"
+            else
+                fail "Type-hint suffixes appeared after IO update or values wrong"
+                cat "$rf_g"
+            fi
+        else
+            fail "json io update-record failed for Contract G: $out"
+        fi
+    else
+        fail "No record from setup to update"
+    fi
+
+    print_test "Contract G: export after update shows correct types"
+    if [ -n "$rec_g" ]; then
+        if out=$(run_aver json export-record "$rec_g" 2>&1); then
+            if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+f = d.get('fields', {})
+assert isinstance(f.get('severity'), int) and f['severity'] == 3, f'severity: {f.get(\"severity\")!r}'
+assert isinstance(f.get('impact_score'), float) and f['impact_score'] == 5.5, f'impact_score: {f.get(\"impact_score\")!r}'
+" 2>/dev/null; then
+                pass
+                echo "  severity=3 (int), impact_score=5.5 (float) correct after update"
+            else
+                fail "Types wrong in export after update"
+                echo "$out" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('fields',{}))" 2>/dev/null
+            fi
+        else
+            fail "export-record failed"
+        fi
+    else
+        fail "No record to export"
+    fi
+}
+
+#==============================================================================
+# Test: Command Parity (CLI vs JSON-IO produce equivalent results)
+#==============================================================================
+#
+# For each pair of equivalent commands, run both against the same data and
+# assert the results are structurally consistent.
+#
+# Documented intentional gaps (not failures):
+#   CLI-only:  admin init, admin config *, admin list-databases
+#              (setup/admin ops — no programmatic equivalent needed)
+#   JSON-IO-only: list-templates
+#              (CLI users use "admin template-data" instead)
+#   Known missing: no global "note search" in plain CLI (note search requires
+#              --ksearch and is scoped differently from search-notes)
+#==============================================================================
+
+test_command_parity() {
+    print_section "Command Parity: CLI vs JSON-IO"
+
+    # -------------------------------------------------------------------------
+    # Setup: create shared test data
+    # -------------------------------------------------------------------------
+    local par_rec par_bug par_note
+
+    par_rec=$(run_aver record new --description "" --no-validation-editor \
+        --title "Parity Test Plain" --status open --priority high 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" | head -1 || echo "")
+
+    par_bug=$(run_aver json import-record \
+        --data '{"content":"Parity bug body.","fields":{"title":"Parity Bug","status":"new","severity":3,"impact_score":4.2},"template":"bug"}' \
+        2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('record_id',''))" 2>/dev/null || echo "")
+
+    par_note=$(run_aver note add "$par_rec" --message "Parity note body" --category "investigation" 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" | head -1 || echo "")
+
+    if [ -z "$par_rec" ] || [ -z "$par_bug" ] || [ -z "$par_note" ]; then
+        echo -e "${RED}Setup failed for parity tests (par_rec=$par_rec par_bug=$par_bug par_note=$par_note)${NC}"
+        return
+    fi
+    echo "  par_rec=$par_rec  par_bug=$par_bug  par_note=$par_note"
+
+    # =========================================================================
+    # record view  ↔  export-record
+    # Both return the same record id, content, and fields.
+    # =========================================================================
+
+    print_test "Parity: record view vs json export-record (same id and fields)"
+    local cli_export io_export
+    cli_export=$(run_aver json export-record "$par_rec" 2>&1)
+    io_export=$(echo '{"command":"export-record","params":{"record_id":"'"$par_rec"'"}}' \
+        | run_aver json io 2>&1)
+
+    if python3 - "$cli_export" "$io_export" << 'PYEOF' 2>/dev/null
+import sys, json
+cli = json.loads(sys.argv[1])
+io  = json.loads(sys.argv[2])['result']
+assert cli['id']      == io['id'],      f"id mismatch: {cli['id']} vs {io['id']}"
+assert cli['content'] == io['content'], "content mismatch"
+assert cli['fields']  == io['fields'],  f"fields mismatch: {cli['fields']} vs {io['fields']}"
+PYEOF
+    then
+        pass
+        echo "  id, content, fields identical between CLI and JSON-IO"
+    else
+        fail "export-record CLI vs IO results differ"
+        echo "CLI: $cli_export"
+        echo "IO:  $io_export"
+    fi
+
+    # =========================================================================
+    # record list --ksearch  ↔  search-records
+    # Both find the same record IDs for a given filter.
+    # =========================================================================
+
+    print_test "Parity: record list --ksearch vs search-records (same record IDs)"
+    local cli_ids io_ids
+    cli_ids=$(run_aver record list --ksearch "status=open" --ids-only 2>&1 | sort)
+    io_ids=$(echo '{"command":"search-records","params":{"ksearch":["status=open"],"limit":100}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(sorted(r['id'] for r in d['result']['records'])))" 2>/dev/null)
+
+    if [ -n "$cli_ids" ] && [ "$cli_ids" = "$io_ids" ]; then
+        pass
+        echo "  Same record IDs returned by both paths"
+    else
+        fail "record list vs search-records returned different IDs"
+        echo "  CLI: $cli_ids"
+        echo "  IO:  $io_ids"
+    fi
+
+    # =========================================================================
+    # note list  ↔  export-record --include-notes
+    # Both return the same note IDs for a given record.
+    # =========================================================================
+
+    # note list does not output note IDs in its display format — compare by count.
+    # The CLI "Note N:" headers tell us how many notes exist; IO reports them explicitly.
+    print_test "Parity: note list vs export-record --include-notes (same note count)"
+    local cli_note_count io_note_count
+    cli_note_count=$(run_aver note list "$par_rec" 2>&1 | grep -cE "^Note [0-9]+:" || echo 0)
+    io_note_count=$(echo '{"command":"export-record","params":{"record_id":"'"$par_rec"'","include_notes":true}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['result'].get('notes',[])))" 2>/dev/null)
+
+    if [ -n "$cli_note_count" ] && [ "$cli_note_count" = "$io_note_count" ] && [ "$cli_note_count" -gt 0 ] 2>/dev/null; then
+        pass
+        echo "  Both paths returned $cli_note_count note(s)"
+    else
+        fail "note list vs export-record note count differs"
+        echo "  CLI count: $cli_note_count"
+        echo "  IO count:  $io_note_count"
+    fi
+
+    # =========================================================================
+    # note search --ksearch  ↔  search-notes
+    # Both find the same note IDs for a given filter.
+    # =========================================================================
+
+    print_test "Parity: note search --ksearch vs search-notes (same note IDs)"
+    local cli_nsearch_ids io_nsearch_ids
+    cli_nsearch_ids=$(run_aver note search --ksearch "category=investigation" --ids-only 2>&1 \
+        | grep -oE "[A-Z0-9]+-[A-Z0-9]+:[A-Z0-9]+-[A-Z0-9]+" | awk -F: '{print $2}' | sort)
+    io_nsearch_ids=$(echo '{"command":"search-notes","params":{"ksearch":["category=investigation"],"limit":100}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join(sorted(n['id'] for n in d['result'].get('notes',[]))))" 2>/dev/null)
+
+    if [ -n "$cli_nsearch_ids" ] && [ "$cli_nsearch_ids" = "$io_nsearch_ids" ]; then
+        pass
+        echo "  Same note IDs returned by both paths"
+    else
+        fail "note search vs search-notes returned different IDs"
+        echo "  CLI: $cli_nsearch_ids"
+        echo "  IO:  $io_nsearch_ids"
+    fi
+
+    # =========================================================================
+    # json schema-record --template bug  ↔  schema-record (template=bug)
+    # Both return identical field sets.
+    # =========================================================================
+
+    print_test "Parity: json schema-record --template bug vs IO schema-record"
+    local cli_schema io_schema
+    cli_schema=$(run_aver json schema-record --template bug 2>&1)
+    io_schema=$(echo '{"command":"schema-record","params":{"template":"bug"}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); import json as j; print(j.dumps(d['result'],sort_keys=True))" 2>/dev/null)
+
+    if python3 - "$cli_schema" "$io_schema" << 'PYEOF' 2>/dev/null
+import sys, json
+cli = json.loads(sys.argv[1])
+io  = json.loads(sys.argv[2])
+assert set(cli['fields'].keys()) == set(io['fields'].keys()), \
+    f"field sets differ: CLI={set(cli['fields'].keys())} IO={set(io['fields'].keys())}"
+for fname in cli['fields']:
+    assert cli['fields'][fname] == io['fields'][fname], \
+        f"field {fname} differs: {cli['fields'][fname]} vs {io['fields'][fname]}"
+PYEOF
+    then
+        pass
+        echo "  Field sets and definitions identical"
+    else
+        fail "schema-record CLI vs IO field sets differ"
+        echo "  CLI: $cli_schema"
+        echo "  IO:  $io_schema"
+    fi
+
+    # =========================================================================
+    # json schema-note RECORD_ID  ↔  schema-note (record_id=...)
+    # Both return identical field sets.
+    # =========================================================================
+
+    print_test "Parity: json schema-note vs IO schema-note (bug record)"
+    local cli_snote io_snote
+    cli_snote=$(run_aver json schema-note "$par_bug" 2>&1)
+    io_snote=$(echo '{"command":"schema-note","params":{"record_id":"'"$par_bug"'"}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); import json as j; print(j.dumps(d['result'],sort_keys=True))" 2>/dev/null)
+
+    if python3 - "$cli_snote" "$io_snote" << 'PYEOF' 2>/dev/null
+import sys, json
+cli = json.loads(sys.argv[1])
+io  = json.loads(sys.argv[2])
+assert set(cli['fields'].keys()) == set(io['fields'].keys()), \
+    f"field sets differ: CLI={set(cli['fields'].keys())} IO={set(io['fields'].keys())}"
+PYEOF
+    then
+        pass
+        echo "  Note field sets identical"
+    else
+        fail "schema-note CLI vs IO field sets differ"
+        echo "  CLI: $cli_snote"
+        echo "  IO:  $io_snote"
+    fi
+
+    # =========================================================================
+    # admin template-data bug --json  ↔  template-data (template_id=bug)
+    # Both return identical field definitions.
+    # =========================================================================
+
+    print_test "Parity: admin template-data --json vs IO template-data"
+    local cli_td io_td
+    cli_td=$(run_aver admin template-data bug --json 2>&1)
+    io_td=$(echo '{"command":"template-data","params":{"template_id":"bug"}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); import json as j; print(j.dumps(d['result'],sort_keys=True))" 2>/dev/null)
+
+    if python3 - "$cli_td" "$io_td" << 'PYEOF' 2>/dev/null
+import sys, json
+cli = json.loads(sys.argv[1])
+io  = json.loads(sys.argv[2])
+# Both should have the same template_id and same record field names
+assert cli['template_id'] == io['template_id'], \
+    f"template_id mismatch: {cli['template_id']} vs {io['template_id']}"
+cli_rec_fields = set(cli.get('record_fields', {}).keys())
+io_rec_fields  = set(io.get('record_fields', {}).keys())
+assert cli_rec_fields == io_rec_fields, \
+    f"record_fields differ: CLI={cli_rec_fields} IO={io_rec_fields}"
+PYEOF
+    then
+        pass
+        echo "  template_id and record field sets identical"
+    else
+        fail "admin template-data vs IO template-data differ"
+        echo "  CLI: $cli_td"
+        echo "  IO:  $io_td"
+    fi
+
+    # =========================================================================
+    # admin reindex REC  ↔  reindex (record_ids=[REC])
+    # Both succeed and produce the same effect on the index.
+    # Test: after each reindex, a search still finds the record.
+    # =========================================================================
+
+    print_test "Parity: admin reindex vs IO reindex (both succeed)"
+    local cli_reindex_ok=false io_reindex_ok=false
+
+    if run_aver admin reindex "$par_rec" > /dev/null 2>&1; then
+        cli_reindex_ok=true
+    fi
+
+    if echo '{"command":"reindex","params":{"record_ids":["'"$par_bug"'"]}}' \
+        | run_aver json io 2>&1 \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['success']==True" 2>/dev/null; then
+        io_reindex_ok=true
+    fi
+
+    if $cli_reindex_ok && $io_reindex_ok; then
+        pass
+        echo "  Both CLI and IO reindex succeeded"
+    else
+        fail "Reindex parity failed (CLI ok=$cli_reindex_ok IO ok=$io_reindex_ok)"
+    fi
+
+    # =========================================================================
+    # list-templates (JSON-IO only — intentional CLI gap)
+    # Document: CLI equivalent is "admin template-data" (lists all templates).
+    # Test that list-templates returns the templates defined in config.
+    # =========================================================================
+
+    print_test "Parity: list-templates (JSON-IO only) returns configured templates"
+    if out=$(echo '{"command":"list-templates","params":{}}' | run_aver json io 2>&1); then
+        if echo "$out" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+templates = d['result']['templates']
+names = [t['id'] for t in templates if t['id'] is not None]
+assert 'bug' in names, f'bug template missing: {names}'
+assert 'feature' in names, f'feature template missing: {names}'
+" 2>/dev/null; then
+            pass
+            echo "  list-templates returns bug and feature templates  [JSON-IO only — CLI: admin template-data]"
+        else
+            fail "list-templates did not return expected templates"
+            echo "$out"
+        fi
+    else
+        fail "list-templates command failed"
+    fi
+}
+
+#==============================================================================
 # Main Test Runner
 #==============================================================================
 
@@ -4146,6 +5380,9 @@ main() {
     test_listing_search
     test_note_operations
     test_note_special_fields
+    test_note_contract
+    test_record_contract
+    test_command_parity
     test_from_file
     test_updates
     test_json_interface

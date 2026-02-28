@@ -6594,7 +6594,7 @@ class IncidentCLI:
             (manager, (kv_single, kv_multi))
         """
         manager = self._get_manager(args)
-
+        
         # Apply JSON IO user override if provided (takes precedence)
         if user_override and isinstance(user_override, dict):
             handle = user_override.get('handle')
@@ -6608,39 +6608,15 @@ class IncidentCLI:
             identity_override = self._check_git_identity(args, manager)
             if identity_override:
                 manager.set_user_override(identity_override["handle"], identity_override["email"])
-
-        # --- Template resolution (records only) ---
-        # Must happen before _build_kv_list so that special-field scoping uses the
-        # correct template.  Notes use args.record_template_id set by _cmd_add_update.
-        is_note_command = (
-            hasattr(args, 'command') and args.command == 'note' and
-            hasattr(args, 'note_command') and args.note_command == 'add'
-        )
-        is_record_update = (
-            hasattr(args, 'command') and args.command == 'record' and
-            hasattr(args, 'record_command') and args.record_command == 'update'
-        )
-        if not is_note_command:
-            # For record update: fetch existing record so _resolve_template_id can
-            # check old template and validate any template change.
-            existing_record = None
-            if is_record_update:
-                existing_record = manager.get_incident(getattr(args, 'record_id', None))
-            # Collect raw user-supplied KV (no validation) as proto-frontmatter so
-            # _resolve_template_id can find a template_id sneaked in via --text etc.
-            proto_frontmatter = self._collect_raw_frontmatter(args)
-            self._resolve_template_id(
-                manager, args,
-                existing_record=existing_record,
-                proto_frontmatter=proto_frontmatter,
-            )
-            # args.template is now set to the resolved template_id (may be None)
-
+        
         # Process field assignments if present
         field_kv_single = []
         field_kv_multi = []
         if hasattr(args, 'field_assignments') and args.field_assignments:
-            is_note = is_note_command
+            is_note = (
+                hasattr(args, 'command') and args.command == 'note' and
+                hasattr(args, 'note_command') and args.note_command == 'add'
+            )
             try:
                 field_kv_single, field_kv_multi = self._process_field_assignments(
                     args.field_assignments,
@@ -6649,7 +6625,7 @@ class IncidentCLI:
                 )
             except ValueError as e:
                 raise RuntimeError(f"Field assignment error: {e}")
-
+        
         # Build KV from typed options and legacy options
         typed_kv_single, typed_kv_multi = self._build_kv_list(manager, args)
         
@@ -6660,162 +6636,6 @@ class IncidentCLI:
         
         return manager, (final_kv_single, final_kv_multi)
 
-
-    def _resolve_template_id(
-        self,
-        manager: IncidentManager,
-        args: argparse.Namespace,
-        existing_record: Optional['Incident'] = None,
-        proto_frontmatter: Optional[dict] = None,
-    ) -> Optional[str]:
-        """
-        Resolve the effective template_id for a record create or update.
-
-        Consults (in priority order):
-          1. args.template (explicit CLI --template flag)
-          2. proto_frontmatter (key/value pairs already parsed from --from-file or
-             raw user-supplied KV before any special-field validation)
-          3. existing_record (keep current template on update when nothing new supplied)
-
-        Also validates that a template change is permitted when the template_id special
-        field is marked not-editable.
-
-        Sets args.template to the resolved value as a side-effect so that downstream
-        code (_build_kv_list, _process_from_file) can rely on it.
-
-        Args:
-            manager:          IncidentManager for config access.
-            args:             argparse Namespace (args.template may already be set).
-            existing_record:  For record update, the existing Incident; None for new.
-            proto_frontmatter: Raw {key: value} dict from user input (no validation).
-
-        Returns:
-            resolved_template_id (str or None)
-        """
-        global_record_fields = manager.project_config.get_special_fields()
-
-        # Fields whose system_value == "template_id"
-        global_template_id_field_names = [
-            fname for fname, fdef in global_record_fields.items()
-            if fdef.system_value == "template_id"
-        ]
-
-        # Extract old template_id from existing record
-        old_template_id = None
-        if existing_record:
-            old_tid_values = []
-            for fname in global_template_id_field_names:
-                field_def = global_record_fields[fname]
-                if field_def.value_type == "integer":
-                    val = existing_record.kv_integers.get(fname)
-                elif field_def.value_type == "float":
-                    val = existing_record.kv_floats.get(fname)
-                else:
-                    val = existing_record.kv_strings.get(fname)
-                if val:
-                    old_tid_values.append((fname, str(val[0])))
-            if not old_tid_values and existing_record.kv_strings.get('template_id'):
-                old_tid_values.append(('template_id', existing_record.kv_strings['template_id'][0]))
-            if len(old_tid_values) > 1:
-                unique_old = set(v for _, v in old_tid_values)
-                if len(unique_old) > 1:
-                    raise RuntimeError("Error in existing record. Multiple Templates Not Allowed")
-            if old_tid_values:
-                old_template_id = old_tid_values[0][1]
-
-        # Extract template_id from proto_frontmatter (user-supplied KV, no validation)
-        template_id_from_input = None
-        if proto_frontmatter:
-            new_tid_values = []
-            for key, value in proto_frontmatter.items():
-                clean_key, _ = YAMLSerializer.strip_type_hint(key)
-                if clean_key in global_record_fields:
-                    field_def = global_record_fields[clean_key]
-                    if field_def.system_value == "template_id":
-                        new_tid_values.append((clean_key, str(value)))
-                elif clean_key == "template_id":
-                    new_tid_values.append((clean_key, str(value)))
-            if len(new_tid_values) > 1:
-                unique_new = set(v for _, v in new_tid_values)
-                if len(unique_new) > 1:
-                    raise RuntimeError("Error in new record. Multiple Templates Not Allowed")
-            if new_tid_values:
-                template_id_from_input = new_tid_values[0][1]
-
-        # Resolve: CLI flag > user input > keep existing
-        template_id_cli = getattr(args, 'template', None)
-        if template_id_cli:
-            resolved_template_id = template_id_cli
-        elif template_id_from_input:
-            # Validate template change is allowed
-            if existing_record and old_template_id and old_template_id != template_id_from_input:
-                for fname in global_template_id_field_names:
-                    if not global_record_fields[fname].editable:
-                        raise RuntimeError(
-                            f"Cannot change template. Template_ID special field {fname} marked not editable"
-                        )
-            resolved_template_id = template_id_from_input
-        else:
-            resolved_template_id = old_template_id  # keep existing, or None for new
-
-        args.template = resolved_template_id
-        return resolved_template_id
-
-    def _collect_raw_frontmatter(self, args) -> dict:
-        """
-        Collect all user-supplied key/value data from args into a raw dict.
-
-        This is a validation-free pass-1 used to extract template_id before
-        special-field scoping is known.  Covers:
-          - Named special-field arguments (e.g. --title, --status)
-          - --text / --number / --decimal typed KV options
-          - Legacy --kv / --kmv arguments
-
-        Returns:
-            {key: value} dict (string values only; type coercion not needed here)
-        """
-        raw = {}
-
-        # Named args (special field flags like --title, --status, --template, etc.)
-        # Skip non-KV attrs we know about
-        _skip = {
-            'command', 'record_command', 'note_command', 'json_command',
-            'admin_command', 'record_id', 'from_file', 'message', 'template',
-            'reply_to', 'no_yaml', 'use_id', 'custom_id', 'ids_only', 'limit',
-            'ksearch', 'fields', 'include_notes', 'no_validation_editor',
-            'text', 'number', 'decimal', 'text_multi', 'number_multi',
-            'decimal_multi', 'kv_single', 'kv_multi', 'field_assignments',
-            'record_template_id',
-        }
-        for attr, value in vars(args).items():
-            if attr not in _skip and value is not None and not attr.startswith('_'):
-                raw[attr] = str(value)
-
-        # --text key=value  (string typed)
-        for item in (getattr(args, 'text', None) or []):
-            k, _, v = item.partition('=')
-            if k:
-                raw[k.strip()] = v.strip()
-
-        # --number key=value  (integer typed)
-        for item in (getattr(args, 'number', None) or []):
-            k, _, v = item.partition('=')
-            if k:
-                raw[k.strip()] = v.strip()
-
-        # --decimal key=value  (float typed)
-        for item in (getattr(args, 'decimal', None) or []):
-            k, _, v = item.partition('=')
-            if k:
-                raw[k.strip()] = v.strip()
-
-        # Legacy --kv
-        for item in (getattr(args, 'kv_single', None) or []):
-            k, _, v = item.partition('=')
-            if k:
-                raw[k.strip()] = v.strip()
-
-        return raw
 
     def _process_from_file(
         self,
@@ -6860,12 +6680,75 @@ class IncidentCLI:
         except ValueError as e:
             raise RuntimeError(f"Failed to parse markdown file {filepath}: {e}")
         
-        # Step 1: Template resolution — delegate to shared helper.
-        # Pass frontmatter as proto_frontmatter so the helper can find a template_id
-        # supplied in the file even when args.template is not set.
-        resolved_template_id = self._resolve_template_id(
-            manager, args, existing_record=existing_record, proto_frontmatter=frontmatter
-        )
+        # Step 1: Template resolution
+        # Use global special fields to find which fields are designated as template_id.
+        # Template-specific fields cannot be loaded yet because we don't know the template.
+        global_record_fields = manager.project_config.get_special_fields()
+
+        # Step 1a: Find global fields marked as system_value == "template_id"
+        global_template_id_field_names = [
+            fname for fname, fdef in global_record_fields.items()
+            if fdef.system_value == "template_id"
+        ]
+
+        # Step 1b: Extract template_id from OLD record (existing_record)
+        old_template_id = None
+        if existing_record:
+            old_tid_values = []
+            for fname in global_template_id_field_names:
+                field_def = global_record_fields[fname]
+                if field_def.value_type == "integer":
+                    val = existing_record.kv_integers.get(fname)
+                elif field_def.value_type == "float":
+                    val = existing_record.kv_floats.get(fname)
+                else:
+                    val = existing_record.kv_strings.get(fname)
+                if val:
+                    old_tid_values.append((fname, str(val[0])))
+            # Also check the literal 'template_id' key as fallback
+            if not old_tid_values and existing_record.kv_strings.get('template_id'):
+                old_tid_values.append(('template_id', existing_record.kv_strings['template_id'][0]))
+
+            if len(old_tid_values) > 1:
+                unique_old = set(v for _, v in old_tid_values)
+                if len(unique_old) > 1:
+                    raise RuntimeError("Error in existing record. Multiple Templates Not Allowed")
+            if old_tid_values:
+                old_template_id = old_tid_values[0][1]
+
+        # Step 1c: Extract template_id from NEW record (frontmatter)
+        new_tid_values = []
+        for key, value in frontmatter.items():
+            clean_key, _ = YAMLSerializer.strip_type_hint(key)
+            if clean_key in global_record_fields:
+                field_def = global_record_fields[clean_key]
+                if field_def.system_value == "template_id":
+                    new_tid_values.append((clean_key, str(value)))
+            elif clean_key == "template_id":
+                new_tid_values.append((clean_key, str(value)))
+
+        if len(new_tid_values) > 1:
+            unique_new = set(v for _, v in new_tid_values)
+            if len(unique_new) > 1:
+                raise RuntimeError("Error in new record. Multiple Templates Not Allowed")
+
+        template_id_from_file = new_tid_values[0][1] if new_tid_values else None
+        template_id_cli = getattr(args, 'template', None)
+
+        # Step 1d: Determine resolved_template_id
+        if template_id_cli:
+            resolved_template_id = template_id_cli
+        elif template_id_from_file:
+            # For record update: check if template change is allowed
+            if existing_record and old_template_id and old_template_id != template_id_from_file:
+                for fname in global_template_id_field_names:
+                    if not global_record_fields[fname].editable:
+                        raise RuntimeError(
+                            f"Cannot change template. Template_ID special field {fname} marked not editable"
+                        )
+            resolved_template_id = template_id_from_file
+        else:
+            resolved_template_id = old_template_id  # keep existing template on update, or None for new
 
         # Step 1e: Now that we have resolved_template_id, fetch the full special fields
         # (global + template-specific) to use for Steps 2 and 3.
@@ -6906,19 +6789,12 @@ class IncidentCLI:
                 # Add CLI value
                 merged_frontmatter[hinted_key] = cli_value
         
-        # If template was overridden (by CLI or resolution), remove any raw template_id
-        # fields left in the merged frontmatter so Step 3 can write the resolved value.
-        global_record_fields = manager.project_config.get_special_fields()
-        keys_to_remove = []
-        for key in merged_frontmatter.keys():
-            clean_key, _ = YAMLSerializer.strip_type_hint(key)
-            if clean_key in global_record_fields:
-                if global_record_fields[clean_key].system_value == "template_id":
-                    keys_to_remove.append(key)
-            elif clean_key == "template_id":
-                keys_to_remove.append(key)
-        for key in keys_to_remove:
-            del merged_frontmatter[key]
+        # Override with CLI template if provided
+        if template_id_cli and new_tid_values:
+            # Remove template_id fields from file
+            for field_key, _ in new_tid_values:
+                if field_key in merged_frontmatter:
+                    del merged_frontmatter[field_key]
         
         # Step 3: Rewrite non-editable special fields with system values
         # This includes template_id if resolved
@@ -7431,12 +7307,8 @@ class IncidentCLI:
                 for_record=False,
             )
         else:
-            # For records, scope to the resolved template (set by _setup_write_command).
-            # Falls back to global-only fields when args.template is None (plain record).
-            special_fields = manager.project_config.get_special_fields_for_template(
-                getattr(args, 'template', None),
-                for_record=True,
-            )
+            # For records, get global/record special fields
+            special_fields = manager.project_config.get_special_fields()
         
         special_field_names = set(special_fields.keys())
         
