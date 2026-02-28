@@ -1609,13 +1609,21 @@ class DatabaseDiscovery:
             ValueError: If required fields are missing or invalid
             PermissionError: If config file cannot be read due to permissions
         """
+
+        def dict_to_configdict(d):
+            if isinstance(d, dict):
+                return ConfigDict({k: dict_to_configdict(v) for k, v in d.items()})
+            elif isinstance(d, list):
+                return [dict_to_configdict(item) for item in d]
+            else:
+                return d
+
         config_path = DatabaseDiscovery.get_user_config_path()
         
         # No config file is acceptable; return empty dict
         if not config_path.exists():
             #return {}
-            config["user"]["email"]="nobody@example.com";
-            config["user"]["handle"]="(unknown user)";
+            config = { "user": { "email": "nobody@example.com", "handle": "(unknown user)"}}
             return dict_to_configdict(config)
         
         try:
@@ -1750,13 +1758,6 @@ class DatabaseDiscovery:
                         f'  "/my/path" = "myalias"          # library alias'
                     )
         
-        def dict_to_configdict(d):
-            if isinstance(d, dict):
-                return ConfigDict({k: dict_to_configdict(v) for k, v in d.items()})
-            elif isinstance(d, list):
-                return [dict_to_configdict(item) for item in d]
-            else:
-                return d
         
         return dict_to_configdict(config)
 
@@ -6676,7 +6677,7 @@ class IncidentCLI:
                 field_def = special_fields[clean_key]
                 if field_def.system_value == "template_id":
                     template_ids_from_file.append((clean_key, str(value)))
-            elif key == "template_id":
+            elif clean_key == "template_id":
                 template_ids_from_file.append((key, str(value)))
         
         # Check for conflicts in template_id fields
@@ -6770,7 +6771,7 @@ class IncidentCLI:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
         for field_name, field_def in special_fields.items():
-            if not field_def.editable and field_def.system_value:
+            if field_def.editable and field_def.system_value:
                 # This is a non-editable system field - rewrite it
                 system_value = None
                 
