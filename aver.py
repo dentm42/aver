@@ -1303,10 +1303,6 @@ class ProjectConfig:
         """
         return self._record_special_fields
     
-    def get_note_special_fields(self) -> Dict[str, SpecialField]:
-        """Get all note special field definitions."""
-        return self._note_special_fields
-    
     def get_enabled_special_fields(self) -> Dict[str, SpecialField]:
         """
         Get only enabled record special field definitions.
@@ -6663,57 +6659,86 @@ class IncidentCLI:
             raise RuntimeError(f"Failed to parse markdown file {filepath}: {e}")
         
         # Step 1: Template resolution
-        # Check for template_id in frontmatter (including special fields that resolve to template_id)
-        template_ids_from_file = []
-        if is_note:
-            special_fields = manager.project_config.get_note_special_fields()
-        else:
-            special_fields = manager.project_config.get_special_fields()
-        
+        # Use global special fields to find which fields are designated as template_id.
+        # Template-specific fields cannot be loaded yet because we don't know the template.
+        global_record_fields = manager.project_config.get_special_fields()
+
+        # Step 1a: Find global fields marked as system_value == "template_id"
+        global_template_id_field_names = [
+            fname for fname, fdef in global_record_fields.items()
+            if fdef.system_value == "template_id"
+        ]
+
+        # Step 1b: Extract template_id from OLD record (existing_record)
+        old_template_id = None
+        if existing_record:
+            old_tid_values = []
+            for fname in global_template_id_field_names:
+                field_def = global_record_fields[fname]
+                if field_def.value_type == "integer":
+                    val = existing_record.kv_integers.get(fname)
+                elif field_def.value_type == "float":
+                    val = existing_record.kv_floats.get(fname)
+                else:
+                    val = existing_record.kv_strings.get(fname)
+                if val:
+                    old_tid_values.append((fname, str(val[0])))
+            # Also check the literal 'template_id' key as fallback
+            if not old_tid_values and existing_record.kv_strings.get('template_id'):
+                old_tid_values.append(('template_id', existing_record.kv_strings['template_id'][0]))
+
+            if len(old_tid_values) > 1:
+                unique_old = set(v for _, v in old_tid_values)
+                if len(unique_old) > 1:
+                    raise RuntimeError("Error in existing record. Multiple Templates Not Allowed")
+            if old_tid_values:
+                old_template_id = old_tid_values[0][1]
+
+        # Step 1c: Extract template_id from NEW record (frontmatter)
+        new_tid_values = []
         for key, value in frontmatter.items():
-            # Check if this is a special field that resolves to template_id
             clean_key, _ = YAMLSerializer.strip_type_hint(key)
-            if clean_key in special_fields:
-                field_def = special_fields[clean_key]
+            if clean_key in global_record_fields:
+                field_def = global_record_fields[clean_key]
                 if field_def.system_value == "template_id":
-                    template_ids_from_file.append((clean_key, str(value)))
+                    new_tid_values.append((clean_key, str(value)))
             elif clean_key == "template_id":
-                template_ids_from_file.append((key, str(value)))
-        
-        # Check for conflicts in template_id fields
-        if len(template_ids_from_file) > 1:
-            unique_values = set(tid for _, tid in template_ids_from_file)
-            if len(unique_values) > 1:
-                fields = ", ".join(f"{key}={val}" for key, val in template_ids_from_file)
-                raise RuntimeError(
-                    f"Conflicting template_id fields in file: {fields}\n"
-                    f"Multiple fields resolve to template_id but have different values"
-                )
-        
-        # Determine final template
+                new_tid_values.append((clean_key, str(value)))
+
+        if len(new_tid_values) > 1:
+            unique_new = set(v for _, v in new_tid_values)
+            if len(unique_new) > 1:
+                raise RuntimeError("Error in new record. Multiple Templates Not Allowed")
+
+        template_id_from_file = new_tid_values[0][1] if new_tid_values else None
         template_id_cli = getattr(args, 'template', None)
-        template_id_from_file = template_ids_from_file[0][1] if template_ids_from_file else None
-        
-        resolved_template_id = template_id_cli or template_id_from_file
-        
-        # For record update: check if template change is allowed
-        if existing_record and template_id_from_file and existing_record.template_id != template_id_from_file:
-            # Template is changing - check if this is allowed
-            template_id_fields = [field_name for field_name, field_def in special_fields.items() 
-                                 if field_def.system_value == "template_id"]
-            
-            if template_id_fields:
-                # Check if ALL template_id fields are editable
-                any_non_editable = any(
-                    not special_fields[fname].editable 
-                    for fname in template_id_fields
-                )
-                if any_non_editable:
-                    raise RuntimeError(
-                        f"Cannot change template from '{existing_record.template_id}' to '{template_id_from_file}'\n"
-                        f"One or more template_id fields have editable=false"
-                    )
-        
+
+        # Step 1d: Determine resolved_template_id
+        if template_id_cli:
+            resolved_template_id = template_id_cli
+        elif template_id_from_file:
+            # For record update: check if template change is allowed
+            if existing_record and old_template_id and old_template_id != template_id_from_file:
+                for fname in global_template_id_field_names:
+                    if not global_record_fields[fname].editable:
+                        raise RuntimeError(
+                            f"Cannot change template. Template_ID special field {fname} marked not editable"
+                        )
+            resolved_template_id = template_id_from_file
+        else:
+            resolved_template_id = old_template_id  # keep existing template on update, or None for new
+
+        # Step 1e: Now that we have resolved_template_id, fetch the full special fields
+        # (global + template-specific) to use for Steps 2 and 3.
+        if is_note:
+            special_fields = manager.project_config.get_special_fields_for_template(
+                resolved_template_id, for_record=False
+            )
+        else:
+            special_fields = manager.project_config.get_special_fields_for_template(
+                resolved_template_id, for_record=True
+            )
+
         # Step 2: Merge frontmatter with CLI arguments
         # CLI arguments take precedence
         merged_frontmatter = frontmatter.copy()
@@ -6743,9 +6768,9 @@ class IncidentCLI:
                 merged_frontmatter[hinted_key] = cli_value
         
         # Override with CLI template if provided
-        if template_id_cli and template_ids_from_file:
+        if template_id_cli and new_tid_values:
             # Remove template_id fields from file
-            for field_key, _ in template_ids_from_file:
+            for field_key, _ in new_tid_values:
                 if field_key in merged_frontmatter:
                     del merged_frontmatter[field_key]
         
