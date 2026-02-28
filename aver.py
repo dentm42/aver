@@ -377,11 +377,15 @@ class Incident:
     
     def to_markdown(self, project_config: ProjectConfig) -> str:
         """Serialize to Markdown with yaml frontmatter."""
-        # Build frontmatter from enabled special fields only
-        
+        # Build frontmatter from enabled special fields only.
+        # Use template-aware fields so template-specific fields are serialized correctly.
+        template_id = self.template_id
+        all_special = project_config.get_special_fields_for_template(template_id, for_record=True)
+        enabled_special = {n: f for n, f in all_special.items() if f.enabled}
+
         frontmatter = {}
-        for field_name in project_config.get_enabled_special_fields().keys():
-            field = project_config.get_special_field(field_name, for_record=True)
+        for field_name in enabled_special.keys():
+            field = enabled_special[field_name]
             
             if field.field_type == "single":
                 if field.value_type == "string":
@@ -430,7 +434,8 @@ class Incident:
         
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
-        special_names = set(project_config.get_special_fields().keys())
+        all_special = project_config.get_special_fields_for_template(self.template_id, for_record=True)
+        special_names = set(all_special.keys())
         
         other = {}
         for key in self.kv_strings.keys():
@@ -471,8 +476,23 @@ class Incident:
         kv_integers = {}
         kv_floats = {}
         
-        # Check if there's a template_id in the frontmatter to get template-specific fields
-        template_id = frontmatter.get('template_id')
+        # Check if there's a template_id in the frontmatter to get template-specific fields.
+        # Check the literal 'template_id' key (with or without type hint), then fall back
+        # to any global special field configured with system_value == "template_id".
+        template_id = None
+        for key, value in frontmatter.items():
+            clean_key, _ = YAMLSerializer.strip_type_hint(key)
+            if clean_key == 'template_id':
+                template_id = str(value)
+                break
+        if not template_id:
+            global_fields = project_config.get_special_fields()
+            for key, value in frontmatter.items():
+                clean_key, _ = YAMLSerializer.strip_type_hint(key)
+                if clean_key in global_fields and global_fields[clean_key].system_value == 'template_id':
+                    template_id = str(value)
+                    break
+
         if template_id:
             special_fields = project_config.get_special_fields_for_template(
                 template_id,
