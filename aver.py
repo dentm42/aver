@@ -9496,31 +9496,35 @@ $update_kv
             fields = data.get('fields', {})
             content = data['content']
             template_id = data.get('template')
-            
+
+            # Set onto args so _process_from_file can resolve template-specific special fields
+            args.template = template_id
+            args.custom_id = getattr(args, 'custom_id', None)
+
             # Create markdown content
             frontmatter = fields
             markdown_content = MarkdownDocument.create(frontmatter, content)
-            
+
             # Write to temp file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
                 f.write(markdown_content)
                 temp_file = f.name
-            
+
             try:
                 # Use the existing from-file machinery
                 manager, (kv_single, kv_multi) = self._setup_write_command(args)
-                
+
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
                     manager,
                     args,
                     is_note=False,
                 )
-                
+
                 # Parse to get KV data
                 processed_content = MarkdownDocument.create(frontmatter, body)
                 temp_incident = Incident.from_markdown(processed_content, "TEMP", manager.project_config)
-                
+
                 # Create record
                 record_id = manager.create_incident(
                     kv_strings=temp_incident.kv_strings,
@@ -9529,7 +9533,7 @@ $update_kv
                     description=body,
                     use_editor=False,
                     use_yaml_editor=False,
-                    template_id=template_id or resolved_template_id,
+                    template_id=resolved_template_id,
                     custom_id=getattr(args, 'custom_id', None),
                 )
 
@@ -9629,14 +9633,17 @@ $update_kv
         '''Update a record from JSON.'''
         try:
             data = self._read_json_data(args.data)
-            
+
             # Validate JSON structure
             if not isinstance(data, dict):
                 raise RuntimeError("JSON must be an object")
-            
+
             fields = data.get('fields', {})
             content = data.get('content')
-            
+
+            # Set onto args so _process_from_file can resolve template-specific special fields
+            args.template = None  # update-record doesn't change templates via JSON IO
+
             # Create markdown content
             frontmatter = fields
             markdown_content = MarkdownDocument.create(frontmatter, content or "")
@@ -10379,8 +10386,11 @@ $update_kv
 
             fields = params.get('fields', {})
             content = params['content']
-            template_id = params.get('template')
             custom_id = params.get('record_id')
+
+            # Set onto args so _process_from_file can resolve template-specific special fields
+            args.template = params.get('template')
+            args.custom_id = custom_id
 
             # Create markdown content
             markdown_content = MarkdownDocument.create(fields, content)
@@ -10410,7 +10420,7 @@ $update_kv
                     description=body,
                     use_editor=False,
                     use_yaml_editor=False,
-                    template_id=template_id or resolved_template_id,
+                    template_id=resolved_template_id,
                     custom_id=custom_id,
                 )
 
@@ -10428,10 +10438,13 @@ $update_kv
                 raise ValueError("Missing required parameter: record_id")
             if 'content' not in params:
                 raise ValueError("Missing required parameter: content")
-            
+
             args.record_id = params['record_id']
             fields = params.get('fields', {})
             content = params['content']
+
+            # Set onto args so _process_from_file can resolve template-specific special fields
+            args.template = None  # note template is inherited from parent record
             
             markdown_content = MarkdownDocument.create(fields, content)
             
@@ -10480,10 +10493,13 @@ $update_kv
             # Optional: fields, content
             if 'record_id' not in params:
                 raise ValueError("Missing required parameter: record_id")
-            
+
             args.record_id = params['record_id']
             fields = params.get('fields', {})
             content = params.get('content')
+
+            # Set onto args so _process_from_file loads correct template-specific special fields
+            args.template = None  # update-record doesn't change templates via JSON IO
             
             markdown_content = MarkdownDocument.create(fields, content or "")
             
