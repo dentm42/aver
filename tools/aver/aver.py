@@ -41,6 +41,11 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+__version__ = "0.9.0"
+
 import argparse
 import datetime
 import hashlib
@@ -6445,6 +6450,11 @@ class IncidentCLI:
         self.parser = argparse.ArgumentParser(
             description="aver: record tracking and management",
             formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        self.parser.add_argument(
+            "-v", "--version",
+            action="version",
+            version=f"%(prog)s {__version__}",
         )
         self._add_common_args(self.parser)
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
