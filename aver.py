@@ -379,7 +379,7 @@ class Incident:
         """Serialize to Markdown with yaml frontmatter."""
         # Build frontmatter from enabled special fields only.
         # Use template-aware fields so template-specific fields are serialized correctly.
-        template_id = self.template_id
+        template_id = self.kv_strings.get('template_id', [None])[0]
         all_special = project_config.get_special_fields_for_template(template_id, for_record=True)
         enabled_special = {n: f for n, f in all_special.items() if f.enabled}
 
@@ -434,7 +434,8 @@ class Incident:
         
     def _get_other_kv(self, project_config: ProjectConfig) -> dict:
         """Get KV data that's NOT special fields."""
-        all_special = project_config.get_special_fields_for_template(self.template_id, for_record=True)
+        template_id = self.kv_strings.get('template_id', [None])[0]
+        all_special = project_config.get_special_fields_for_template(template_id, for_record=True)
         special_names = set(all_special.keys())
         
         other = {}
@@ -6127,16 +6128,16 @@ class IncidentManager:
         
         # Handle direct KV dicts (from --from-file)
         if kv_strings is not None or kv_integers is not None or kv_floats is not None:
-            # Direct KV mode - need to filter out non-editable special fields
+            # Direct KV mode - filter out system-auto-populated fields (user values discarded)
             # Get note special fields for this template
             note_special_fields = self.project_config.get_special_fields_for_template(
                 parent_template_id,
                 for_record=False,  # Get note fields
             )
-            
+
             non_editable_fields = {
                 name for name, field in note_special_fields.items()
-                if not field.editable
+                if field.system_value
             }
             
             if kv_strings:
