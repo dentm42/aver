@@ -446,8 +446,10 @@ Each special field has these properties:
 - Determines storage and search behavior
 
 **editable**: `true` or `false`
-- `false`: Cannot be changed by users, auto-populated
-- `true`: Users can edit
+- `false`: Field is set once on creation and locked thereafter
+  - If `system_value` is set: system auto-populates; user-supplied value is discarded
+  - If `system_value` is not set: user supplies the value at creation; it is then immutable
+- `true`: Users can edit; if `system_value` is set, auto-updates on every edit
 
 **enabled**: `true` or `false`
 - Disabled fields are ignored

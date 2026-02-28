@@ -20,12 +20,14 @@ Each field in `[special_fields]` can now have these attributes:
 ### New Attributes
 
 #### `editable` (boolean, default: true)
-- **`editable = false`**: Field is set once and never updated
+- **`editable = false`**: Field is set once on creation and never updated
   - Hidden from editor view
-  - Cannot be modified via command line (will error)
-  - Value is set by system_value or default, then locked
-  - Used for: created_at, created_by, record_id
-  
+  - If `system_value` is also set: system auto-populates the value; any user-supplied
+    value is discarded
+  - If `system_value` is NOT set: the user supplies the value at creation and it is
+    then locked (immutable); the field is stored as provided
+  - Used for: created_at (with system_value), note_type (without system_value)
+
 - **`editable = true`**: Field can be modified
   - Appears in editor
   - Can be updated via command line
@@ -256,9 +258,11 @@ system_value = "datetime"
 - Error shown if validation fails
 
 ### Non-Editable Field Protection
-- Command-line: Immediate error if user tries to edit
 - Editor: Field not shown (automatically filtered out)
-- After editing: System silently overwrites any attempted changes
+- Fields with `system_value`: System always overwrites any user-supplied value;
+  the user cannot inject a fake `created_at` etc.
+- Fields without `system_value`: User supplies the value at creation; value is
+  locked after that (cannot be changed on update)
 
 ## Examples
 
