@@ -1238,9 +1238,10 @@ class ProjectConfig:
         Returns:
             Dictionary of special fields for the note
         """
-        fields = {}
-        
-        # Start with note template's note fields (if specified)
+        # Always start with global note special fields as the base
+        fields = self._note_special_fields.copy()
+
+        # Layer on note template's note fields (if specified)
         if note_template_name:
             note_template = self.get_template(note_template_name)
             if note_template and note_template.has_note_special_fields():
