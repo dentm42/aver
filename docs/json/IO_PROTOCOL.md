@@ -25,6 +25,28 @@ Each response is a single line containing a JSON object:
 {"success": false, "error": "error description"}
 ```
 
+### Secure Field Masking
+
+Fields with `value_type = "securestring"` are **always masked** in all JSON responses. When a record or note has a securestring field, its value appears as the literal string `"{securestring}"` in the `fields` object — never the plaintext.
+
+```json
+{
+  "success": true,
+  "result": {
+    "id": "REC-001",
+    "fields": {
+      "title": "My Record",
+      "api_token": "{securestring}",
+      "status": "open"
+    }
+  }
+}
+```
+
+**Securestring search**: You can still search securestring fields using `=`, `!=`, and `^` operators in `ksearch` parameters. The search compares against the actual stored value, and matching records are returned with the field masked in the response.
+
+**`template-data` response**: When `value_type` is `"securestring"`, the field definition in `template-data` will show `"value_type": "securestring"`. Clients should treat such fields as write-only: they can submit values but must not expect to read them back.
+
 ### User Identity Override
 Commands can optionally include an `id` field to override the user identity for that specific command. This is useful for:
 - Multi-user systems where different commands should be attributed to different users
@@ -462,7 +484,7 @@ Get complete field definitions for a template (record fields and note fields). I
 | Key | Always present | Description |
 |-----|---------------|-------------|
 | `type` | yes | `"single"` or `"multi"` |
-| `value_type` | yes | `"string"`, `"integer"`, or `"float"` |
+| `value_type` | yes | `"string"`, `"integer"`, `"float"`, or `"securestring"` |
 | `editable` | yes | `false` = system-populated, do not submit |
 | `required` | yes | `true` = must provide a value |
 | `accepted_values` | if constrained | List of valid values |

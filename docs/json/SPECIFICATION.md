@@ -83,7 +83,7 @@ Implemented 13 new methods in the `IncidentCLI` class:
   "fields": {
     "field_name": {
       "type": "special|custom",
-      "value_type": "string|integer|float",
+      "value_type": "string|integer|float|securestring",
       "editable": true,
       "required": false,
       "accepted_values": ["option1", "option2"],

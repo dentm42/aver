@@ -660,6 +660,39 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "securestring value_type for SpecialField"
+    added: "2026-02-28"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      A new value_type="securestring" for special fields (both global and template-scoped,
+      both record and note fields). Secure values are stored PLAINTEXT in markdown frontmatter
+      (source of truth) but are masked as {securestring} in all user-facing output.
+      A parallel kv_secure: Optional[Dict[str, List[str]]] dict lives on Incident and
+      IncidentUpdate alongside kv_strings/kv_integers/kv_floats.
+      A new value_secure TEXT column in kv_store (with schema migration via ALTER TABLE)
+      holds the indexed plaintext for search.
+      Supported search operators: = (equality JOIN), != (exclusion subquery), ^ (IN-list JOIN).
+      Comparison operators (>, <, >=, <=) are NOT supported for securestring.
+      Masking applies in: record view, note view, record list, note search, JSON export,
+      JSON IO responses, post-create summary. Editor shows {securestring} mask for editable
+      secure fields; if left unchanged, original value is restored.
+      Non-editable securestring fields are never shown in the editor and are restored from
+      the original after editing.
+    key_structures:
+      - "Incident.kv_secure: Dict[str, List[str]] — parallel to kv_strings"
+      - "IncidentUpdate.kv_secure: Optional[Dict[str, List[str]]]"
+      - "kv_store.value_secure TEXT — indexed plaintext, never surfaced in output"
+    key_methods:
+      - "_flatten_kv_data(..., kv_secure=...) — adds {securestring} mask to flat dict"
+      - "_prepare_incident_for_editing() — writes mask for editable secure fields"
+      - "_restore_non_editable_fields() — restores non-editable secure fields; applies mask-value check for editable"
+      - "search_kv() — equality/IN/exclusion JOINs include value_secure column"
+      - "index_kv_data() / index_update_kv_data() — 4th loop inserts into value_secure"
+    mask_value: '"{securestring}"'
+    docs:
+      - "docs/MANUAL.md — Secure Fields section under Section 6"
+      - "docs/json/IO_PROTOCOL.md — Secure Field Masking section"
+
   - feature: "file_index table and file_hash system value"
     added: "2026-02-27"
     status: "✅ IMPLEMENTED"

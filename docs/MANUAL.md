@@ -442,8 +442,9 @@ Each special field has these properties:
 - `single`: One value per field
 - `multi`: Multiple values allowed (like tags)
 
-**value_type**: `string`, `integer`, or `float`
+**value_type**: `string`, `integer`, `float`, or `securestring`
 - Determines storage and search behavior
+- `securestring`: Stores plaintext on disk but is **masked** as `{securestring}` in all user-facing output (view, list, JSON export, editor). Supports `=`, `!=`, and `^` search operators only. Use for passwords, API keys, tokens, and other sensitive values.
 
 **editable**: `true` or `false`
 - `false`: Field is set once on creation and locked thereafter
@@ -460,7 +461,7 @@ Each special field has these properties:
 **index_values**: `true` or `false` (default: `true`)
 - `true`: Field values are indexed in the database and searchable
 - `false`: Field values stored only in Markdown files, not searchable via database
-- Use `false` for sensitive data or fields that don't need searching
+- Note: `securestring` fields are always indexed for search (regardless of `index_values`), but the plaintext is stored in a separate secure column never exposed in output
 
 **system_value**: System value source (optional)
 - If set, field is auto-populated
@@ -494,6 +495,56 @@ type = "single"
 value_type = "string"
 default = "${datestamp}"
 ```
+
+### Secure Fields (`securestring`)
+
+Aver supports a special `value_type = "securestring"` for fields that contain sensitive data like passwords, API keys, and authentication tokens.
+
+**How it works:**
+- Values are stored **plaintext** in Markdown files on disk (source of truth, under your control)
+- Values are **masked** as `{securestring}` everywhere they surface to the user:
+  - `record view` and `note view` output
+  - `record list` / `note search` output
+  - JSON export and JSON IO search results
+  - The YAML editor (when editing a record)
+- Values are **fully searchable** via `=`, `!=`, and `^` operators (exact match and IN-list)
+
+**Configuration example**:
+```toml
+[record_special_fields.api_token]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+```
+
+**Usage**:
+```bash
+# Set a secure field value on creation
+aver record new --text api_token=mysecretkey123
+
+# View record — secure field shown as mask
+aver record view REC-001
+# Output:  api_token: {securestring}
+
+# Search by exact value (works even though display is masked)
+aver record list --ksearch api_token=mysecretkey123
+
+# Search using IN-list
+aver record list --ksearch 'api_token^key1|key2|key3'
+
+# Search excluding a value
+aver record list --ksearch api_token!=mysecretkey123
+```
+
+**Editor behavior for editable securestring fields:**
+When you open a record with an editable securestring field in the YAML editor, the field appears as `{securestring}`. If you leave it unchanged, the original value is preserved. To update it, replace the mask with the new value.
+
+**Non-editable securestring fields:**
+Fields with `editable = false` are never shown in the editor. They can be set at creation time and cannot be changed afterward (same as any non-editable field).
+
+**Security note**: Plaintext values are stored in Markdown files and indexed in SQLite. Aver's masking is a display-layer feature to prevent accidental exposure in terminal output, logs, and exports. If you need true encryption at rest, consider encrypting the database directory.
 
 ---
 

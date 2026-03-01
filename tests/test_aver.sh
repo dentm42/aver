@@ -457,6 +457,42 @@ enabled = true
 required = true
 accepted_values = ["proposed", "approved", "in_development", "completed", "rejected"]
 default = "proposed"
+
+# Securestring tests: global securestring field (record-level)
+[record_special_fields.api_token]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+index_values = true
+
+# Securestring tests: non-editable securestring (set on creation, immutable after)
+[record_special_fields.master_secret]
+type = "single"
+value_type = "securestring"
+editable = false
+enabled = true
+required = false
+index_values = true
+
+# Securestring in notes (global)
+[note_special_fields.session_token]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+index_values = true
+
+# Securestring in a template (template-scoped)
+[template.feature.record_special_fields.oauth_secret]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+index_values = true
 EOF
     
     if [ -f "$TEST_DIR/config.toml" ]; then
@@ -3942,6 +3978,372 @@ assert any(s == 'closed' for s in statuses), 'no closed records'
 
 
 #==============================================================================
+# Test: securestring field type
+#==============================================================================
+
+test_securestring() {
+    print_section "Test: securestring Field Type"
+
+    local MASK="{securestring}"
+
+    # -------------------------------------------------------------------------
+    # 1. Create a record with an editable securestring field via --api_token
+    # -------------------------------------------------------------------------
+    print_test "Create record with editable securestring via --api_token"
+    local rec_sec
+    rec_sec=$(run_aver record new --description "" --no-validation-editor \
+        --title "Secure Test Record" --api_token "supersecret123" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_sec" ]; then
+        fail "Could not create record with securestring field"
+        return
+    fi
+    pass
+    echo "  Created: $rec_sec"
+
+    # -------------------------------------------------------------------------
+    # 2. record view masks the securestring value
+    # -------------------------------------------------------------------------
+    print_test "record view masks securestring as {securestring}"
+    track_command "aver record view $rec_sec"
+    if output=$(run_aver record view "$rec_sec" 2>&1); then
+        if echo "$output" | grep -q "api_token" && echo "$output" | grep -q "$MASK"; then
+            if ! echo "$output" | grep -q "supersecret123"; then
+                pass
+                echo "  api_token displayed as $MASK"
+            else
+                fail "Plaintext value visible in view output: $output"
+            fi
+        else
+            fail "api_token or mask not found in view output: $output"
+        fi
+    else
+        fail "record view failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. The on-disk file contains the plaintext value
+    # -------------------------------------------------------------------------
+    print_test "On-disk record file contains plaintext securestring"
+    local rec_file="$TEST_DIR/records/${rec_sec}.md"
+    if [ -f "$rec_file" ]; then
+        if grep -q "supersecret123" "$rec_file"; then
+            pass
+            echo "  Plaintext confirmed in $rec_file"
+        else
+            fail "Plaintext not found in on-disk file: $rec_file"
+        fi
+    else
+        fail "Record file not found: $rec_file"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. record list masks the securestring value
+    # -------------------------------------------------------------------------
+    print_test "record list masks securestring"
+    track_command "aver record list --ksearch title=Secure Test Record"
+    if output=$(run_aver record list --ksearch "title=Secure Test Record" 2>&1); then
+        if ! echo "$output" | grep -q "supersecret123"; then
+            pass
+            echo "  Plaintext not visible in list output"
+        else
+            fail "Plaintext leaked in record list output: $output"
+        fi
+    else
+        fail "record list failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. Search by securestring value (=) finds the record
+    # -------------------------------------------------------------------------
+    print_test "ksearch api_token=supersecret123 finds the record"
+    track_command "aver record list --ksearch api_token=supersecret123"
+    if output=$(run_aver record list --ksearch "api_token=supersecret123" 2>&1); then
+        if echo "$output" | grep -q "$rec_sec"; then
+            pass
+            echo "  Record found via securestring search"
+        else
+            fail "Record not found via securestring search: $output"
+        fi
+    else
+        fail "ksearch by securestring failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. Negative search (!=) excludes the record
+    # -------------------------------------------------------------------------
+    print_test "ksearch api_token!=supersecret123 excludes the record"
+    track_command "aver record list --ksearch title=Secure Test Record --ksearch api_token!=supersecret123"
+    if output=$(run_aver record list --ksearch "title=Secure Test Record" --ksearch "api_token!=supersecret123" 2>&1); then
+        if ! echo "$output" | grep -q "$rec_sec"; then
+            pass
+            echo "  != operator correctly excludes the record"
+        else
+            fail "Record should have been excluded by != operator: $output"
+        fi
+    else
+        fail "!= ksearch failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. ^ (in) operator finds the record
+    # -------------------------------------------------------------------------
+    print_test "ksearch api_token^supersecret123|othervalue finds the record"
+    track_command "aver record list --ksearch 'api_token^supersecret123|othervalue'"
+    if output=$(run_aver record list --ksearch "api_token^supersecret123|othervalue" 2>&1); then
+        if echo "$output" | grep -q "$rec_sec"; then
+            pass
+            echo "  ^ operator correctly finds the record"
+        else
+            fail "Record not found via ^ operator: $output"
+        fi
+    else
+        fail "^ ksearch failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. JSON export masks the securestring
+    # -------------------------------------------------------------------------
+    print_test "json export-record masks securestring"
+    track_command "aver json export-record $rec_sec"
+    if output=$(run_aver json export-record "$rec_sec" 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+fields = data.get('fields', {})
+api_token = fields.get('api_token', '')
+assert api_token == '{securestring}', f'Expected mask, got: {api_token!r}'
+assert 'supersecret123' not in str(data), 'Plaintext leaked in JSON export'
+print('ok')
+" 2>/dev/null; then
+            pass
+            echo "  JSON export shows mask, not plaintext"
+        else
+            fail "JSON export did not mask securestring: $output"
+        fi
+    else
+        fail "json export-record failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. JSON IO search-records masks securestring
+    # -------------------------------------------------------------------------
+    print_test "JSON IO search-records masks securestring"
+    track_command "json io search-records ksearch title=Secure Test Record"
+    if output=$(echo '{"command": "search-records", "params": {"ksearch": ["title=Secure Test Record"]}}' \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success'), f'not success: {data}'
+records = data['result']['records']
+assert len(records) > 0, 'no records returned'
+for r in records:
+    token = r['fields'].get('api_token', '')
+    assert token == '{securestring}', f'Expected mask, got: {token!r}'
+    assert 'supersecret123' not in str(r), 'Plaintext leaked in search result'
+print('ok')
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO search masks securestring"
+        else
+            fail "JSON IO search did not mask securestring: $output"
+        fi
+    else
+        fail "JSON IO search-records failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 10. Update editable securestring via --api_token with a new value
+    # -------------------------------------------------------------------------
+    print_test "Update editable securestring to a new value"
+    track_command "aver record update $rec_sec --api_token newsecret456 --metadata-only --no-validation-editor"
+    if output=$(run_aver record update "$rec_sec" --api_token "newsecret456" --metadata-only --no-validation-editor 2>&1); then
+        # Confirm searchable by new value
+        if search_out=$(run_aver record list --ksearch "api_token=newsecret456" 2>&1) && \
+           echo "$search_out" | grep -q "$rec_sec"; then
+            pass
+            echo "  Record found by new securestring value after update"
+        else
+            fail "Record not found by new value after update: $search_out"
+        fi
+    else
+        fail "record update with securestring failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 11. Old value no longer finds the record after update
+    # -------------------------------------------------------------------------
+    print_test "Old securestring value no longer finds record after update"
+    track_command "aver record list --ksearch api_token=supersecret123"
+    if output=$(run_aver record list --ksearch "api_token=supersecret123" --ksearch "title=Secure Test Record" 2>&1); then
+        if ! echo "$output" | grep -q "$rec_sec"; then
+            pass
+            echo "  Old value correctly no longer matches"
+        else
+            fail "Old value still matches after update: $output"
+        fi
+    else
+        fail "Search with old value failed unexpectedly: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 12. Non-editable securestring can be set on creation but not updated
+    # -------------------------------------------------------------------------
+    print_test "Create record with non-editable securestring"
+    local rec_ne
+    rec_ne=$(run_aver record new --description "" --no-validation-editor \
+        --title "NonEditable Secure" --master_secret "initialsecret" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_ne" ]; then
+        fail "Could not create record with non-editable securestring"
+        return
+    fi
+    # Verify searchable by initial value
+    if search_out=$(run_aver record list --ksearch "master_secret=initialsecret" 2>&1) && \
+       echo "$search_out" | grep -q "$rec_ne"; then
+        pass
+        echo "  Non-editable securestring set on creation: $rec_ne"
+    else
+        fail "Non-editable securestring not searchable after creation: $search_out"
+    fi
+
+    print_test "Non-editable securestring cannot be updated"
+    set +e
+    output=$(run_aver record update "$rec_ne" --master_secret "newsecret" --metadata-only --no-validation-editor 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] || echo "$output" | grep -qi "cannot be edited\|not editable\|error"; then
+        pass
+        echo "  Correctly rejected update to non-editable securestring"
+    else
+        fail "Should have rejected update to non-editable securestring: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 13. Note with securestring field
+    # -------------------------------------------------------------------------
+    print_test "Add note with securestring field"
+    local note_id
+    note_id=$(run_aver note add "$rec_sec" --message "Note with token" \
+        --session_token "tokenabc" 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    if [ -z "$note_id" ]; then
+        fail "Could not create note with securestring field"
+        return
+    fi
+    pass
+    echo "  Note created: $note_id"
+
+    print_test "note view masks securestring"
+    track_command "aver note view $rec_sec $note_id"
+    if output=$(run_aver note view "$rec_sec" "$note_id" 2>&1); then
+        if echo "$output" | grep -q "session_token" && echo "$output" | grep -q "$MASK"; then
+            if ! echo "$output" | grep -q "tokenabc"; then
+                pass
+                echo "  Note securestring masked in view"
+            else
+                fail "Plaintext visible in note view: $output"
+            fi
+        else
+            fail "session_token or mask not in note view: $output"
+        fi
+    else
+        fail "note view failed: $output"
+    fi
+
+    print_test "note search by securestring value"
+    track_command "aver note search --ksearch session_token=tokenabc"
+    if output=$(run_aver note search --ksearch "session_token=tokenabc" --ksearch "incident_id=$rec_sec" 2>&1); then
+        if echo "$output" | grep -q "$note_id"; then
+            pass
+            echo "  Note found by securestring search"
+        else
+            fail "Note not found by securestring search: $output"
+        fi
+    else
+        fail "note search by securestring failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 14. template-data shows securestring value_type
+    # -------------------------------------------------------------------------
+    print_test "admin template-data --json shows securestring value_type"
+    track_command "aver admin template-data --json"
+    if output=$(run_aver admin template-data --json 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+# Find the global entry (template_id=None)
+global_entry = next((e for e in data if e.get('template_id') is None), None)
+assert global_entry is not None, 'no global entry'
+record_fields = global_entry.get('record_fields', {})
+assert 'api_token' in record_fields, 'api_token not in record_fields'
+assert record_fields['api_token']['value_type'] == 'securestring', \
+    f'wrong value_type: {record_fields[\"api_token\"][\"value_type\"]}'
+print('ok')
+" 2>/dev/null; then
+            pass
+            echo "  template-data correctly reports value_type=securestring"
+        else
+            fail "template-data did not show securestring value_type: $output"
+        fi
+    else
+        fail "admin template-data failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 15. Reindex preserves searchability of securestring
+    # -------------------------------------------------------------------------
+    print_test "Reindex preserves securestring searchability"
+    track_command "aver admin reindex --force && aver record list --ksearch api_token=newsecret456"
+    if run_aver admin reindex --force > /dev/null 2>&1; then
+        if search_out=$(run_aver record list --ksearch "api_token=newsecret456" 2>&1) && \
+           echo "$search_out" | grep -q "$rec_sec"; then
+            pass
+            echo "  Securestring searchable after reindex"
+        else
+            fail "Securestring not searchable after reindex: $search_out"
+        fi
+    else
+        fail "reindex failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 16. Template-scoped securestring field
+    # -------------------------------------------------------------------------
+    print_test "Template-scoped securestring (feature template oauth_secret)"
+    local rec_feat
+    rec_feat=$(run_aver record new --description "" --no-validation-editor \
+        --template feature --title "Feature With Secret" \
+        --oauth_secret "clientsecret999" 2>&1 \
+        | grep -oE "FEAT-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_feat" ]; then
+        fail "Could not create feature record with oauth_secret"
+        return
+    fi
+    # Verify mask on view
+    if view_out=$(run_aver record view "$rec_feat" 2>&1) && \
+       echo "$view_out" | grep -q "oauth_secret" && \
+       echo "$view_out" | grep -q "$MASK" && \
+       ! echo "$view_out" | grep -q "clientsecret999"; then
+        pass
+        echo "  Template-scoped securestring masked in view: $rec_feat"
+    else
+        fail "Template-scoped securestring not masked correctly: $view_out"
+    fi
+
+    print_test "Template-scoped securestring searchable"
+    if search_out=$(run_aver record list --ksearch "oauth_secret=clientsecret999" 2>&1) && \
+       echo "$search_out" | grep -q "$rec_feat"; then
+        pass
+        echo "  Template-scoped securestring searchable"
+    else
+        fail "Template-scoped securestring not searchable: $search_out"
+    fi
+}
+
+#==============================================================================
 # Cleanup
 #==============================================================================
 
@@ -5392,6 +5794,7 @@ main() {
     test_max_flag
     test_in_operator
     test_template_data
+    test_securestring
 
     # Summary
     print_section "Test Summary"
