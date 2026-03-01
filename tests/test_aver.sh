@@ -726,7 +726,7 @@ test_validation() {
     output=$(run_aver record new --description "" --no-validation-editor --status open 2>&1)
     exit_code=$?
     set -e
-    
+
     if [ $exit_code -ne 0 ]; then
         if echo "$output" | grep -qi "required.*title"; then
             pass
@@ -738,13 +738,13 @@ test_validation() {
     else
         fail "Should have failed without required field"
     fi
-    
+
     print_test "Invalid status value should fail"
     set +e
     output=$(run_aver record new --description "" --no-validation-editor --title "Test" --status invalid_status 2>&1)
     exit_code=$?
     set -e
-    
+
     if [ $exit_code -ne 0 ]; then
         pass
     else
@@ -5708,6 +5708,174 @@ assert 'feature' in names, f'feature template missing: {names}'
 }
 
 #==============================================================================
+# Test: Exit Codes
+#==============================================================================
+
+test_exit_codes() {
+    print_section "Test: Exit Codes"
+
+    # -------------------------------------------------------------------------
+    # EXIT_NOT_FOUND (3) — record not found
+    # -------------------------------------------------------------------------
+    print_test "record view nonexistent record → exit 3"
+    track_command "aver record view REC-DOESNOTEXIST"
+    set +e
+    run_aver record view "REC-DOESNOTEXIST" > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 3 ]; then
+        pass
+        echo "  Exit 3 (not found) as expected"
+    else
+        fail "Expected exit 3, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_NOT_FOUND (3) — note view on bad record
+    # -------------------------------------------------------------------------
+    print_test "note list nonexistent record → exit 3"
+    track_command "aver note list REC-DOESNOTEXIST"
+    set +e
+    run_aver note list "REC-DOESNOTEXIST" > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 3 ]; then
+        pass
+        echo "  Exit 3 (not found) as expected"
+    else
+        fail "Expected exit 3, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_NOT_FOUND (3) — admin template-data unknown template
+    # -------------------------------------------------------------------------
+    print_test "admin template-data nonexistent → exit 3"
+    track_command "aver admin template-data nonexistent-template"
+    set +e
+    run_aver admin template-data nonexistent-template > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 3 ]; then
+        pass
+        echo "  Exit 3 (not found) as expected"
+    else
+        fail "Expected exit 3, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_VALIDATION (4) — missing required field
+    # -------------------------------------------------------------------------
+    print_test "record new missing required field → exit 4"
+    track_command "aver record new --description '' --no-validation-editor --status open (no title)"
+    set +e
+    run_aver record new --description "" --no-validation-editor --status open > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 4 ]; then
+        pass
+        echo "  Exit 4 (validation failure) as expected"
+    else
+        fail "Expected exit 4, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_VALIDATION (4) — invalid accepted_values
+    # -------------------------------------------------------------------------
+    print_test "record new invalid status value → exit 4"
+    track_command "aver record new --no-validation-editor --title T --status totally_invalid"
+    set +e
+    run_aver record new --description "" --no-validation-editor --title "T" --status totally_invalid > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 4 ]; then
+        pass
+        echo "  Exit 4 (validation failure) as expected"
+    else
+        fail "Expected exit 4, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_USAGE (2) — --count without --ksearch
+    # -------------------------------------------------------------------------
+    print_test "record list --count without --ksearch → exit 2"
+    track_command "aver record list --count"
+    set +e
+    run_aver record list --count > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 2 ]; then
+        pass
+        echo "  Exit 2 (usage error) as expected"
+    else
+        fail "Expected exit 2, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_USAGE (2) — --no-validation-editor with no message
+    # -------------------------------------------------------------------------
+    print_test "note add --no-validation-editor with no message → exit 2"
+    local ec_rec
+    ec_rec=$(run_aver record new --description "" --no-validation-editor --title "ExitCode Test" 2>&1 | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -n "$ec_rec" ]; then
+        set +e
+        run_aver note add "$ec_rec" --no-validation-editor > /dev/null 2>&1
+        exit_code=$?
+        set -e
+        if [ $exit_code -eq 2 ]; then
+            pass
+            echo "  Exit 2 (usage error) as expected"
+        else
+            fail "Expected exit 2, got $exit_code"
+        fi
+    else
+        fail "Could not create test record for exit code test"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_VALIDATION (4) — admin validate with failing records
+    # -------------------------------------------------------------------------
+    print_test "admin validate with non-conforming record → exit 4"
+    track_command "admin validate exit code"
+    # Write a non-conforming bug record (missing required severity)
+    local ec_bugfile
+    ec_bugfile="$TEST_DIR/records/BUG-EXITCODE-TST.md"
+    cat > "$ec_bugfile" << 'EOF'
+---
+template_id: bug
+status: new
+title: Exit code test bug
+---
+EOF
+    set +e
+    run_aver admin validate BUG-EXITCODE-TST > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    rm -f "$ec_bugfile"
+    if [ $exit_code -eq 4 ]; then
+        pass
+        echo "  Exit 4 (validation failure) as expected"
+    else
+        fail "Expected exit 4, got $exit_code"
+    fi
+
+    # -------------------------------------------------------------------------
+    # EXIT_OK (0) — success
+    # -------------------------------------------------------------------------
+    print_test "successful record new → exit 0"
+    track_command "aver record new --no-validation-editor --title 'Exit Code OK'"
+    set +e
+    run_aver record new --description "" --no-validation-editor --title "Exit Code OK" > /dev/null 2>&1
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+        echo "  Exit 0 (success) as expected"
+    else
+        fail "Expected exit 0, got $exit_code"
+    fi
+}
+
+#==============================================================================
 # Main Test Runner
 #==============================================================================
 
@@ -5757,6 +5925,7 @@ main() {
     test_note_add_no_validation_editor
     test_help_fields
     test_offset_pagination
+    test_exit_codes
 
     # Summary
     print_section "Test Summary"

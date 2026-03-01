@@ -87,6 +87,9 @@
 - [User Configuration](#user-configuration)
 - [Best Practices](#best-practices)
 
+### 11. Exit Codes
+- [Exit Codes](#exit-codes)
+
 ---
 
 ## 1. Introduction
@@ -1490,6 +1493,49 @@ aver --use work record new --template bug --title "Work bug"
 8. **Don't over-constrain**: Only use `accepted_values` when truly necessary
 
 ---
+
+## Exit Codes
+
+Aver uses distinct exit codes so scripts can respond precisely to different outcomes without parsing error text.
+
+| Code | Name | Meaning |
+|------|------|---------|
+| `0` | Success | Command completed successfully |
+| `1` | Error | General or unexpected error (I/O failure, internal error) |
+| `2` | Usage error | Bad arguments, incompatible flags, constraint violations |
+| `3` | Not found | Record, note, or template does not exist |
+| `4` | Validation failure | Field rules violated (required field missing, value not in accepted_values, wrong type) |
+| `130` | Interrupted | User pressed Ctrl-C |
+
+### Examples
+
+```bash
+# Check for "not found" specifically
+aver record view REC-999
+if [ $? -eq 3 ]; then
+  echo "Record does not exist"
+fi
+
+# Check for validation failure
+aver record new --no-validation-editor --title "Bug" --status invalid
+if [ $? -eq 4 ]; then
+  echo "Validation failed"
+fi
+
+# admin validate exits 4 when records fail, 0 when all pass
+aver admin validate
+echo "Exit code: $?"
+
+# In a strict script
+set -e  # exit on any non-zero
+aver record view REC-001  # will abort script if not found
+```
+
+### Notes
+
+- `json io` mode **never exits non-zero** — errors are returned as `{"success": false, "error": "..."}` JSON objects in the output stream. This is intentional for persistent subprocess use.
+- The other `json` subcommands (`json export-record`, `json search-records`, etc.) output a JSON error object **and** exit with code `1` on failure.
+- `admin validate` exits `4` (validation failure) when any records fail, `0` when all pass — even in `--failed-list` mode.
 
 ## Conclusion
 

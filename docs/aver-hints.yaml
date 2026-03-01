@@ -959,3 +959,49 @@ grep_patterns:
   find_parser_setup: 'grep -n "add_parser" aver.py'
   find_validation: 'grep -n "validate" aver.py'
   find_kv_operations: 'grep -n "kv_strings\|kv_integers\|kv_floats" aver.py'
+
+# ============================================================================
+# Exit Codes
+# ============================================================================
+
+exit_codes:
+  constants_location: "~line 50 (after __version__)"
+  constants: |
+    EXIT_OK         = 0   # Success
+    EXIT_ERROR      = 1   # General / unexpected error
+    EXIT_USAGE      = 2   # Bad arguments, incompatible flags, constraint violations
+    EXIT_NOT_FOUND  = 3   # Record, note, or template does not exist
+    EXIT_VALIDATION = 4   # Field validation failure (required, accepted_values, type)
+    # 130 = KeyboardInterrupt (hardcoded, not a named constant)
+  categories:
+    EXIT_ERROR (1):
+      - Top-level RuntimeError catch-all
+      - Config/permission errors reading user config
+      - I/O and import-from-file errors
+      - User cancelled (editor closed without saving)
+    EXIT_USAGE (2):
+      - Invalid field argument syntax
+      - --count without --ksearch
+      - --max without --ksort
+      - --metadata-only with incompatible flags
+      - No fields to update
+      - --no-validation-editor with no message
+      - Mutually exclusive flags (--template + --reply-to, etc.)
+      - Outside git repo boundary (admin init)
+      - Editor not found (admin config set-editor)
+      - Path not a directory (admin config add-alias)
+    EXIT_NOT_FOUND (3):
+      - record view / record update / note list: record not found
+      - note view: note not found
+      - record unmask / note unmask: record or note not found
+      - admin reindex: one or more specified record_ids not found
+      - admin template-data: template_id not found
+      - admin config set-user: library alias not found
+    EXIT_VALIDATION (4):
+      - record new / record update with --no-validation-editor: ValueError from field validation
+      - admin validate: any records fail template field rules (both summary and --failed-list modes)
+  json_io_note: |
+    json io mode NEVER exits non-zero. Errors are returned as
+    {"success": false, "error": "..."} JSON in stdout.
+    Other json subcommands (json export-record, etc.) output JSON error
+    AND exit EXIT_ERROR (1).

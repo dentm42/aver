@@ -46,6 +46,15 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 __version__ = "0.10.0"
 
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+EXIT_OK         = 0   # Success
+EXIT_ERROR      = 1   # General / unexpected error
+EXIT_USAGE      = 2   # Bad arguments, constraint violations, usage errors
+EXIT_NOT_FOUND  = 3   # Record, note, or template not found
+EXIT_VALIDATION = 4   # Field validation failure (required, accepted_values, type)
+
 import argparse
 import datetime
 import hashlib
@@ -1628,10 +1637,10 @@ class DatabaseDiscovery:
             return DatabaseDiscovery._do_get_user_config()
         except ValueError as e:
             print(f"Configuration error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         except PermissionError as e:
             print(f"Permission error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     @staticmethod
     def dict_to_namespace(d):
@@ -6002,7 +6011,10 @@ class IncidentManager:
                     allow_validation_editor,
                     process_create_kv,
                 )
-            except (ValueError, RuntimeError) as e:
+            except ValueError as e:
+                # Validation failure - re-raise as ValueError so caller exits EXIT_VALIDATION
+                raise ValueError(f"Record creation failed: {str(e)}")
+            except RuntimeError as e:
                 # User abandoned - re-raise with actual error message
                 raise RuntimeError(f"Record creation abandoned: {str(e)}")
         else:
@@ -6095,7 +6107,7 @@ class IncidentManager:
                 print("The record cannot be saved because required fields are missing.", file=sys.stderr)
                 print("Please provide all required fields or use the editor to complete the record.", file=sys.stderr)
                 print("", file=sys.stderr)
-                raise RuntimeError(f"Record creation failed: {str(e)}")
+                raise ValueError(f"Record creation failed: {str(e)}")
 
         # Save to file
         written_content = self.storage.save_incident(incident, self.project_config)
@@ -7023,16 +7035,13 @@ class IncidentCLI:
                 if is_note
                 else getattr(args, 'template', None)
             )
-            try:
-                field_kv_single, field_kv_multi = self._process_field_assignments(
-                    args.field_assignments,
-                    manager,
-                    for_notes=is_note,
-                    is_create=is_create,
-                    template_id=field_template_id,
-                )
-            except ValueError as e:
-                raise RuntimeError(f"Field assignment error: {e}")
+            field_kv_single, field_kv_multi = self._process_field_assignments(
+                args.field_assignments,
+                manager,
+                for_notes=is_note,
+                is_create=is_create,
+                template_id=field_template_id,
+            )
 
         # Build KV from typed options and legacy options
         typed_kv_single, typed_kv_multi = self._build_kv_list(manager, args)
@@ -8625,7 +8634,7 @@ class IncidentCLI:
                 field_assignments = self._filter_remaining_args(remaining, command, subcommand)
             except ValueError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
         
         # Store field assignments for later processing
         parsed.field_assignments = field_assignments
@@ -8702,9 +8711,13 @@ class IncidentCLI:
                 elif parsed.admin_command == "validate":
                     self._cmd_admin_validate(parsed)
                     
+        except ValueError as e:
+            # Field validation / assignment errors that propagate from _setup_write_command
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_VALIDATION)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         except KeyboardInterrupt:
             print("\nCancelled", file=sys.stderr)
             sys.exit(130)
@@ -8917,7 +8930,7 @@ $update_kv
                 "Use --override-repo-boundary to bypass.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         db_root.mkdir(parents=True, exist_ok=True)
         
@@ -8941,7 +8954,7 @@ $update_kv
         elif args.config_command == "set-editor":
             if not EditorConfig._editor_exists(args.editor):
                 print(f"Error: Editor '{args.editor}' not found in PATH", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
 
             config = DatabaseDiscovery.get_user_config()
             config["editor"] = args.editor
@@ -8954,7 +8967,7 @@ $update_kv
                 print(f"Current editor: {editor}")
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_config_set_user(self, args):
         """
@@ -8978,7 +8991,7 @@ $update_kv
                     f"Add it first with: aver admin config add-alias --alias {target_library} --path /path/to/.aver",
                     file=sys.stderr,
                 )
-                sys.exit(1)
+                sys.exit(EXIT_NOT_FOUND)
             
             # Update the library entry (preserve existing path and other fields)
             config["libraries"][target_library]["handle"] = args.handle
@@ -9019,7 +9032,7 @@ $update_kv
             )
         elif not resolved_path.is_dir():
             print(f"Error: Path is not a directory: {resolved_path}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
         
         config = DatabaseDiscovery.get_user_config()
         
@@ -9175,8 +9188,8 @@ $update_kv
                 
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
-                
+                sys.exit(EXIT_ERROR)
+
         else:
             # Normal mode (existing code)
             has_description = args.description is not None
@@ -9216,11 +9229,11 @@ $update_kv
             except ValueError as e:
                 # Only happens if allow_validation_editor=False or non-validation ValueError
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_VALIDATION)
             except RuntimeError as e:
                 # User cancelled
                 print(f"{e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_view(self, args):
         """View record details."""
@@ -9229,7 +9242,7 @@ $update_kv
 
         if not record:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         kv_all = self._flatten_kv_data(record.kv_strings, record.kv_integers, record.kv_floats, record.kv_secure)
         kv_section = self._format_kv_section(kv_all)
@@ -9249,12 +9262,12 @@ $update_kv
         # --count requires --ksearch
         if getattr(args, 'count', False) and not getattr(args, 'ksearch', None):
             print("Error: --count requires --ksearch", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         # --max requires --ksort
         if getattr(args, 'max_keys', None) and not getattr(args, 'ksort', None):
             print("Error: --max requires --ksort", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         # --count: return only the match count
         if getattr(args, 'count', False):
@@ -9268,7 +9281,7 @@ $update_kv
                 )
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
             print(len(results))
             return
 
@@ -9282,7 +9295,7 @@ $update_kv
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         # Apply --max post-filter (operates on full Incident objects, not ids)
         if getattr(args, 'max_keys', None) and results and not args.ids_only:
@@ -9376,7 +9389,7 @@ $update_kv
                 existing_record = manager.get_incident(args.record_id)
                 if not existing_record:
                     print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
                 
                 # Process the file
                 frontmatter, body, template_id = self._process_from_file(
@@ -9461,11 +9474,11 @@ $update_kv
                     print(f"✓ Updated record from file: {args.record_id}")
                 else:
                     print(f"Update cancelled", file=sys.stderr)
-                    sys.exit(1)
-                    
+                    sys.exit(EXIT_ERROR)
+
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
                 
         else:
             # Normal mode (existing code)
@@ -9481,14 +9494,14 @@ $update_kv
             if metadata_only:
                 if not kv_single and not kv_multi:
                     print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_USAGE)
                 if has_description:
                     print("Error: --metadata-only cannot be used with --description", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_USAGE)
 
             if not kv_single and not kv_multi and not (has_description or has_stdin or use_editor):
                 print("Error: No fields to update", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
                 
             # NEW: Only catch errors if validation editor is NOT allowed
             try:
@@ -9509,17 +9522,17 @@ $update_kv
                     print(f"✓ Updated record: {args.record_id}")
                 else:
                     print(f"Update cancelled", file=sys.stderr)
-                    sys.exit(1)
-                    
+                    sys.exit(EXIT_ERROR)
+
             except ValueError as e:
                 # Only happens if allow_validation_editor=False (--no-validation-editor flag)
                 # or if it's a non-validation ValueError (like custom_id format)
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_VALIDATION)
             except RuntimeError as e:
                 # User cancelled after being offered editor
                 print(f"{e}", file=sys.stderr)
-                sys.exit(1)            
+                sys.exit(EXIT_ERROR)            
  
     def _show_record_fields_help(self, manager, template_id: Optional[str], context: str):
         """
@@ -9572,7 +9585,7 @@ $update_kv
             self._show_record_fields_help(manager, template_id, context)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _show_record_fields_help_update(self, args):
         """
@@ -9589,7 +9602,7 @@ $update_kv
             existing = manager.get_incident(record_id)
             if not existing:
                 print(f"Error: Record {record_id} not found", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_NOT_FOUND)
 
             # Reuse _resolve_template_id: validates change-allowed, sets args.template
             resolved_template = self._resolve_template_id(
@@ -9602,10 +9615,10 @@ $update_kv
             self._show_record_fields_help(manager, resolved_template, context)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _show_note_fields_help(self, record_id: str):
         """
@@ -9629,8 +9642,8 @@ $update_kv
             incident = manager.get_incident(record_id)
             if not incident:
                 print(f"Error: Record {record_id} not found", file=sys.stderr)
-                sys.exit(1)
-            
+                sys.exit(EXIT_NOT_FOUND)
+
             # Get template
             template_id = None
             if incident.kv_strings and 'template_id' in incident.kv_strings:
@@ -9691,7 +9704,7 @@ $update_kv
             if os.environ.get("AVER_DEBUG"):
                 import traceback
                 traceback.print_exc()
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_add_update(self, args):
         """Add note to record."""
@@ -9721,15 +9734,15 @@ $update_kv
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             if reply_to_id:
                 print(
                     "Error: Cannot use both --from-file and --reply-to\n"
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
             
             try:
                 # Process the file
@@ -9806,8 +9819,8 @@ $update_kv
                 
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
-                
+                sys.exit(EXIT_ERROR)
+
         else:
             # Normal mode (existing code)
             has_message = args.message is not None
@@ -9822,7 +9835,7 @@ $update_kv
                     "--no-validation-editor",
                     file=sys.stderr,
                 )
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
 
             use_yaml_editor = not getattr(args, 'no_yaml', False)
             template_id = getattr(args, 'template', None)
@@ -9835,8 +9848,8 @@ $update_kv
                     "Remove --message flag or stdin input to use editor",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             # Validate reply-to usage
             if reply_to_id and not use_editor:
                 print(
@@ -9844,8 +9857,8 @@ $update_kv
                     "Remove --message flag or stdin input to use editor",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             # Cannot use both --template and --reply-to
             if template_id and reply_to_id:
                 print(
@@ -9853,7 +9866,7 @@ $update_kv
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
 
             try:
                 # For notes, combine both into kv_single parameter (legacy behavior preserved)
@@ -9874,7 +9887,7 @@ $update_kv
                 print(f"✓ Added note: {note_id}")
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_list_updates(self, args):
         """View all notes for record."""
@@ -9883,7 +9896,7 @@ $update_kv
 
         if not record:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         notes = manager.get_updates(args.record_id)
 
@@ -9918,7 +9931,7 @@ $update_kv
 
         if not note:
             print(f"Error: Note {args.note_id} not found in record {args.record_id}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats, note.kv_secure)
         kv_section = self._format_kv_section(kv_all)
@@ -9947,7 +9960,7 @@ $update_kv
                 )
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
             print(len(results))
             return
 
@@ -9960,7 +9973,7 @@ $update_kv
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         if not results:
             print("No matching notes found")
@@ -10106,7 +10119,7 @@ $update_kv
             incident = manager.get_incident(args.record_id)
             if not incident:
                 print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_NOT_FOUND)
 
             result = self._unmask_fields(
                 args.fields,
@@ -10120,7 +10133,7 @@ $update_kv
                 print(f"{key}: {value}")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_note_unmask(self, args):
         """Show unmasked field values for a note."""
@@ -10131,7 +10144,7 @@ $update_kv
             if not note:
                 print(f"Error: Note {args.note_id} not found on record {args.record_id}",
                       file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_NOT_FOUND)
 
             result = self._unmask_fields(
                 args.fields,
@@ -10145,7 +10158,7 @@ $update_kv
                 print(f"{key}: {value}")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_reindex(self, args):
         """Rebuild search index for all records or specific RECORD_IDs."""
@@ -10169,14 +10182,14 @@ $update_kv
                 if failed:
                     for rid in failed:
                         print(f"Error: Record {rid} not found", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
             else:
                 count = reindexer.reindex_all(verbose=args.verbose, force=force, skip_mtime=skip_mtime,
                                               skip_validation=skip_validation)
                 print(f"✓ Reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_list_databases(self, args):
         """Show available databases."""
@@ -10270,7 +10283,7 @@ $update_kv
                         print(f"Available templates: {', '.join(available)}", file=sys.stderr)
                     else:
                         print("No templates configured.", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
 
                 data = self._build_template_data(config, args.template_id)
                 self._print_template_data_human(data)
@@ -10284,7 +10297,7 @@ $update_kv
 
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _print_template_data_human(self, data: dict):
         """Print template field data in human-readable format."""
@@ -10336,7 +10349,7 @@ $update_kv
             manager = self._get_manager(args)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         record_ids = getattr(args, "record_ids", [])
         failed_list_mode = getattr(args, "failed_list", False)
@@ -10366,7 +10379,7 @@ $update_kv
         if failed_list_mode:
             for record_id, _ in failed:
                 print(record_id)
-            sys.exit(1 if failed else 0)
+            sys.exit(EXIT_VALIDATION if failed else EXIT_OK)
 
         # Summary mode
         total = len(passed) + len(failed)
@@ -10381,7 +10394,7 @@ $update_kv
                     print(f"  FAIL  {record_id}: {err}")
             print()
             print("Use --failed-list to get a plain list of failing record IDs.")
-            sys.exit(1)
+            sys.exit(EXIT_VALIDATION)
         else:
             print()
             print("All records conform to template rules.")
@@ -10486,7 +10499,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_import_note(self, args):
         '''Import a note from JSON.'''
@@ -10560,7 +10573,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_update_record(self, args):
         '''Update a record from JSON.'''
@@ -10636,7 +10649,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_export_record(self, args):
         '''Export a record as JSON.'''
@@ -10699,7 +10712,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_export_note(self, args):
         '''Export a note as JSON.'''
@@ -10745,7 +10758,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_search_records(self, args):
         '''Search records and output as JSON.'''
@@ -10792,7 +10805,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_search_notes(self, args):
         '''Search notes and output as JSON.'''
@@ -10847,7 +10860,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_schema_record(self, args):
         '''Get field schema for records as JSON.'''
@@ -10898,7 +10911,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_schema_note(self, args):
         '''Get field schema for notes as JSON.'''
@@ -10951,7 +10964,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_reply_template(self, args):
         '''Get a reply template with quoted note text.'''
@@ -11015,7 +11028,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_io(self, args):
         '''Interactive JSON interface via STDIN/STDOUT.'''
