@@ -8359,6 +8359,23 @@ class IncidentCLI:
             help="Output as JSON (suitable for UI pre-validation)",
         )
 
+        # admin validate
+        admin_validate_parser = admin_subparsers.add_parser(
+            "validate",
+            help="Validate on-disk records against template field rules",
+        )
+        admin_validate_parser.add_argument(
+            "record_ids",
+            nargs="*",
+            metavar="RECORD_ID",
+            help="Record IDs to validate (default: all records)",
+        )
+        admin_validate_parser.add_argument(
+            "--failed-list",
+            action="store_true",
+            help="Output only the IDs of non-conforming records, one per line",
+        )
+
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
@@ -8445,6 +8462,8 @@ class IncidentCLI:
                     self._cmd_list_databases(parsed)
                 elif parsed.admin_command == "template-data":
                     self._cmd_admin_template_data(parsed)
+                elif parsed.admin_command == "validate":
+                    self._cmd_admin_validate(parsed)
                     
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -9889,6 +9908,152 @@ $update_kv
                     if field_def.get("default") is not None:
                         print(f"      Default:  {field_def['default']}")
         print()
+
+    def _cmd_admin_validate(self, args):
+        """
+        Validate on-disk records against template field rules.
+
+        With no RECORD_IDs, checks every record.  With one or more RECORD_IDs,
+        checks only those.
+
+        Normal output: a summary of passing / failing records, with a hint to
+        use --failed-list for the list of bad IDs.
+
+        --failed-list: prints only the IDs of failing records, one per line
+        (exits non-zero if any fail).
+        """
+        try:
+            manager = self._get_manager(args)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        record_ids = getattr(args, "record_ids", [])
+        failed_list_mode = getattr(args, "failed_list", False)
+
+        # Determine which record IDs to check
+        if record_ids:
+            ids_to_check = record_ids
+        else:
+            ids_to_check = manager.storage.list_incident_files()
+
+        if not ids_to_check:
+            if not failed_list_mode:
+                print("No records found.")
+            sys.exit(0)
+
+        passed = []
+        failed = []  # list of (record_id, error_message)
+
+        for record_id in ids_to_check:
+            incident = manager.storage.load_incident(record_id, manager.project_config)
+            if incident is None:
+                failed.append((record_id, "record file not found"))
+                continue
+
+            # Determine template_id from the record itself
+            template_id = None
+            if incident.kv_strings and "template_id" in incident.kv_strings:
+                tid_vals = incident.kv_strings["template_id"]
+                if tid_vals:
+                    template_id = tid_vals[0]
+
+            # Get the effective field set for this record's template
+            all_fields = manager.project_config.get_special_fields_for_template(
+                template_id, for_record=True
+            )
+            special_fields = {
+                name: field for name, field in all_fields.items() if field.enabled
+            }
+
+            errors = []
+
+            # --- required fields ---
+            for field_name, field in special_fields.items():
+                if not field.required:
+                    continue
+                has_value = False
+                vt = field.value_type
+                if vt == "string":
+                    vals = incident.kv_strings.get(field_name, [])
+                    has_value = bool(vals) and any(v.strip() for v in vals)
+                elif vt == "securestring":
+                    vals = (incident.kv_secure or {}).get(field_name, [])
+                    has_value = bool(vals) and any(v.strip() for v in vals)
+                elif vt == "integer":
+                    vals = incident.kv_integers.get(field_name, [])
+                    has_value = bool(vals)
+                elif vt == "float":
+                    vals = incident.kv_floats.get(field_name, [])
+                    has_value = bool(vals)
+                if not has_value:
+                    errors.append(f"required field '{field_name}' is missing or empty")
+
+            # --- accepted_values constraints ---
+            for key, values in incident.kv_strings.items():
+                base_key = manager._strip_type_suffix(key)
+                field = special_fields.get(base_key)
+                if field and field.accepted_values:
+                    for v in values:
+                        if v not in field.accepted_values:
+                            errors.append(
+                                f"field '{base_key}': invalid value '{v}' "
+                                f"(accepted: {', '.join(field.accepted_values)})"
+                            )
+
+            for key, values in incident.kv_integers.items():
+                base_key = manager._strip_type_suffix(key)
+                field = special_fields.get(base_key)
+                if field and field.accepted_values:
+                    for v in values:
+                        if str(v) not in field.accepted_values:
+                            errors.append(
+                                f"field '{base_key}': invalid value '{v}' "
+                                f"(accepted: {', '.join(field.accepted_values)})"
+                            )
+
+            for key, values in incident.kv_floats.items():
+                base_key = manager._strip_type_suffix(key)
+                field = special_fields.get(base_key)
+                if field and field.accepted_values:
+                    for v in values:
+                        if str(v) not in field.accepted_values:
+                            errors.append(
+                                f"field '{base_key}': invalid value '{v}' "
+                                f"(accepted: {', '.join(field.accepted_values)})"
+                            )
+
+            if errors:
+                failed.append((record_id, errors))
+            else:
+                passed.append(record_id)
+
+        # --- output ---
+        if failed_list_mode:
+            for record_id, _ in failed:
+                print(record_id)
+            sys.exit(1 if failed else 0)
+
+        # Summary mode
+        total = len(passed) + len(failed)
+        print(f"\nValidation summary: {total} record(s) checked")
+        print(f"  Conforming:     {len(passed)}")
+        print(f"  Non-conforming: {len(failed)}")
+
+        if failed:
+            print()
+            for record_id, errors in failed:
+                if isinstance(errors, list):
+                    for err in errors:
+                        print(f"  FAIL  {record_id}: {err}")
+                else:
+                    print(f"  FAIL  {record_id}: {errors}")
+            print()
+            print("Use --failed-list to get a plain list of failing record IDs.")
+            sys.exit(1)
+        else:
+            print()
+            print("All records conform to template rules.")
 
     # ====================================================================
     # JSON INTERFACE COMMANDS

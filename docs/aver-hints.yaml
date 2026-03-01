@@ -457,6 +457,11 @@ cli:
         signature: "_cmd_admin_template_data(self, args)"
         description: "Handle 'aver admin template-data [template_id] [--json]'"
         note: "Shows record+note field schema for a template; omit template_id for all"
+      _cmd_admin_validate:
+        line_start: 9912
+        signature: "_cmd_admin_validate(self, args)"
+        description: "Handle 'aver admin validate [RECORD_ID ...] [--failed-list]'"
+        note: "Validates on-disk records against template field rules (required fields + accepted_values). No IDs = all records. --failed-list prints only failing IDs one per line; exits 1 if any fail."
       _build_template_data:
         line_start: 9031
         signature: "_build_template_data(self, project_config, template_id) -> dict"
@@ -660,6 +665,21 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "admin validate command"
+    command: "aver admin validate [RECORD_ID ...] [--failed-list]"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Checks every on-disk record (or specific IDs) against:
+        1. Required-field presence (template-aware via get_special_fields_for_template)
+        2. accepted_values constraints for string/integer/float fields
+      Normal output: summary of conforming vs non-conforming counts, each failure
+      printed as "FAIL  RECORD_ID: <reason>", hint to use --failed-list.
+      --failed-list: prints only failing record IDs one per line; exits 1 if any fail,
+      0 if all pass (or no records found).
+    handler: "_cmd_admin_validate(self, args)"
+    handler_line: "~9912"
+
   - feature: "is_system_update system_value for notes"
     added: "2026-03-01"
     status: "✅ IMPLEMENTED"

@@ -69,6 +69,7 @@
 - [admin config](#admin-config)
 - [admin reindex](#admin-reindex)
 - [admin template-data](#admin-template-data)
+- [admin validate](#admin-validate)
 - [record new](#record-new)
 - [record update](#record-update)
 - [record list](#record-list)
@@ -1224,6 +1225,56 @@ Template: bug
 ```
 
 This command is also available via **JSON IO** as the `template-data` command (see JSON IO documentation).
+
+### admin validate
+
+Check that on-disk record files conform to template field rules. Validation covers:
+
+- **Required fields** — every field marked `required = true` must be present and non-empty.
+- **Accepted values** — every field with an `accepted_values` list must contain only listed values. Template-specific `accepted_values` override global ones for records that carry a `template_id`.
+
+**Validate all records**:
+```bash
+aver admin validate
+```
+
+**Validate specific records**:
+```bash
+aver admin validate REC-001
+aver admin validate REC-001 BUG-042 FEAT-007
+```
+
+**List only failing record IDs** (one per line, useful in scripts):
+```bash
+aver admin validate --failed-list
+aver admin validate REC-001 BUG-042 --failed-list
+```
+
+**Exit codes**:
+- `0` — all checked records conform (or no records found).
+- `1` — one or more records failed validation.
+
+**Example summary output** (default mode):
+```
+Validation summary: 42 record(s) checked
+  Conforming:     39
+  Non-conforming: 3
+
+  FAIL  REC-KPZZ17D: field 'status': invalid value 'invalid' (accepted: open, in_progress, resolved, closed)
+  FAIL  REC-KSDJO4D: required field 'title' is missing or empty
+  FAIL  BUG-0042AB: field 'severity': invalid value '9' (accepted: 1, 2, 3, 4, 5)
+
+Use --failed-list to get a plain list of failing record IDs.
+```
+
+**Example `--failed-list` output**:
+```
+REC-KPZZ17D
+REC-KSDJO4D
+BUG-0042AB
+```
+
+`admin validate` only checks record files; it does not validate note files.
 
 ### Reindexing
 

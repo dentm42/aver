@@ -5806,6 +5806,7 @@ main() {
     test_template_data
     test_securestring
     test_system_update_field
+    test_admin_validate
 
     # Summary
     print_section "Test Summary"
@@ -6034,6 +6035,317 @@ sys.exit(0 if val == 0 or val == '0' else 1)
         fi
     else
         fail "Note file not found: $user_note_file"
+    fi
+}
+
+#==============================================================================
+# Test: admin validate command
+#==============================================================================
+
+test_admin_validate() {
+    print_section "Test: admin validate"
+
+    # -------------------------------------------------------------------------
+    # Setup: create a clean record (all required fields satisfied)
+    # -------------------------------------------------------------------------
+    print_test "Create conforming record for validate tests"
+    local rec_good
+    rec_good=$(run_aver record new --description "" --no-validation-editor \
+        --title "Conforming Record" --status open 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_good" ]; then
+        fail "Could not create conforming record"
+        return
+    fi
+    pass
+    echo "  Created conforming: $rec_good"
+
+    # -------------------------------------------------------------------------
+    # 1. All-records validate on a database that has only valid records passes
+    #    (run against just the one good record to avoid other test records
+    #     that might be invalid leaking in)
+    # -------------------------------------------------------------------------
+    print_test "validate RECORD_ID (conforming) exits 0"
+    set +e
+    local out exit_code
+    out=$(run_aver admin validate "$rec_good" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+    else
+        fail "Expected exit 0 for conforming record; got $exit_code: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. Summary output mentions the record count and "conform"
+    # -------------------------------------------------------------------------
+    print_test "validate summary output contains conforming count"
+    if echo "$out" | grep -q "Conforming:" && echo "$out" | grep -q "Non-conforming:"; then
+        pass
+    else
+        fail "Expected 'Conforming:' / 'Non-conforming:' in output: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. --failed-list on a clean record produces no output and exits 0
+    # -------------------------------------------------------------------------
+    print_test "validate --failed-list on conforming record: no output, exit 0"
+    set +e
+    local fl_out fl_exit
+    fl_out=$(run_aver admin validate "$rec_good" --failed-list 2>&1)
+    fl_exit=$?
+    set -e
+    if [ $fl_exit -eq 0 ] && [ -z "$fl_out" ]; then
+        pass
+    else
+        fail "Expected empty output and exit 0; got exit=$fl_exit out='$fl_out'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Setup: inject a bad record by writing a markdown file that violates
+    # accepted_values for 'status' (force write — bypass CLI validation)
+    # -------------------------------------------------------------------------
+    print_test "Inject non-conforming record directly on disk"
+    local bad_id="REC-VALIDATE-BAD"
+    cat > "$TEST_DIR/records/${bad_id}.md" << 'BADRECEOF'
+---
+title: Bad Record
+status: not_a_real_status
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+
+This record has an invalid status value.
+BADRECEOF
+    if [ -f "$TEST_DIR/records/${bad_id}.md" ]; then
+        pass
+        echo "  Injected: $bad_id"
+    else
+        fail "Could not write bad record file"
+        return
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. validate on the bad record exits non-zero
+    # -------------------------------------------------------------------------
+    print_test "validate on non-conforming record exits 1"
+    set +e
+    out=$(run_aver admin validate "$bad_id" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ]; then
+        pass
+    else
+        fail "Expected non-zero exit for non-conforming record; got 0: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. Summary mentions the bad record and shows FAIL line
+    # -------------------------------------------------------------------------
+    print_test "validate summary shows FAIL line for non-conforming record"
+    if echo "$out" | grep -q "FAIL" && echo "$out" | grep -q "$bad_id"; then
+        pass
+    else
+        fail "Expected FAIL line for $bad_id in output: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. Summary mentions the bad field/value in the error description
+    # -------------------------------------------------------------------------
+    print_test "validate error mentions the invalid field value"
+    if echo "$out" | grep -qi "status" && echo "$out" | grep -qi "not_a_real_status"; then
+        pass
+    else
+        fail "Expected 'status' and 'not_a_real_status' in error output: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. --failed-list on the bad record prints the ID and exits 1
+    # -------------------------------------------------------------------------
+    print_test "validate --failed-list prints failing ID and exits 1"
+    set +e
+    fl_out=$(run_aver admin validate "$bad_id" --failed-list 2>&1)
+    fl_exit=$?
+    set -e
+    if [ $fl_exit -ne 0 ] && echo "$fl_out" | grep -q "$bad_id"; then
+        pass
+    else
+        fail "Expected exit 1 and '$bad_id' in output; got exit=$fl_exit out='$fl_out'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. --failed-list output is exactly one line (the bad ID, no extras)
+    # -------------------------------------------------------------------------
+    print_test "validate --failed-list output is one line per failing record"
+    local line_count
+    line_count=$(echo "$fl_out" | grep -c "." || true)
+    if [ "$line_count" -eq 1 ]; then
+        pass
+    else
+        fail "Expected exactly 1 line in --failed-list output; got $line_count: '$fl_out'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. Inject a record with a missing required field
+    # -------------------------------------------------------------------------
+    print_test "Inject record missing required field 'title'"
+    local missing_id="REC-VALIDATE-MISSING"
+    cat > "$TEST_DIR/records/${missing_id}.md" << 'MISSINGEOF'
+---
+status: open
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+
+This record is missing the required 'title' field.
+MISSINGEOF
+    if [ -f "$TEST_DIR/records/${missing_id}.md" ]; then
+        pass
+        echo "  Injected: $missing_id"
+    else
+        fail "Could not write missing-field record file"
+        return
+    fi
+
+    # -------------------------------------------------------------------------
+    # 10. validate catches missing required field
+    # -------------------------------------------------------------------------
+    print_test "validate detects missing required field"
+    set +e
+    out=$(run_aver admin validate "$missing_id" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$out" | grep -qi "title" && echo "$out" | grep -qi "required\|missing"; then
+        pass
+    else
+        fail "Expected non-zero exit with 'title' + 'required/missing' in output; exit=$exit_code out=$out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 11. validate multiple IDs: one good, one bad — bad appears in output
+    # -------------------------------------------------------------------------
+    print_test "validate multiple IDs reports both conforming and failing"
+    set +e
+    out=$(run_aver admin validate "$rec_good" "$bad_id" 2>&1)
+    exit_code=$?
+    set -e
+    local conf_count non_conf_count
+    conf_count=$(echo "$out" | grep "Conforming:" | grep -oE "[0-9]+" | head -1)
+    non_conf_count=$(echo "$out" | grep "Non-conforming:" | grep -oE "[0-9]+" | head -1)
+    if [ $exit_code -ne 0 ] && [ "${conf_count:-0}" -ge 1 ] && [ "${non_conf_count:-0}" -ge 1 ]; then
+        pass
+        echo "  Conforming: $conf_count  Non-conforming: $non_conf_count"
+    else
+        fail "Expected 1+ conforming and 1+ non-conforming; exit=$exit_code conf=$conf_count non_conf=$non_conf_count: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 12. validate unknown record ID reports file-not-found failure
+    # -------------------------------------------------------------------------
+    print_test "validate unknown record ID reports failure"
+    set +e
+    out=$(run_aver admin validate "REC-DOESNOTEXIST" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ]; then
+        pass
+    else
+        fail "Expected non-zero exit for unknown record ID; got 0: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 13. validate with template-specific accepted_values (injected directly)
+    # -------------------------------------------------------------------------
+    print_test "Inject conforming bug-template record on disk"
+    local bug_good_id="BUG-VALIDATE-GOOD"
+    cat > "$TEST_DIR/records/${bug_good_id}.md" << 'BUGGOODEOF'
+---
+template_id: bug
+title: Good Bug
+status: new
+severity: 3
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+
+Bug record with template-valid status 'new' and severity 3.
+BUGGOODEOF
+    if [ -f "$TEST_DIR/records/${bug_good_id}.md" ]; then
+        pass
+        echo "  Injected: $bug_good_id"
+    else
+        fail "Could not write conforming bug record file"
+        return
+    fi
+
+    print_test "validate on conforming bug-template record passes"
+    set +e
+    out=$(run_aver admin validate "$bug_good_id" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+    else
+        fail "Expected exit 0 for conforming bug record; got $exit_code: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 14. Inject bug record with status violating template-specific accepted_values
+    # -------------------------------------------------------------------------
+    print_test "Inject bug record with template-invalid status"
+    local bug_bad_id="BUG-VALIDATE-BAD"
+    cat > "$TEST_DIR/records/${bug_bad_id}.md" << 'BUGBADEOF'
+---
+template_id: bug
+title: Bad Bug
+status: open
+severity: 3
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+
+Bug record with 'open' which is only valid globally, not in the bug template.
+BUGBADEOF
+    if [ -f "$TEST_DIR/records/${bug_bad_id}.md" ]; then
+        pass
+        echo "  Injected: $bug_bad_id"
+    else
+        fail "Could not write bad bug record file"
+        return
+    fi
+
+    print_test "validate detects template-invalid status in bug record"
+    set +e
+    out=$(run_aver admin validate "$bug_bad_id" 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$out" | grep -qi "status" && echo "$out" | grep -q "$bug_bad_id"; then
+        pass
+    else
+        fail "Expected non-zero exit mentioning 'status' and '$bug_bad_id'; exit=$exit_code out=$out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 15. --failed-list with no records found exits 0 with no output
+    # -------------------------------------------------------------------------
+    # We use a fresh temp dir with an initialised (but empty) database
+    print_test "validate with no records: exits 0, no output"
+    local empty_dir
+    empty_dir=$(mktemp -d -t aver-validate-empty-XXXXXX)
+    set +e
+    # Init in the empty dir
+    PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" \
+        --override-repo-boundary --location "$empty_dir" admin init 2>/dev/null
+    fl_out=$(PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" \
+        --override-repo-boundary --location "$empty_dir" admin validate --failed-list 2>&1)
+    fl_exit=$?
+    set -e
+    rm -rf "$empty_dir"
+    if [ $fl_exit -eq 0 ] && [ -z "$fl_out" ]; then
+        pass
+    else
+        fail "Expected exit 0 and empty output for no records; got exit=$fl_exit out='$fl_out'"
     fi
 }
 
