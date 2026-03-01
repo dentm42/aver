@@ -485,6 +485,16 @@ enabled = true
 required = false
 index_values = true
 
+# is_system_update: marks system-generated notes (initial creation, record updates)
+[note_special_fields.is_system_update]
+type = "single"
+value_type = "integer"
+editable = false
+enabled = true
+required = false
+system_value = "is_system_update"
+index_values = true
+
 # Securestring in a template (template-scoped)
 [template.feature.record_special_fields.oauth_secret]
 type = "single"
@@ -5795,6 +5805,7 @@ main() {
     test_in_operator
     test_template_data
     test_securestring
+    test_system_update_field
 
     # Summary
     print_section "Test Summary"
@@ -5825,6 +5836,205 @@ main() {
     cleanup
     
     exit $EXIT_CODE
+}
+
+#==============================================================================
+# Test: is_system_update field
+#==============================================================================
+test_system_update_field() {
+    print_section "Test: is_system_update System Field"
+
+    # -------------------------------------------------------------------------
+    # 1. Create a record — the initial creation note should have is_system_update=1
+    # -------------------------------------------------------------------------
+    print_test "Create record; initial system note has is_system_update=1"
+    local rec_sys
+    rec_sys=$(run_aver record new --description "" --no-validation-editor \
+        --title "System Update Test" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_sys" ]; then
+        fail "Could not create record for is_system_update test"
+        return
+    fi
+    pass
+    echo "  Created: $rec_sys"
+
+    # -------------------------------------------------------------------------
+    # 2. The initial note should show is_system_update: 1 in note view
+    # -------------------------------------------------------------------------
+    print_test "Initial creation note has is_system_update=1"
+    local notes_dir="$TEST_DIR/updates/${rec_sys}"
+    local init_note_id
+    init_note_id=$(ls "$notes_dir"/*.md 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/\.md$//' || echo "")
+    if [ -z "$init_note_id" ]; then
+        fail "Could not find initial note for $rec_sys in $notes_dir"
+        return
+    fi
+    track_command "aver note view $rec_sys $init_note_id"
+    local note_view
+    note_view=$(run_aver note view "$rec_sys" "$init_note_id" 2>&1)
+    if echo "$note_view" | grep -q "is_system_update" && echo "$note_view" | grep -q "1"; then
+        pass
+        echo "  Initial note $init_note_id has is_system_update=1"
+    else
+        fail "is_system_update=1 not found in initial note view: $note_view"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. Add a user note — should have is_system_update=0
+    # -------------------------------------------------------------------------
+    print_test "User note has is_system_update=0"
+    track_command "aver note add $rec_sys --message 'user note'"
+    local user_note_id
+    user_note_id=$(run_aver note add "$rec_sys" --message "user note" 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" | head -1 || echo "")
+    if [ -z "$user_note_id" ]; then
+        fail "Could not add user note to $rec_sys"
+        return
+    fi
+    track_command "aver note view $rec_sys $user_note_id"
+    note_view=$(run_aver note view "$rec_sys" "$user_note_id" 2>&1)
+    if echo "$note_view" | grep -q "is_system_update" && echo "$note_view" | grep -q "0"; then
+        pass
+        echo "  User note $user_note_id has is_system_update=0"
+    else
+        fail "is_system_update=0 not found in user note view: $note_view"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. Update the record — the system tracking note should have is_system_update=1
+    # -------------------------------------------------------------------------
+    print_test "Record update creates system note with is_system_update=1"
+    # Snapshot existing note IDs before the update
+    local notes_before
+    notes_before=$(ls "$notes_dir"/*.md 2>/dev/null | xargs -I{} basename {} .md | sort)
+    track_command "aver record update $rec_sys --title 'Updated Title' --metadata-only --no-validation-editor"
+    local update_out
+    update_out=$(run_aver record update "$rec_sys" --title "Updated Title" --metadata-only --no-validation-editor 2>&1)
+    if ! echo "$update_out" | grep -q "Updated record"; then
+        fail "record update failed: $update_out"
+        return
+    fi
+    # Find the new note ID — any .md file that wasn't there before
+    local notes_after update_note_id
+    notes_after=$(ls "$notes_dir"/*.md 2>/dev/null | xargs -I{} basename {} .md | sort)
+    update_note_id=$(comm -13 <(echo "$notes_before") <(echo "$notes_after") | head -1)
+    if [ -z "$update_note_id" ]; then
+        fail "No new note found after record update (notes before: $notes_before / after: $notes_after)"
+        return
+    fi
+    track_command "aver note view $rec_sys $update_note_id"
+    note_view=$(run_aver note view "$rec_sys" "$update_note_id" 2>&1)
+    if echo "$note_view" | grep -q "is_system_update" && echo "$note_view" | grep -q "1"; then
+        pass
+        echo "  Update tracking note $update_note_id has is_system_update=1"
+    else
+        fail "is_system_update=1 not found in update tracking note: $note_view"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. ksearch is_system_update=1 returns system notes, not user notes
+    # -------------------------------------------------------------------------
+    print_test "ksearch is_system_update=1 finds system notes"
+    track_command "aver note search --ksearch is_system_update=1"
+    local sys_results
+    sys_results=$(run_aver note search --ksearch "is_system_update=1" 2>&1)
+    if echo "$sys_results" | grep -q "$init_note_id" || echo "$sys_results" | grep -q "$update_note_id"; then
+        if ! echo "$sys_results" | grep -q "$user_note_id"; then
+            pass
+            echo "  System notes found; user note correctly excluded"
+        else
+            fail "User note $user_note_id appeared in is_system_update=1 search: $sys_results"
+        fi
+    else
+        fail "No system notes found in is_system_update=1 search: $sys_results"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. ksearch is_system_update=0 returns user notes, not system notes
+    # -------------------------------------------------------------------------
+    print_test "ksearch is_system_update=0 finds user notes"
+    track_command "aver note search --ksearch is_system_update=0"
+    local user_results
+    user_results=$(run_aver note search --ksearch "is_system_update=0" 2>&1)
+    if echo "$user_results" | grep -q "$user_note_id"; then
+        if ! echo "$user_results" | grep -q "$init_note_id" && ! echo "$user_results" | grep -q "$update_note_id"; then
+            pass
+            echo "  User note found; system notes correctly excluded"
+        else
+            fail "System note appeared in is_system_update=0 search: $user_results"
+        fi
+    else
+        fail "User note $user_note_id not found in is_system_update=0 search: $user_results"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. JSON export of the initial note shows is_system_update=1
+    # -------------------------------------------------------------------------
+    print_test "JSON export-note shows is_system_update=1 for system note"
+    track_command "aver json export-note $rec_sys $init_note_id"
+    local json_note
+    json_note=$(run_aver json export-note "$rec_sys" "$init_note_id" 2>&1)
+    if echo "$json_note" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+fields = data.get('fields', {})
+val = fields.get('is_system_update')
+sys.exit(0 if val == 1 or val == '1' else 1)
+" 2>/dev/null; then
+        pass
+        echo "  JSON export shows is_system_update=1"
+    else
+        fail "JSON export-note did not show is_system_update=1: $json_note"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. JSON export of user note shows is_system_update=0
+    # -------------------------------------------------------------------------
+    print_test "JSON export-note shows is_system_update=0 for user note"
+    track_command "aver json export-note $rec_sys $user_note_id"
+    json_note=$(run_aver json export-note "$rec_sys" "$user_note_id" 2>&1)
+    if echo "$json_note" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+fields = data.get('fields', {})
+val = fields.get('is_system_update')
+sys.exit(0 if val == 0 or val == '0' else 1)
+" 2>/dev/null; then
+        pass
+        echo "  JSON export shows is_system_update=0"
+    else
+        fail "JSON export-note did not show is_system_update=0: $json_note"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. On-disk note file has the correct integer value
+    # -------------------------------------------------------------------------
+    print_test "On-disk system note file has is_system_update: 1"
+    local init_note_file="$notes_dir/${init_note_id}.md"
+    if [ -f "$init_note_file" ]; then
+        if grep -q "is_system_update: 1" "$init_note_file"; then
+            pass
+            echo "  Plaintext '1' confirmed in $init_note_file"
+        else
+            fail "is_system_update: 1 not found in note file: $(head -10 "$init_note_file")"
+        fi
+    else
+        fail "Note file not found: $init_note_file"
+    fi
+
+    print_test "On-disk user note file has is_system_update: 0"
+    local user_note_file="$notes_dir/${user_note_id}.md"
+    if [ -f "$user_note_file" ]; then
+        if grep -q "is_system_update: 0" "$user_note_file"; then
+            pass
+            echo "  Plaintext '0' confirmed in $user_note_file"
+        else
+            fail "is_system_update: 0 not found in note file: $(head -10 "$user_note_file")"
+        fi
+    else
+        fail "Note file not found: $user_note_file"
+    fi
 }
 
 # Trap to ensure cleanup on exit

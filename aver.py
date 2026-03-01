@@ -1491,17 +1491,19 @@ class SystemValueDeriver:
         incident_id: Optional[str] = None,
         update_id: Optional[str] = None,
         template_name: Optional[str] = None,
+        is_system_note: bool = False,
     ) -> str:
         """
         Derive a system value based on the specification.
-        
+
         Args:
             system_value_spec: The system value specification (e.g., "datetime", "${datetime}")
             user_identity: User identity for user_email and user_name
             incident_id: Incident ID for recordid
             update_id: Update ID for updateid
             template_name: Template name for template_id
-            
+            is_system_note: True when the note is system-generated (e.g., record update tracking)
+
         Returns:
             The derived value as a string
         """
@@ -1542,6 +1544,9 @@ class SystemValueDeriver:
             if template_name is None:
                 return ""
             return template_name
+
+        elif value_type == 'is_system_update':
+            return "1" if is_system_note else "0"
 
         else:
             # Unknown system value type - return empty string
@@ -4346,25 +4351,27 @@ class IncidentManager:
         update_id: Optional[str] = None,
         template_name: Optional[str] = None,
         for_notes: bool = False,
+        is_system_note: bool = False,
     ) -> None:
         """
         Apply special field values (system-derived and defaults) based on config.
-        
+
         Works for both Incident (records) and IncidentUpdate (notes).
-        
+
         This handles:
         - Fields with system_value set (auto-populated)
         - Fields with default values (applied if field is empty)
         - Auto-update fields (editable=True + system_value set, only on updates)
-        
+
         Important: Non-editable fields are ONLY set on creation, never on updates.
-        
+
         Args:
             record: Incident or IncidentUpdate to modify (modified in-place)
             is_create: True if creating new record/note, False if updating
             update_id: Update ID (for updateid system value)
             template_name: Template name for template-specific fields
             for_notes: True if this is an IncidentUpdate (note), False for Incident (record)
+            is_system_note: True when the note is system-generated (record create/update tracking)
         """
         user_identity = UserIdentity(
             handle=self.effective_user['handle'],
@@ -4411,6 +4418,7 @@ class IncidentManager:
                             incident_id=record.id,
                             update_id=update_id,
                             template_name=template_name,
+                            is_system_note=is_system_note,
                         )
                     # On update: do nothing - preserve existing value
                 # Editable system fields: set on creation, auto-update on edits
@@ -4422,6 +4430,7 @@ class IncidentManager:
                         incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
+                        is_system_note=is_system_note,
                     )
                 elif field.is_auto_update_field():
                     # Auto-update on edit (editable=True means "update on edit" for system fields)
@@ -4432,6 +4441,7 @@ class IncidentManager:
                         incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
+                        is_system_note=is_system_note,
                     )
             
             # Case 2: Field has default value and is currently empty (only on creation)
@@ -5467,6 +5477,7 @@ class IncidentManager:
                 is_create=True,
                 template_name=incident_template_id,
                 for_notes=True,
+                is_system_note=True,
             )
             
             # Set incident_id explicitly
@@ -5479,6 +5490,15 @@ class IncidentManager:
                 incident_update,
                 file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
                 file_content=written_content,
+            )
+            self.index_db.index_update_kv_data(
+                incident_id,
+                update_id,
+                kv_strings=incident_update.kv_strings,
+                kv_integers=incident_update.kv_integers,
+                kv_floats=incident_update.kv_floats,
+                kv_secure=incident_update.kv_secure,
+                project_config=self.project_config,
             )
 
             return True
@@ -5980,6 +6000,7 @@ class IncidentManager:
             is_create=True,
             template_name=incident_template_id,
             for_notes=True,
+            is_system_note=True,
         )
         
         # Set incident_id explicitly
@@ -5992,6 +6013,15 @@ class IncidentManager:
             initial_update,
             file_path=self.storage._get_updates_dir(incident_id) / f"{initial_update.id}.md",
             file_content=written_content,
+        )
+        self.index_db.index_update_kv_data(
+            incident_id,
+            initial_update.id,
+            kv_strings=initial_update.kv_strings,
+            kv_integers=initial_update.kv_integers,
+            kv_floats=initial_update.kv_floats,
+            kv_secure=initial_update.kv_secure,
+            project_config=self.project_config,
         )
 
         return incident_id

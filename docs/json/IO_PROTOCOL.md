@@ -47,6 +47,18 @@ Fields with `value_type = "securestring"` are **always masked** in all JSON resp
 
 **`template-data` response**: When `value_type` is `"securestring"`, the field definition in `template-data` will show `"value_type": "securestring"`. Clients should treat such fields as write-only: they can submit values but must not expect to read them back.
 
+### System-Generated Notes
+
+Aver creates notes automatically when a record is created or updated. If `is_system_update` is configured as a note special field, these notes will carry `"is_system_update": 1` in their fields; user-created notes will carry `0`.
+
+Use `ksearch` to filter:
+```json
+{"command": "search-notes", "params": {"ksearch": ["is_system_update=0"]}}
+```
+```json
+{"command": "search-notes", "params": {"ksearch": ["is_system_update=1"]}}
+```
+
 ### User Identity Override
 Commands can optionally include an `id` field to override the user identity for that specific command. This is useful for:
 - Multi-user systems where different commands should be attributed to different users
@@ -489,7 +501,7 @@ Get complete field definitions for a template (record fields and note fields). I
 | `required` | yes | `true` = must provide a value |
 | `accepted_values` | if constrained | List of valid values |
 | `default` | if set | Default value (may be `"${datestamp}"` etc.) |
-| `system_value` | if auto-populated | System value source (e.g. `"user_name"`, `"datetime"`) |
+| `system_value` | if auto-populated | System value source (e.g. `"user_name"`, `"datetime"`, `"is_system_update"`) |
 
 ## Integration Examples
 

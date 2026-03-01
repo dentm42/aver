@@ -47,6 +47,8 @@
 - [System Values](#system-values)
 - [Field Properties](#field-properties)
 - [Default Values](#default-values)
+- [Secure Fields (securestring)](#secure-fields-securestring)
+- [System-Generated Notes (is_system_update)](#system-generated-notes-is_system_update)
 
 ### 7. Configuration and Templates
 - [Global Configuration](#global-configuration)
@@ -421,6 +423,7 @@ System values automatically populate special fields:
 | `recordid` | Record ID | `BUG-042` |
 | `updateid` | Note ID | `COMMENT-001` |
 | `template_id` | Template name | `bug` |
+| `is_system_update` | `1` for system-generated notes, `0` for user notes | `1` |
 
 **Configuration example**:
 ```toml
@@ -545,6 +548,48 @@ When you open a record with an editable securestring field in the YAML editor, t
 Fields with `editable = false` are never shown in the editor. They can be set at creation time and cannot be changed afterward (same as any non-editable field).
 
 **Security note**: Plaintext values are stored in Markdown files and indexed in SQLite. Aver's masking is a display-layer feature to prevent accidental exposure in terminal output, logs, and exports. If you need true encryption at rest, consider encrypting the database directory.
+
+### System-Generated Notes (`is_system_update`)
+
+Aver automatically creates notes on your behalf in two situations:
+
+1. **Record creation** — an initial note is created when a new record is saved, capturing the full initial state.
+2. **Record updates** — when you update a record's content or metadata, aver appends a note recording what changed and what the previous values were.
+
+These system-generated notes are functionally identical to user notes, but it can be useful to distinguish them in searches and integrations. The `is_system_update` system value enables this.
+
+**Configuration**:
+```toml
+[note_special_fields.is_system_update]
+type = "single"
+value_type = "integer"
+editable = false
+enabled = true
+required = false
+system_value = "is_system_update"
+index_values = true
+```
+
+When this field is defined, every note receives the value automatically:
+- `1` — system-generated note (record creation or update tracking)
+- `0` — user-created note (`note add`)
+
+**Filtering system notes out of search results**:
+```bash
+# Show only user-authored notes
+aver note search --ksearch is_system_update=0
+
+# Show only system-generated tracking notes
+aver note search --ksearch is_system_update=1
+
+# Combine with other filters
+aver note search --ksearch is_system_update=0 --ksearch category=investigation
+```
+
+**JSON IO**:
+```json
+{"command": "search-notes", "params": {"ksearch": ["is_system_update=0"]}}
+```
 
 ---
 

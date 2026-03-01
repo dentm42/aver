@@ -660,6 +660,28 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "is_system_update system_value for notes"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      A new system_value token "is_system_update" for note special fields (value_type="integer").
+      Resolves to "1" for system-generated notes (initial record creation note, record update
+      tracking note) and "0" for user-created notes (note add).
+      Configured as editable=false in config.toml; auto-populated on every note creation.
+      Enables filtering: ksearch is_system_update=1 (system only), ksearch is_system_update=0 (user only).
+    key_methods:
+      - "SystemValueDeriver.derive_value(..., is_system_note=False) — new param, returns '1'/'0'"
+      - "_apply_special_fields(..., is_system_note=False) — new param, passed to derive_value"
+      - "update_incident_info() — passes is_system_note=True to _apply_special_fields"
+      - "create_incident() initial note — passes is_system_note=True to _apply_special_fields"
+    config_example: |
+      [note_special_fields.is_system_update]
+      type = "single"
+      value_type = "integer"
+      editable = false
+      system_value = "is_system_update"
+      index_values = true
+
   - feature: "securestring value_type for SpecialField"
     added: "2026-02-28"
     status: "✅ IMPLEMENTED"
