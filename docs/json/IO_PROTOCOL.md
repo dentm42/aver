@@ -150,6 +150,7 @@ Search for records.
 - `ksearch` (optional): Search expression(s) — string or array of strings. Multiple expressions are ANDed together. Use the `^` operator for OR within a single field (e.g. `"status^open|closed"`).
 - `ksort` (optional): Sort expression(s) — string or array of strings. Required when `max` is used.
 - `limit` (optional, default: 100): Maximum results to return
+- `offset` (optional, default: 0): Number of results to skip — use with `limit` for pagination
 - `count_only` (optional, default: false): If true, return only the count (integer), not the records
 - `max` (optional): String or array of strings — field key(s). After applying ksearch/ksort/limit, post-filters the result set to only those records that hold the maximum value for any of the specified keys. Requires `ksort`. Keys are evaluated independently (OR logic).
 
@@ -195,13 +196,20 @@ Search for records.
 **Success Response (count_only):**
 ```json
 {"success": true, "result": {"count": 3}}
+```
+
+**Pagination example:**
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "limit": 25, "offset": 25}}
+```
 
 ### 4. search-notes
 Search for notes across all records.
 
 **Parameters:**
 - `ksearch` (optional): Search expression(s) — string or array of strings. Supports the `^` operator for OR within a single field.
-- `limit` (optional): Maximum results to return
+- `limit` (optional, default: 50): Maximum results to return
+- `offset` (optional, default: 0): Number of results to skip — use with `limit` for pagination
 - `count_only` (optional, default: false): If true, return only the count (integer)
 
 **Example:**
@@ -211,6 +219,9 @@ Search for notes across all records.
 
 ```json
 {"command": "search-notes", "params": {"ksearch": "category^bugfix|investigation"}}
+```
+```json
+{"command": "search-notes", "params": {"ksearch": "category=bugfix", "limit": 20, "offset": 20}}
 ```
 
 ### 5. import-record
@@ -374,7 +385,7 @@ Get a reply template with quoted original note text.
 }
 ```
 
-### 12. reindex
+### 11. reindex
 Reindex records from their Markdown files. Equivalent to `admin reindex` on the command line. Supports the same change-detection optimisation: files whose mtime (and, if mtime changed, MD5 hash) are unchanged are skipped unless overridden.
 
 **Parameters:**
@@ -427,7 +438,7 @@ Reindex records from their Markdown files. Equivalent to `admin reindex` on the 
 }
 ```
 
-### 11. template-data
+### 12. template-data
 Get complete field definitions for a template (record fields and note fields). Intended for UI pre-validation — lets a client know what fields exist, their types, accepted values, defaults, and whether they are system-populated before creating or updating records.
 
 **Parameters:**
@@ -502,6 +513,50 @@ Get complete field definitions for a template (record fields and note fields). I
 | `accepted_values` | if constrained | List of valid values |
 | `default` | if set | Default value (may be `"${datestamp}"` etc.) |
 | `system_value` | if auto-populated | System value source (e.g. `"user_name"`, `"datetime"`, `"is_system_update"`) |
+
+### 13. unmask
+Retrieve the plaintext value of one or more fields on a record or note, bypassing the `{securestring}` mask. Non-securestring fields are returned with their normal value. Fields that do not exist on the record or note are silently omitted.
+
+**Parameters:**
+- `record_id` (required): Record identifier
+- `fields` (required): Field name(s) — string or array of strings
+- `note_id` (optional): If present, target this note; if absent, target the record
+
+**Examples:**
+```json
+{"command": "unmask", "params": {"record_id": "REC-001", "fields": ["api_token", "title"]}}
+```
+```json
+{"command": "unmask", "params": {"record_id": "REC-001", "note_id": "NT-001", "fields": ["session_token"]}}
+```
+
+**Success Response (record):**
+```json
+{
+  "success": true,
+  "result": {
+    "record_id": "REC-001",
+    "fields": {
+      "api_token": "s3cr3t-v4lu3",
+      "title": "My Record"
+    }
+  }
+}
+```
+
+**Success Response (note):**
+```json
+{
+  "success": true,
+  "result": {
+    "record_id": "REC-001",
+    "note_id": "NT-001",
+    "fields": {
+      "session_token": "tok-abc123"
+    }
+  }
+}
+```
 
 ## Integration Examples
 

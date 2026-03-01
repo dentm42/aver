@@ -71,12 +71,14 @@
 - [admin template-data](#admin-template-data)
 - [admin validate](#admin-validate)
 - [record new](#record-new)
+- [record unmask](#record-unmask)
 - [record update](#record-update)
 - [record list](#record-list)
 - [record search](#record-search)
 - [note add](#note-add)
 - [note list](#note-list)
 - [note search](#note-search)
+- [note unmask](#note-unmask)
 
 ### 10. Administrator's Guide
 - [Setting Up Special Fields](#setting-up-special-fields)
@@ -701,6 +703,17 @@ Templates define:
 3. Note-specific special fields (add to or override global note fields)
 4. Template record IDs (for content templates)
 
+#### Connecting Content Templates with Field Enforcement
+
+`record new --template bug` does two things at once:
+
+1. **Field enforcement** — the new record is validated against the `bug` template's field rules.
+2. **Content import** — if a record file named `bug.md` (matching the template ID) exists in the `records/` directory, its body text is copied into the new record as initial content.
+
+Admins can create a `bug.md` record file to provide a standard starting document (checklists, instructions, boilerplate) that gets pre-filled whenever someone creates a new bug record. This is an optional convention — if no such file exists, `record new --template bug` still works normally with an empty body.
+
+`record update --template` is **field-scope only**: it scopes validation to the named template's field rules but never imports content from any record file.
+
 **Complete template example**:
 ```toml
 [template.bug]
@@ -989,6 +1002,26 @@ aver record new --from-file record.md
 aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
 ```
 
+### record unmask
+
+Show the plaintext values of one or more fields on a record. Securestring fields are returned unmasked; all other field types are returned with their normal value. Fields that do not exist on the record are silently omitted.
+
+```bash
+aver record unmask REC-001 --fields "api_token"
+aver record unmask REC-001 --fields "api_token,title,status"
+```
+
+**Example output**:
+```
+api_token: s3cr3t-v4lu3
+title: My Record
+```
+
+For programmatic use, the `unmask` command is available via **JSON IO**:
+```json
+{"command": "unmask", "params": {"record_id": "REC-001", "fields": ["api_token", "title"]}}
+```
+
 ### record update
 
 Update an existing record.
@@ -996,6 +1029,19 @@ Update an existing record.
 ```bash
 aver record update REC-001 --status closed
 aver record update BUG-042 --priority critical --description "Updated description"
+```
+
+**With template scope** — restrict field enforcement to a specific template without importing any content:
+```bash
+aver record update REC-001 --template bug --severity 3
+```
+
+> Note: `--template` on `record update` is field-scope enforcement only. It does **not** copy any content from a template record. This differs from `record new --template`, which also copies initial content if a record named after the template exists.
+
+**Show available fields for this record** (template-aware):
+```bash
+aver record update REC-001 --help-fields
+aver record update REC-001 --help-fields --template bug
 ```
 
 ### record list
@@ -1006,6 +1052,21 @@ List records.
 aver record list
 aver record list --limit 10
 ```
+
+**Paginate with `--offset`**:
+
+```bash
+# First page: records 1–10
+aver record list --limit 10 --offset 0
+
+# Second page: records 11–20
+aver record list --limit 10 --offset 10
+
+# With search filters
+aver record list --ksearch status=open --limit 25 --offset 25
+```
+
+`--offset` skips the first N results. Use with `--limit` for cursor-style pagination. Default is `0`.
 
 **Count matching records** (requires `--ksearch`):
 
@@ -1042,6 +1103,13 @@ The `max` parameter is also available via **JSON IO** as a `search-records` para
 {"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}
 ```
 
+`--offset` is also available via **JSON IO** for both `search-records` and `search-notes`:
+
+```json
+{"command": "search-records", "params": {"ksearch": "status=open", "limit": 25, "offset": 25}}
+{"command": "search-notes", "params": {"ksearch": "category=bugfix", "limit": 20, "offset": 20}}
+```
+
 ### record search
 
 Search for records.
@@ -1076,6 +1144,14 @@ aver note add BUG-042 --message "Applied fix" --category bugfix --priority high
 aver note add BUG-042 --help-fields
 ```
 
+**For automation (suppress editor)**:
+```bash
+aver note add REC-001 --message "Automated check complete" --no-validation-editor
+echo "Note text" | aver note add REC-001 --no-validation-editor
+```
+
+`--no-validation-editor` prevents the editor from opening on validation failure. If no `--message` and no stdin are provided, the command errors immediately rather than prompting.
+
 **From file**:
 ```bash
 aver note add REC-001 --from-file note.md
@@ -1099,6 +1175,16 @@ aver note search --ksearch category=bugfix
 aver note search --ksearch priority=critical
 ```
 
+**Paginate with `--offset`**:
+
+```bash
+# First page: notes 1–20
+aver note search --ksearch category=bugfix --limit 20 --offset 0
+
+# Next page: notes 21–40
+aver note search --ksearch category=bugfix --limit 20 --offset 20
+```
+
 **Count matching notes**:
 
 ```bash
@@ -1107,6 +1193,20 @@ aver note search --ksearch priority=critical --count
 ```
 
 Returns only the integer count of matching notes with no other output.
+
+### note unmask
+
+Show the plaintext values of one or more fields on a specific note. Securestring fields are returned unmasked; all other field types are returned with their normal value. Fields that do not exist on the note are silently omitted.
+
+```bash
+aver note unmask REC-001 NT-001 --fields "session_token"
+aver note unmask REC-001 NT-001 --fields "session_token,author,timestamp"
+```
+
+For programmatic use, the `unmask` command is available via **JSON IO** (include `note_id` to target a note):
+```json
+{"command": "unmask", "params": {"record_id": "REC-001", "note_id": "NT-001", "fields": ["session_token"]}}
+```
 
 ### admin reindex
 
@@ -1130,7 +1230,18 @@ aver admin reindex REC-001 --force
 # Skip mtime shortcut; always compare MD5 hash
 aver admin reindex --skip-mtime
 aver admin reindex REC-001 --skip-mtime
+
+# Skip field validation (index records even if they violate template rules)
+aver admin reindex --skip-validation
 ```
+
+#### Validation during reindex
+
+By default, `admin reindex` validates each record against its template field rules before indexing it. Records that fail validation are **not indexed** and the command exits with an error listing every violation. This prevents non-conforming data from silently entering the search index.
+
+The same rules as `admin validate` apply: required-field presence and `accepted_values` constraints, using the template-specific field set for records that carry a `template_id`.
+
+Use `--skip-validation` to bypass this check and index all records regardless of conformance — useful when intentionally importing legacy data or working with records that pre-date a schema change.
 
 #### How change detection works
 
@@ -1144,6 +1255,7 @@ aver admin reindex REC-001 --skip-mtime
 | _(none)_ | mtime check → hash check on mtime miss → skip if match |
 | `--skip-mtime` | Skip mtime check; always read file and compare MD5 hash |
 | `--force` | Skip all change detection; always reindex every file |
+| `--skip-validation` | Skip template field validation before indexing |
 
 Use `--skip-mtime` when files may have been copied with preserved timestamps (e.g. `cp -p`, `rsync -a`, `git checkout`). Use `--force` after schema changes or to recover from a corrupted index.
 
@@ -1159,12 +1271,6 @@ aver admin template-data
 **Show a specific template**:
 ```bash
 aver admin template-data bug
-```
-
-**JSON output (for programmatic use)**:
-```bash
-aver admin template-data bug --json
-aver admin template-data --json        # all templates as a JSON array
 ```
 
 When no `template_id` is given, global defaults (no template) are also included.

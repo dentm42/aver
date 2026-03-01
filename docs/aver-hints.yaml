@@ -455,7 +455,7 @@ cli:
       _cmd_admin_template_data:
         line_start: 9075
         signature: "_cmd_admin_template_data(self, args)"
-        description: "Handle 'aver admin template-data [template_id] [--json]'"
+        description: "Handle 'aver admin template-data [template_id]'"
         note: "Shows record+note field schema for a template; omit template_id for all"
       _cmd_admin_validate:
         line_start: 9912
@@ -665,6 +665,71 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "--offset pagination for record list, note search, json search-records, json search-notes"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      All list/search commands now accept --offset N (default 0) to skip the first N
+      results. Combined with --limit for cursor-style pagination.
+      Slice logic: results[offset:offset+limit]. None limit (json search-notes legacy)
+      handled as results[offset:].
+      Bug fixed: json search-notes CLI --ksearch was passed as a bare string to
+      search_updates(); now wrapped in a list in _cmd_json_search_notes.
+    commands:
+      - "aver record list --ksearch ... --limit N --offset N"
+      - "aver note search --ksearch ... --limit N --offset N"
+      - "aver json search-records --ksearch ... --limit N --offset N"
+      - "aver json search-notes --ksearch ... --limit N --offset N"
+    json_io_params:
+      - '{"command":"search-records","params":{"ksearch":"...","limit":N,"offset":N}}'
+      - '{"command":"search-notes","params":{"ksearch":"...","limit":N,"offset":N}}'
+    key_methods:
+      - "list_incidents(offset=0) — slice [offset:offset+limit]"
+      - "search_updates(offset=0) — slice [offset:offset+limit] or [offset:] if limit=None"
+
+  - feature: "--help-fields on record new and record update; --template on record update"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      record new --help-fields: lists editable fields for creation (template-aware if --template given).
+      record update RECORD_ID --help-fields: lists editable fields for that record's current template.
+      record update now accepts --template TEMPLATE_ID for field-scope enforcement only
+      (does NOT copy content from any record, unlike record new --template).
+      Template change validation (editable check) enforced for both --help-fields preview and
+      actual update via _resolve_template_id() as single source of truth.
+    key_methods:
+      - "_show_record_fields_help(manager, template_id, context)"
+      - "_show_record_fields_help_new(args)"
+      - "_show_record_fields_help_update(args) — delegates to _resolve_template_id"
+
+  - feature: "note add --no-validation-editor"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Suppresses editor launch in automation contexts. If --message or stdin not provided,
+      errors immediately rather than opening an editor.
+    command: "aver note add RECORD_ID --no-validation-editor --message 'text'"
+
+  - feature: "record unmask / note unmask commands"
+    commands:
+      - "aver record unmask RECORD_ID --fields 'f1,f2'"
+      - "aver note unmask RECORD_ID NOTE_ID --fields 'f1,f2'"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      Returns field values with securestring fields UNMASKED (plaintext).
+      Non-securestring fields included with their normal value.
+      Missing fields silently omitted.
+      Human output: 'key: value' lines.
+      Also available as JSON IO command 'unmask':
+        record: {"command":"unmask","params":{"record_id":"REC-001","fields":["f1","f2"]}}
+        note:   {"command":"unmask","params":{"record_id":"REC-001","note_id":"NT-001","fields":["f1"]}}
+    key_methods:
+      - "_unmask_fields(fields_arg, kv_strings, kv_integers, kv_floats, kv_secure) -> dict"
+      - "_cmd_record_unmask(args)"
+      - "_cmd_note_unmask(args)"
+      - "_execute_json_command 'unmask' branch"
+
   - feature: "admin validate command"
     command: "aver admin validate [RECORD_ID ...] [--failed-list]"
     added: "2026-03-01"
@@ -792,17 +857,16 @@ recent_additions:
   - feature: "admin template-data command"
     commands:
       - "aver admin template-data [template_id]"
-      - "aver admin template-data [template_id] --json"
     added: "2026-02-27"
     status: "✅ IMPLEMENTED"
     semantics: |
       Shows record_fields and note_fields for a given template (or global
-      defaults if no template_id). Without --json, prints human-readable
-      output. With --json (or via JSON IO), returns structured data for
-      UI pre-validation: template_id, record_prefix, note_prefix,
-      record_fields, note_fields (each with type, value_type, editable,
-      required, accepted_values, default, system_value).
-      Omitting template_id prints/returns ALL templates as a JSON array.
+      defaults if no template_id). Prints human-readable output.
+      Via JSON IO, returns structured data for UI pre-validation:
+      template_id, record_prefix, note_prefix, record_fields, note_fields
+      (each with type, value_type, editable, required, accepted_values,
+      default, system_value).
+      Omitting template_id (JSON IO) returns global defaults.
     json_io_usage: '{"command": "template-data", "params": {"template_id": "bug"}}'
     json_io_global: '{"command": "template-data", "params": {}}'
     helper_method: "_build_template_data(project_config, template_id) -> dict"

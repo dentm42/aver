@@ -6,14 +6,16 @@
 |---------|---------|-------------|
 | `export-record` | Export record as JSON | `--include-notes` |
 | `export-note` | Export single note as JSON | |
-| `search-records` | Search records, return JSON array | `--ksearch`, `--limit` |
-| `search-notes` | Search notes, return JSON array | `--ksearch`, `--limit` |
+| `search-records` | Search records, return JSON array | `--ksearch`, `--ksort`, `--limit`, `--offset` |
+| `search-notes` | Search notes, return JSON array | `--ksearch`, `--limit`, `--offset` |
 | `import-record` | Create record from JSON | `--data`, `--use-id` |
 | `import-note` | Add note from JSON | `--data` |
 | `update-record` | Update record from JSON | `--data` |
 | `schema-record` | Get record field definitions | `--template` |
 | `schema-note` | Get note field definitions | |
 | `reply-template` | Generate reply with quoted text | |
+| `template-data` | Get full field schema for a template | `--template` |
+| `reindex` | Rebuild search index | |
 | `io` | Interactive STDIN/STDOUT mode | |
 
 ## Quick Examples
@@ -40,6 +42,9 @@ aver json search-records --ksearch "status=open" --ksearch "priority=high" --lim
 
 # With sorting
 aver json search-records --ksearch "status=open" --ksort "created_at-" --limit 10
+
+# Pagination (page 2 of 25)
+aver json search-records --ksearch "status=open" --limit 25 --offset 25
 ```
 
 ### Create a Record
@@ -76,6 +81,15 @@ aver json schema-record --template bug
 
 # Note schema for a record
 aver json schema-note REC123
+```
+
+### Unmask Secure Fields
+```bash
+# Unmask a field on a record
+echo '{"command": "unmask", "params": {"record_id": "REC-001", "fields": ["api_token"]}}' | aver json io
+
+# Unmask a field on a note
+echo '{"command": "unmask", "params": {"record_id": "REC-001", "note_id": "NT-001", "fields": ["session_token"]}}' | aver json io
 ```
 
 ### IO Mode (Persistent Session)

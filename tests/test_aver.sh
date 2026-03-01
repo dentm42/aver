@@ -936,7 +936,7 @@ test_index_values() {
         local rec_id=$(echo "$output" | grep -oE "REC-[A-Z0-9]+")
         if [ -n "$rec_id" ]; then
             # Reindex the database
-            if run_aver admin reindex > /dev/null 2>&1; then
+            if run_aver admin reindex --skip-validation > /dev/null 2>&1; then
                 # Verify status is still searchable after reindex
                 if output=$(run_aver record list --ksearch status=closed 2>&1); then
                     if echo "$output" | grep -q "$rec_id"; then
@@ -3292,9 +3292,9 @@ EOF
     print_test "admin reindex skips unchanged files on second run"
     track_command "admin reindex twice — second run should report 0 reindexed"
     # First full reindex
-    run_aver admin reindex --verbose 2>&1 >/dev/null
+    run_aver admin reindex --verbose --skip-validation 2>&1 >/dev/null
     # Second full reindex — nothing has changed
-    if output=$(run_aver admin reindex --verbose 2>&1); then
+    if output=$(run_aver admin reindex --verbose --skip-validation 2>&1); then
         if echo "$output" | grep -q "unchanged"; then
             pass
             echo "  admin reindex correctly skipped unchanged files"
@@ -4278,16 +4278,15 @@ print('ok')
     # -------------------------------------------------------------------------
     # 14. template-data shows securestring value_type
     # -------------------------------------------------------------------------
-    print_test "admin template-data --json shows securestring value_type"
-    track_command "aver admin template-data --json"
-    if output=$(run_aver admin template-data --json 2>&1); then
+    print_test "json io template-data shows securestring value_type"
+    track_command "json io template-data (no template_id)"
+    if output=$(echo '{"command":"template-data","params":{}}' | run_aver json io 2>&1); then
         if echo "$output" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-# Find the global entry (template_id=None)
-global_entry = next((e for e in data if e.get('template_id') is None), None)
-assert global_entry is not None, 'no global entry'
-record_fields = global_entry.get('record_fields', {})
+assert data.get('success'), f'not success: {data}'
+r = data['result']
+record_fields = r.get('record_fields', {})
 assert 'api_token' in record_fields, 'api_token not in record_fields'
 assert record_fields['api_token']['value_type'] == 'securestring', \
     f'wrong value_type: {record_fields[\"api_token\"][\"value_type\"]}'
@@ -4299,15 +4298,15 @@ print('ok')
             fail "template-data did not show securestring value_type: $output"
         fi
     else
-        fail "admin template-data failed: $output"
+        fail "json io template-data failed: $output"
     fi
 
     # -------------------------------------------------------------------------
     # 15. Reindex preserves searchability of securestring
     # -------------------------------------------------------------------------
     print_test "Reindex preserves securestring searchability"
-    track_command "aver admin reindex --force && aver record list --ksearch api_token=newsecret456"
-    if run_aver admin reindex --force > /dev/null 2>&1; then
+    track_command "aver admin reindex --force --skip-validation && aver record list --ksearch api_token=newsecret456"
+    if run_aver admin reindex --force --skip-validation > /dev/null 2>&1; then
         if search_out=$(run_aver record list --ksearch "api_token=newsecret456" 2>&1) && \
            echo "$search_out" | grep -q "$rec_sec"; then
             pass
@@ -4419,60 +4418,6 @@ test_template_data() {
         fi
     else
         fail "admin template-data bug failed"
-    fi
-
-    # --- CLI: --json flag, specific template ---
-    print_test "admin template-data bug --json"
-    track_command "aver admin template-data bug --json"
-    if output=$(run_aver admin template-data bug --json 2>&1); then
-        if echo "$output" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-assert data['template_id'] == 'bug', 'template_id mismatch'
-assert 'record_fields' in data, 'missing record_fields'
-assert 'note_fields' in data, 'missing note_fields'
-assert 'severity' in data['record_fields'], 'missing severity in record_fields'
-assert 'category' in data['note_fields'], 'missing category in note_fields'
-# severity in bug template is required
-assert data['record_fields']['severity']['required'] == True, 'severity should be required'
-# accepted_values for severity
-assert '1' in data['record_fields']['severity']['accepted_values'], 'missing accepted_values'
-# record_prefix
-assert data['record_prefix'] == 'BUG', f\"wrong record_prefix: {data['record_prefix']}\"
-assert data['note_prefix'] == 'COMMENT', f\"wrong note_prefix: {data['note_prefix']}\"
-" 2>/dev/null; then
-            pass
-            echo "  Bug template JSON structure valid"
-        else
-            fail "Bug template JSON structure invalid"
-            echo "$output"
-        fi
-    else
-        fail "admin template-data bug --json failed"
-    fi
-
-    # --- CLI: --json flag, global defaults (no template_id) ---
-    print_test "admin template-data --json (global defaults)"
-    track_command "aver admin template-data --json"
-    if output=$(run_aver admin template-data --json 2>&1); then
-        # Returns an array of all templates
-        if echo "$output" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-assert isinstance(data, list), 'expected list'
-ids = [d['template_id'] for d in data]
-assert None in ids, 'missing global defaults entry'
-assert 'bug' in ids, 'missing bug template'
-assert 'feature' in ids, 'missing feature template'
-" 2>/dev/null; then
-            pass
-            echo "  All templates returned as JSON array"
-        else
-            fail "All-templates JSON structure invalid"
-            echo "$output"
-        fi
-    else
-        fail "admin template-data --json (all) failed"
     fi
 
     # --- CLI: invalid template_id ---
@@ -5677,36 +5622,36 @@ PYEOF
     fi
 
     # =========================================================================
-    # admin template-data bug --json  ↔  template-data (template_id=bug)
-    # Both return identical field definitions.
+    # template-data (template_id=bug) — verify field definitions
     # =========================================================================
 
-    print_test "Parity: admin template-data --json vs IO template-data"
-    local cli_td io_td
-    cli_td=$(run_aver admin template-data bug --json 2>&1)
+    print_test "Parity: IO template-data bug has expected fields and prefixes"
+    local io_td
     io_td=$(echo '{"command":"template-data","params":{"template_id":"bug"}}' \
-        | run_aver json io 2>&1 \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); import json as j; print(j.dumps(d['result'],sort_keys=True))" 2>/dev/null)
+        | run_aver json io 2>&1)
 
-    if python3 - "$cli_td" "$io_td" << 'PYEOF' 2>/dev/null
+    if echo "$io_td" | python3 -c "
 import sys, json
-cli = json.loads(sys.argv[1])
-io  = json.loads(sys.argv[2])
-# Both should have the same template_id and same record field names
-assert cli['template_id'] == io['template_id'], \
-    f"template_id mismatch: {cli['template_id']} vs {io['template_id']}"
-cli_rec_fields = set(cli.get('record_fields', {}).keys())
-io_rec_fields  = set(io.get('record_fields', {}).keys())
-assert cli_rec_fields == io_rec_fields, \
-    f"record_fields differ: CLI={cli_rec_fields} IO={io_rec_fields}"
-PYEOF
-    then
+data = json.load(sys.stdin)
+assert data.get('success'), f'not success: {data}'
+r = data['result']
+assert r.get('template_id') == 'bug', f'expected bug, got {r.get(\"template_id\")}'
+assert r.get('record_prefix') == 'BUG', f'wrong record_prefix: {r.get(\"record_prefix\")}'
+assert r.get('note_prefix') == 'COMMENT', f'wrong note_prefix: {r.get(\"note_prefix\")}'
+rec_fields = r.get('record_fields', {})
+assert 'severity' in rec_fields, f'severity missing: {list(rec_fields)}'
+assert 'status' in rec_fields, f'status missing: {list(rec_fields)}'
+assert 'title' in rec_fields, f'title missing: {list(rec_fields)}'
+note_fields = r.get('note_fields', {})
+assert 'category' in note_fields, f'category missing: {list(note_fields)}'
+# severity is required in bug template
+assert rec_fields['severity']['required'] == True, 'severity should be required'
+" 2>/dev/null; then
         pass
-        echo "  template_id and record field sets identical"
+        echo "  IO template-data bug: correct fields, prefixes, and constraints"
     else
-        fail "admin template-data vs IO template-data differ"
-        echo "  CLI: $cli_td"
-        echo "  IO:  $io_td"
+        fail "IO template-data bug returned unexpected structure"
+        echo "  IO: $io_td"
     fi
 
     # =========================================================================
@@ -5807,6 +5752,11 @@ main() {
     test_securestring
     test_system_update_field
     test_admin_validate
+    test_reindex_validation
+    test_unmask
+    test_note_add_no_validation_editor
+    test_help_fields
+    test_offset_pagination
 
     # Summary
     print_section "Test Summary"
@@ -6346,6 +6296,795 @@ BUGBADEOF
         pass
     else
         fail "Expected exit 0 and empty output for no records; got exit=$fl_exit out='$fl_out'"
+    fi
+}
+
+#==============================================================================
+# Test: reindex validation integration
+#==============================================================================
+
+test_reindex_validation() {
+    print_section "Test: reindex validation integration"
+
+    # -------------------------------------------------------------------------
+    # Setup: create a conforming record so we have a clean baseline
+    # -------------------------------------------------------------------------
+    print_test "Create conforming record for reindex-validation tests"
+    local rec_good
+    rec_good=$(run_aver record new --description "" --no-validation-editor \
+        --title "Reindex Validation Test" --status open 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_good" ]; then
+        fail "Could not create conforming record"
+        return
+    fi
+    pass
+    echo "  Created: $rec_good"
+
+    # -------------------------------------------------------------------------
+    # 1. reindex on a conforming record exits 0 (no validation errors)
+    # -------------------------------------------------------------------------
+    print_test "reindex conforming record exits 0"
+    set +e
+    local out exit_code
+    out=$(run_aver admin reindex "$rec_good" --force 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+    else
+        fail "Expected exit 0 for conforming record; got $exit_code: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. Inject a non-conforming record on disk
+    # -------------------------------------------------------------------------
+    print_test "Inject non-conforming record for reindex test"
+    local bad_id="REC-REINDEX-VAL-BAD"
+    cat > "$TEST_DIR/records/${bad_id}.md" << 'BADEOF'
+---
+title: Bad Reindex Record
+status: not_a_valid_status
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+
+This record has an invalid status and should block reindex by default.
+BADEOF
+    if [ -f "$TEST_DIR/records/${bad_id}.md" ]; then
+        pass
+        echo "  Injected: $bad_id"
+    else
+        fail "Could not write non-conforming record"
+        return
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. reindex on the bad record fails by default
+    # -------------------------------------------------------------------------
+    print_test "reindex non-conforming record exits 1 by default"
+    set +e
+    out=$(run_aver admin reindex "$bad_id" --force 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ]; then
+        pass
+    else
+        fail "Expected non-zero exit for non-conforming record; got 0: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. Error message mentions the field and the bad value
+    # -------------------------------------------------------------------------
+    print_test "reindex error mentions the invalid field"
+    if echo "$out" | grep -qi "status" && echo "$out" | grep -qi "not_a_valid_status\|validation"; then
+        pass
+    else
+        fail "Expected 'status' / validation info in error output: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. Error message mentions --skip-validation hint
+    # -------------------------------------------------------------------------
+    print_test "reindex error mentions --skip-validation"
+    if echo "$out" | grep -q "skip-validation"; then
+        pass
+    else
+        fail "Expected '--skip-validation' hint in error output: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. reindex --skip-validation on bad record exits 0
+    # -------------------------------------------------------------------------
+    print_test "reindex --skip-validation on non-conforming record exits 0"
+    set +e
+    out=$(run_aver admin reindex "$bad_id" --force --skip-validation 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+    else
+        fail "Expected exit 0 with --skip-validation; got $exit_code: $out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. Full reindex with a mix of good and bad records fails by default,
+    #    reports all failing records before exiting
+    # -------------------------------------------------------------------------
+    print_test "full reindex fails and lists all non-conforming records"
+    set +e
+    out=$(run_aver admin reindex --force 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$out" | grep -q "$bad_id"; then
+        pass
+        echo "  Non-conforming record listed in error output"
+    else
+        fail "Expected exit 1 and '$bad_id' in output; exit=$exit_code out=$out"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. Full reindex with --skip-validation succeeds despite bad records
+    # -------------------------------------------------------------------------
+    print_test "full reindex --skip-validation succeeds with non-conforming records"
+    set +e
+    out=$(run_aver admin reindex --force --skip-validation 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -eq 0 ]; then
+        pass
+    else
+        fail "Expected exit 0 with --skip-validation on full reindex; got $exit_code: $out"
+    fi
+}
+
+test_unmask() {
+    print_section "Test: record unmask / note unmask"
+
+    # Create a record with a securestring field and a plain string field
+    local rec_id
+    rec_id=$(run_aver record new --description "" --no-validation-editor \
+        --title "Unmask Test Record" --status "open" --api_token "unmask_secret_42" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_id" ]; then
+        fail "Could not create record for unmask tests"
+        return
+    fi
+    echo "  Record for unmask tests: $rec_id"
+
+    # -------------------------------------------------------------------------
+    # 1. record unmask returns plaintext for securestring field
+    # -------------------------------------------------------------------------
+    print_test "record unmask returns plaintext for securestring field"
+    track_command "aver record unmask $rec_id --fields api_token"
+    if output=$(run_aver record unmask "$rec_id" --fields "api_token" 2>&1); then
+        if echo "$output" | grep -q "api_token" && echo "$output" | grep -q "unmask_secret_42"; then
+            pass
+            echo "  Plaintext value returned: $(echo "$output" | grep api_token)"
+        else
+            fail "Expected plaintext 'unmask_secret_42' in output: $output"
+        fi
+    else
+        fail "record unmask failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. record unmask includes non-securestring fields with normal value
+    # -------------------------------------------------------------------------
+    print_test "record unmask includes non-securestring field with normal value"
+    track_command "aver record unmask $rec_id --fields title,api_token"
+    if output=$(run_aver record unmask "$rec_id" --fields "title,api_token" 2>&1); then
+        if echo "$output" | grep -q "title" && echo "$output" | grep -q "Unmask Test Record" \
+           && echo "$output" | grep -q "api_token" && echo "$output" | grep -q "unmask_secret_42"; then
+            pass
+            echo "  Both title and api_token returned correctly"
+        else
+            fail "Expected both fields in output: $output"
+        fi
+    else
+        fail "record unmask with multiple fields failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. record unmask silently omits missing fields
+    # -------------------------------------------------------------------------
+    print_test "record unmask silently omits missing fields"
+    track_command "aver record unmask $rec_id --fields api_token,nonexistent_field"
+    if output=$(run_aver record unmask "$rec_id" --fields "api_token,nonexistent_field" 2>&1); then
+        if echo "$output" | grep -q "api_token" && ! echo "$output" | grep -q "nonexistent_field"; then
+            pass
+            echo "  Missing field silently omitted, api_token present"
+        else
+            fail "Expected api_token only (no nonexistent_field): $output"
+        fi
+    else
+        fail "record unmask with missing field failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. Create a note with securestring field
+    # -------------------------------------------------------------------------
+    local note_id
+    note_id=$(run_aver note add "$rec_id" --message "Note for unmask test" \
+        --session_token "note_secret_99" 2>&1 \
+        | grep -oE "NT-[A-Z0-9]+" || echo "")
+    if [ -z "$note_id" ]; then
+        fail "Could not create note for unmask tests"
+        return
+    fi
+    echo "  Note for unmask tests: $note_id"
+
+    # -------------------------------------------------------------------------
+    # 6. note unmask returns plaintext for securestring field
+    # -------------------------------------------------------------------------
+    print_test "note unmask returns plaintext for securestring field"
+    track_command "aver note unmask $rec_id $note_id --fields session_token"
+    if output=$(run_aver note unmask "$rec_id" "$note_id" --fields "session_token" 2>&1); then
+        if echo "$output" | grep -q "session_token" && echo "$output" | grep -q "note_secret_99"; then
+            pass
+            echo "  Note securestring unmasked correctly"
+        else
+            fail "Expected plaintext 'note_secret_99' in note unmask output: $output"
+        fi
+    else
+        fail "note unmask failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. note unmask includes non-securestring field (author is in kv_strings)
+    # -------------------------------------------------------------------------
+    print_test "note unmask includes non-securestring field"
+    track_command "aver note unmask $rec_id $note_id --fields author,session_token"
+    if output=$(run_aver note unmask "$rec_id" "$note_id" --fields "author,session_token" 2>&1); then
+        if echo "$output" | grep -q "author" \
+           && echo "$output" | grep -q "session_token" && echo "$output" | grep -q "note_secret_99"; then
+            pass
+            echo "  Both author and session_token returned correctly"
+        else
+            fail "Expected both fields in note unmask output: $output"
+        fi
+    else
+        fail "note unmask with multiple fields failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. note unmask silently omits missing fields
+    # -------------------------------------------------------------------------
+    print_test "note unmask silently omits missing fields"
+    track_command "aver note unmask $rec_id $note_id --fields session_token,nosuchfield"
+    if output=$(run_aver note unmask "$rec_id" "$note_id" --fields "session_token,nosuchfield" 2>&1); then
+        if echo "$output" | grep -q "session_token" && ! echo "$output" | grep -q "nosuchfield"; then
+            pass
+            echo "  Missing field silently omitted in note unmask"
+        else
+            fail "Expected session_token only (no nosuchfield): $output"
+        fi
+    else
+        fail "note unmask with missing field failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. JSON IO unmask record (no note_id)
+    # -------------------------------------------------------------------------
+    print_test "JSON IO unmask command for record"
+    track_command "json io unmask record_id fields"
+    if output=$(echo "{\"command\": \"unmask\", \"params\": {\"record_id\": \"$rec_id\", \"fields\": [\"api_token\", \"title\"]}}" \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success'), f'not success: {data}'
+r = data['result']
+assert r.get('record_id'), f'no record_id in result: {r}'
+fields = r.get('fields', {})
+assert fields.get('api_token') == 'unmask_secret_42', f'wrong api_token: {fields.get(\"api_token\")!r}'
+assert fields.get('title') == 'Unmask Test Record', f'wrong title: {fields.get(\"title\")!r}'
+assert 'note_id' not in r, f'note_id should not be present for record unmask: {r}'
+print('ok')
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO unmask record returned correct plaintext"
+        else
+            fail "JSON IO unmask record output incorrect: $output"
+        fi
+    else
+        fail "JSON IO unmask record failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 11. JSON IO unmask note (with note_id)
+    # -------------------------------------------------------------------------
+    print_test "JSON IO unmask command for note"
+    track_command "json io unmask record_id note_id fields"
+    if output=$(echo "{\"command\": \"unmask\", \"params\": {\"record_id\": \"$rec_id\", \"note_id\": \"$note_id\", \"fields\": [\"session_token\"]}}" \
+        | run_aver json io 2>&1); then
+        if echo "$output" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+assert data.get('success'), f'not success: {data}'
+r = data['result']
+assert r.get('record_id'), f'no record_id: {r}'
+assert r.get('note_id'), f'no note_id: {r}'
+fields = r.get('fields', {})
+assert fields.get('session_token') == 'note_secret_99', f'wrong session_token: {fields.get(\"session_token\")!r}'
+print('ok')
+" 2>/dev/null; then
+            pass
+            echo "  JSON IO unmask note returned correct plaintext"
+        else
+            fail "JSON IO unmask note output incorrect: $output"
+        fi
+    else
+        fail "JSON IO unmask note failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 12. record unmask does NOT leak plaintext in normal record view
+    # -------------------------------------------------------------------------
+    print_test "record view still masks securestring (unmask does not affect view)"
+    track_command "aver record view $rec_id"
+    if output=$(run_aver record view "$rec_id" 2>&1); then
+        if ! echo "$output" | grep -q "unmask_secret_42"; then
+            pass
+            echo "  record view still masks securestring after unmask calls"
+        else
+            fail "Plaintext leaked into record view: $output"
+        fi
+    else
+        fail "record view failed: $output"
+    fi
+}
+
+test_note_add_no_validation_editor() {
+    print_section "Test: note add --no-validation-editor"
+
+    # Create a record to attach notes to
+    local rec_id
+    rec_id=$(run_aver record new --description "" --no-validation-editor \
+        --title "Note NVE Test" --status "open" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_id" ]; then
+        fail "Could not create record for note --no-validation-editor tests"
+        return
+    fi
+    echo "  Record: $rec_id"
+
+    # -------------------------------------------------------------------------
+    # 1. note add --message with --no-validation-editor succeeds
+    # -------------------------------------------------------------------------
+    print_test "note add --message --no-validation-editor succeeds"
+    track_command "aver note add $rec_id --message 'test' --no-validation-editor"
+    if output=$(run_aver note add "$rec_id" --message "automation note" \
+            --no-validation-editor 2>&1); then
+        if echo "$output" | grep -q "Added note"; then
+            pass
+            echo "  Note added successfully with --no-validation-editor"
+        else
+            fail "Unexpected output: $output"
+        fi
+    else
+        fail "note add --message --no-validation-editor failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. note add via stdin with --no-validation-editor succeeds
+    # -------------------------------------------------------------------------
+    print_test "note add via stdin --no-validation-editor succeeds"
+    track_command "echo 'stdin note' | aver note add $rec_id --no-validation-editor"
+    if output=$(echo "stdin note" | run_aver note add "$rec_id" \
+            --no-validation-editor 2>&1); then
+        if echo "$output" | grep -q "Added note"; then
+            pass
+            echo "  Note added via stdin with --no-validation-editor"
+        else
+            fail "Unexpected output: $output"
+        fi
+    else
+        fail "note add stdin --no-validation-editor failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. note add with no message and --no-validation-editor errors (no editor)
+    # -------------------------------------------------------------------------
+    print_test "note add --no-validation-editor with no message errors instead of opening editor"
+    track_command "aver note add $rec_id --no-validation-editor (no message)"
+    set +e
+    output=$(run_aver note add "$rec_id" --no-validation-editor 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qi "no message\|error"; then
+        pass
+        echo "  Correctly errored without opening editor"
+    else
+        fail "Expected exit 1 with error message; got exit=$exit_code: $output"
+    fi
+}
+
+test_help_fields() {
+    print_section "Test: --help-fields on record new and record update"
+
+    # -------------------------------------------------------------------------
+    # 1. record new --help-fields (global fields, no template)
+    # -------------------------------------------------------------------------
+    print_test "record new --help-fields shows global record fields"
+    track_command "aver record new --help-fields"
+    if output=$(run_aver record new --help-fields 2>&1); then
+        if echo "$output" | grep -q "title" && echo "$output" | grep -q "status"; then
+            pass
+            echo "  Global fields shown (title, status present)"
+        else
+            fail "Expected global fields in output: $output"
+        fi
+    else
+        fail "record new --help-fields failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. record new --help-fields shows accepted values
+    # -------------------------------------------------------------------------
+    print_test "record new --help-fields shows accepted values for constrained fields"
+    track_command "aver record new --help-fields (check accepted values)"
+    if output=$(run_aver record new --help-fields 2>&1); then
+        if echo "$output" | grep -q "open" && echo "$output" | grep -q "closed"; then
+            pass
+            echo "  Accepted values for status shown"
+        else
+            fail "Expected accepted values in output: $output"
+        fi
+    else
+        fail "record new --help-fields failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. record new --help-fields --template bug shows template-specific fields
+    # -------------------------------------------------------------------------
+    print_test "record new --help-fields with bug template shows template fields"
+    track_command "aver record new --help-fields --template bug"
+    if output=$(run_aver record new --help-fields --template bug 2>&1); then
+        # Bug template overrides status with different accepted values
+        if echo "$output" | grep -q "severity" && echo "$output" | grep -q "bug"; then
+            pass
+            echo "  Template-specific fields shown (severity, bug template noted)"
+        else
+            fail "Expected bug template fields in output: $output"
+        fi
+    else
+        fail "record new --help-fields --template bug failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. record new --help-fields --template bug shows bug-specific status values
+    # -------------------------------------------------------------------------
+    print_test "record new --help-fields bug template shows bug status accepted values"
+    track_command "aver record new --help-fields --template bug (check status values)"
+    if output=$(run_aver record new --help-fields --template bug 2>&1); then
+        if echo "$output" | grep -q "confirmed" && echo "$output" | grep -q "fixed"; then
+            pass
+            echo "  Bug-specific status values shown (confirmed, fixed)"
+        else
+            fail "Expected bug status values (confirmed, fixed) in output: $output"
+        fi
+    else
+        fail "record new --help-fields bug template failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. record new --help-fields does NOT launch editor or create a record
+    # -------------------------------------------------------------------------
+    print_test "record new --help-fields does not create a record"
+    track_command "aver record new --help-fields (no record created)"
+    local count_before count_after
+    count_before=$(run_aver record list 2>&1 | grep -cE "^REC-|^BUG-|^FEAT-" || echo 0)
+    run_aver record new --help-fields > /dev/null 2>&1
+    count_after=$(run_aver record list 2>&1 | grep -cE "^REC-|^BUG-|^FEAT-" || echo 0)
+    if [ "$count_before" = "$count_after" ]; then
+        pass
+        echo "  No record created by --help-fields"
+    else
+        fail "Record count changed: before=$count_before after=$count_after"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. Create a standard (non-template) record for update tests
+    # -------------------------------------------------------------------------
+    local rec_id
+    rec_id=$(run_aver record new --description "" --no-validation-editor \
+        --title "Help Fields Test Record" --status "open" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_id" ]; then
+        fail "Could not create record for update --help-fields tests"
+        return
+    fi
+    echo "  Record for update tests: $rec_id"
+
+    # -------------------------------------------------------------------------
+    # 7. record update --help-fields shows fields for the record's current template
+    # -------------------------------------------------------------------------
+    print_test "record update --help-fields shows fields for record's current template"
+    track_command "aver record update $rec_id --help-fields"
+    if output=$(run_aver record update "$rec_id" --help-fields 2>&1); then
+        if echo "$output" | grep -q "title" && echo "$output" | grep -q "status"; then
+            pass
+            echo "  Fields shown for record $rec_id"
+        else
+            fail "Expected fields in update --help-fields output: $output"
+        fi
+    else
+        fail "record update --help-fields failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. record update --help-fields does NOT modify the record
+    # -------------------------------------------------------------------------
+    print_test "record update --help-fields does not modify the record"
+    track_command "aver record update $rec_id --help-fields (no modification)"
+    local view_before view_after
+    view_before=$(run_aver record view "$rec_id" 2>&1)
+    run_aver record update "$rec_id" --help-fields > /dev/null 2>&1
+    view_after=$(run_aver record view "$rec_id" 2>&1)
+    if [ "$view_before" = "$view_after" ]; then
+        pass
+        echo "  Record unchanged after update --help-fields"
+    else
+        fail "Record was modified by update --help-fields"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. record update --help-fields --template <same> shows fields (no change)
+    # -------------------------------------------------------------------------
+    # Create a bug record by injecting it on disk
+    local bug_id="BUG-HELPTEST"
+    mkdir -p "$TEST_DIR/records"
+    cat > "$TEST_DIR/records/${bug_id}.md" << 'BUGEOF'
+---
+template_id: bug
+title: Help Fields Bug Record
+status: new
+severity: 3
+created_at: "2026-01-01 00:00:00"
+created_by: testuser
+---
+BUGEOF
+    run_aver admin reindex "$bug_id" --skip-validation > /dev/null 2>&1
+
+    print_test "record update --help-fields --template bug (same template) shows bug fields"
+    track_command "aver record update $bug_id --help-fields --template bug"
+    if output=$(run_aver record update "$bug_id" --help-fields --template bug 2>&1); then
+        if echo "$output" | grep -q "severity" && echo "$output" | grep -q "bug"; then
+            pass
+            echo "  Bug fields shown when same template specified"
+        else
+            fail "Expected bug fields in output: $output"
+        fi
+    else
+        fail "record update --help-fields --template bug failed: $output"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 10. record update --help-fields with a DIFFERENT template errors out
+    #     (template_id is editable=false in test config)
+    # -------------------------------------------------------------------------
+    print_test "record update --help-fields with different template errors (not editable)"
+    track_command "aver record update $bug_id --help-fields --template feature"
+    set +e
+    output=$(run_aver record update "$bug_id" --help-fields --template feature 2>&1)
+    exit_code=$?
+    set -e
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qi "cannot change template\|not editable\|error"; then
+        pass
+        echo "  Correctly rejected template change on non-editable template_id"
+    else
+        fail "Expected error on template change (not editable); got exit=$exit_code: $output"
+    fi
+}
+
+test_offset_pagination() {
+    print_section "Test: --offset Pagination"
+
+    # Setup: create 5 records with a unique tag so we can isolate them
+    print_test "Setup: create 5 pagination test records"
+    local ids=()
+    for i in 1 2 3 4 5; do
+        local id
+        id=$(run_aver record new --description "" --no-validation-editor \
+            --title "OffsetPage $i" --status open --priority critical 2>&1 \
+            | grep -oE "REC-[A-Z0-9]+" || echo "")
+        ids+=("$id")
+    done
+
+    # Verify all 5 were created
+    local all_ok=true
+    for id in "${ids[@]}"; do
+        [ -z "$id" ] && all_ok=false
+    done
+    if $all_ok; then
+        pass
+        echo "  Created: ${ids[*]}"
+    else
+        fail "Setup failed: could not create all 5 pagination test records"
+        return
+    fi
+
+    # -------------------------------------------------------------------------
+    # 1. record list --limit 3 returns 3 records (baseline)
+    # -------------------------------------------------------------------------
+    print_test "record list --ksearch --limit 3 returns 3 records"
+    local out3
+    out3=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 3 --ids-only 2>&1)
+    local count3
+    count3=$(echo "$out3" | grep -cE "^REC-" || true)
+    if [ "$count3" -ge 3 ]; then
+        pass
+        echo "  Got $count3 records (>= 3)"
+    else
+        fail "Expected >= 3 records with --limit 3, got $count3"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. record list --limit 3 --offset 0 == record list --limit 3 (same IDs)
+    # -------------------------------------------------------------------------
+    print_test "record list --limit 3 --offset 0 equals --limit 3 (same results)"
+    local out_no_offset out_offset0
+    out_no_offset=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 3 --ids-only 2>&1)
+    out_offset0=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 3 --offset 0 --ids-only 2>&1)
+    if [ "$out_no_offset" = "$out_offset0" ]; then
+        pass
+        echo "  --offset 0 is identical to no --offset"
+    else
+        fail "--offset 0 differs from no offset"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. record list --limit 2 --offset 2 skips first 2
+    #    (the first ID in offset=2 should NOT appear in offset=0's first 2)
+    # -------------------------------------------------------------------------
+    print_test "record list --limit 2 --offset 2 skips first 2 records"
+    local first2 next2
+    first2=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 2 --offset 0 --ids-only 2>&1)
+    next2=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 2 --offset 2 --ids-only 2>&1)
+    local first_id_of_next
+    first_id_of_next=$(echo "$next2" | grep -m1 "^REC-" || echo "")
+    if [ -n "$first_id_of_next" ] && ! echo "$first2" | grep -qF "$first_id_of_next"; then
+        pass
+        echo "  First ID at offset=2 ($first_id_of_next) not in first 2 IDs"
+    else
+        fail "Offset=2 did not skip the first 2 results (first2: $first2, next2: $next2)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. record list --offset beyond total returns empty / fewer results
+    # -------------------------------------------------------------------------
+    print_test "record list --offset beyond total returns 0 or fewer results"
+    local big_offset_out
+    big_offset_out=$(run_aver record list --ksearch "priority=critical" --ksearch "status=open" --limit 5 --offset 9999 --ids-only 2>&1)
+    local big_count
+    big_count=$(echo "$big_offset_out" | grep -cE "^REC-" || true)
+    if [ "$big_count" -eq 0 ]; then
+        pass
+        echo "  --offset 9999 returned 0 records"
+    else
+        fail "Expected 0 records at offset 9999, got $big_count"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. note search --limit N --offset N pagination
+    #    Setup: add 3 notes to one of the records, all with category=offsettest
+    # -------------------------------------------------------------------------
+    local rec_id="${ids[0]}"
+
+    print_test "Setup: add 3 notes with category=offsettest to $rec_id"
+    local n1 n2 n3
+    n1=$(run_aver note add "$rec_id" --message "Note one" --category offsettest 2>&1)
+    n2=$(run_aver note add "$rec_id" --message "Note two" --category offsettest 2>&1)
+    n3=$(run_aver note add "$rec_id" --message "Note three" --category offsettest 2>&1)
+    if echo "$n1$n2$n3" | grep -qi "error\|failed"; then
+        fail "Setup: note add failed: $n1 $n2 $n3"
+        return
+    fi
+    pass
+    echo "  Added 3 notes with category=offsettest"
+
+    # -------------------------------------------------------------------------
+    # 6. note search --ksearch category=offsettest --limit 2 returns 2
+    # -------------------------------------------------------------------------
+    print_test "note search --limit 2 returns 2 notes"
+    local note_out2
+    note_out2=$(run_aver note search --ksearch "category=offsettest" --limit 2 --ids-only 2>&1)
+    local note_count2
+    note_count2=$(echo "$note_out2" | grep -cE "^REC-" || true)
+    if [ "$note_count2" -eq 2 ]; then
+        pass
+        echo "  Got 2 notes with --limit 2"
+    else
+        fail "Expected 2 notes with --limit 2, got $note_count2"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. note search --offset 1 --limit 2 skips first note
+    # -------------------------------------------------------------------------
+    print_test "note search --offset 1 --limit 2 skips first note"
+    local note_first note_offset1
+    note_first=$(run_aver note search --ksearch "category=offsettest" --limit 1 --offset 0 --ids-only 2>&1)
+    note_offset1=$(run_aver note search --ksearch "category=offsettest" --limit 2 --offset 1 --ids-only 2>&1)
+    local first_note_id
+    first_note_id=$(echo "$note_first" | grep -m1 "^REC-" || echo "")
+    if [ -n "$first_note_id" ] && ! echo "$note_offset1" | grep -qF "$first_note_id"; then
+        pass
+        echo "  First note at offset=0 ($first_note_id) not in offset=1 results"
+    else
+        fail "note search --offset 1 did not skip first note (first: $note_first, offset1: $note_offset1)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. JSON IO search-records with offset param
+    # -------------------------------------------------------------------------
+    print_test "JSON IO search-records with offset skips records"
+    local json_all json_offset
+    json_all=$(echo '{"command":"search-records","params":{"ksearch":"priority=critical","limit":3,"offset":0}}' | run_aver json io 2>&1)
+    json_offset=$(echo '{"command":"search-records","params":{"ksearch":"priority=critical","limit":3,"offset":2}}' | run_aver json io 2>&1)
+    local first_id_all first_id_offset
+    first_id_all=$(echo "$json_all" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',d); print(r['records'][0]['id'] if r.get('records') else '')" 2>/dev/null || echo "")
+    first_id_offset=$(echo "$json_offset" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',d); print(r['records'][0]['id'] if r.get('records') else '')" 2>/dev/null || echo "")
+    if [ -n "$first_id_all" ] && [ -n "$first_id_offset" ] && [ "$first_id_all" != "$first_id_offset" ]; then
+        pass
+        echo "  offset=0 first ID: $first_id_all, offset=2 first ID: $first_id_offset (different)"
+    else
+        fail "JSON IO search-records offset did not paginate (all=$first_id_all, offset=$first_id_offset)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 9. JSON IO search-notes with offset param
+    # -------------------------------------------------------------------------
+    print_test "JSON IO search-notes with offset skips notes"
+    local jnote_all jnote_offset
+    jnote_all=$(echo '{"command":"search-notes","params":{"ksearch":"category=offsettest","limit":2,"offset":0}}' | run_aver json io 2>&1)
+    jnote_offset=$(echo '{"command":"search-notes","params":{"ksearch":"category=offsettest","limit":2,"offset":1}}' | run_aver json io 2>&1)
+    local jnote_first_all jnote_first_offset
+    jnote_first_all=$(echo "$jnote_all" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',d); print(r['notes'][0]['id'] if r.get('notes') else '')" 2>/dev/null || echo "")
+    jnote_first_offset=$(echo "$jnote_offset" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',d); print(r['notes'][0]['id'] if r.get('notes') else '')" 2>/dev/null || echo "")
+    if [ -n "$jnote_first_all" ] && [ -n "$jnote_first_offset" ] && [ "$jnote_first_all" != "$jnote_first_offset" ]; then
+        pass
+        echo "  offset=0 first note: $jnote_first_all, offset=1 first note: $jnote_first_offset (different)"
+    else
+        fail "JSON IO search-notes offset did not paginate (all=$jnote_first_all, offset=$jnote_first_offset)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 10. json search-records CLI --offset flag
+    # -------------------------------------------------------------------------
+    print_test "json search-records CLI --offset flag paginates"
+    local jcli_all jcli_off
+    set +e
+    jcli_all=$(run_aver json search-records --ksearch "priority=critical" --limit 3 --offset 0 2>&1)
+    jcli_off=$(run_aver json search-records --ksearch "priority=critical" --limit 3 --offset 2 2>&1)
+    set -e
+    local jcli_id_all jcli_id_off
+    jcli_id_all=$(echo "$jcli_all" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['records'][0]['id'] if d.get('records') else '')" 2>/dev/null || echo "")
+    jcli_id_off=$(echo "$jcli_off" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['records'][0]['id'] if d.get('records') else '')" 2>/dev/null || echo "")
+    if [ -n "$jcli_id_all" ] && [ -n "$jcli_id_off" ] && [ "$jcli_id_all" != "$jcli_id_off" ]; then
+        pass
+        echo "  offset=0 first ID: $jcli_id_all, offset=2 first ID: $jcli_id_off (different)"
+    else
+        fail "json search-records CLI --offset did not paginate (all=$jcli_id_all, off=$jcli_id_off)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 11. json search-notes CLI --offset flag
+    # -------------------------------------------------------------------------
+    print_test "json search-notes CLI --offset flag paginates"
+    local jncli_all jncli_off
+    set +e
+    jncli_all=$(run_aver json search-notes --ksearch "category=offsettest" --limit 2 --offset 0 2>&1)
+    jncli_off=$(run_aver json search-notes --ksearch "category=offsettest" --limit 2 --offset 1 2>&1)
+    set -e
+    local jncli_id_all jncli_id_off
+    jncli_id_all=$(echo "$jncli_all" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['notes'][0]['id'] if d.get('notes') else '')" 2>/dev/null || echo "")
+    jncli_id_off=$(echo "$jncli_off" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['notes'][0]['id'] if d.get('notes') else '')" 2>/dev/null || echo "")
+    if [ -n "$jncli_id_all" ] && [ -n "$jncli_id_off" ] && [ "$jncli_id_all" != "$jncli_id_off" ]; then
+        pass
+        echo "  offset=0 first note: $jncli_id_all, offset=1 first note: $jncli_id_off (different)"
+    else
+        fail "json search-notes CLI --offset did not paginate (all=$jncli_id_all, off=$jncli_id_off)"
     fi
 }
 

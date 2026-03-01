@@ -1,0 +1,2721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>aver — A Versioned Knowledge Tracking Tool</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital@0;1&family=Lora:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        body {
+            font-family: 'Crimson Text', serif;
+            line-height: 1.8;
+            color: #2c2c2c;
+            background: #faf8f3;
+            font-size: 18px;
+        }
+        
+        /* Header / Hero */
+        header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #f0e6d2;
+            padding: 6rem 2rem;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* Subtle decorative pattern overlay */
+        header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: 
+                linear-gradient(30deg, transparent 48%, rgba(240, 230, 210, 0.03) 49%, rgba(240, 230, 210, 0.03) 51%, transparent 52%),
+                linear-gradient(150deg, transparent 48%, rgba(240, 230, 210, 0.03) 49%, rgba(240, 230, 210, 0.03) 51%, transparent 52%);
+            background-size: 60px 60px;
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        
+        /* Optional: Space for background image */
+        header::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: url('aver-banner-pattern.png'); /* Replace with actual pattern */
+            background-size: 400px 400px;
+            background-repeat: repeat;
+            opacity: 0.15;
+            pointer-events: none;
+        }
+        
+        header > * {
+            position: relative;
+            z-index: 1;
+        }
+        
+        header h1 {
+            font-family: 'Lora', serif;
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            letter-spacing: -1px;
+        }
+        
+        header .subtitle {
+            font-family: 'Lora', serif;
+            font-size: 1.5rem;
+            font-weight: 400;
+            color: #c9b8a0;
+            margin-bottom: 2rem;
+        }
+        
+        header .tagline {
+            font-size: 1.2rem;
+            font-style: italic;
+            color: #b8a896;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        
+        /* Navigation */
+        nav {
+            background: #2c2c2c;
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        nav ul {
+            list-style: none;
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        nav a {
+            color: #f0e6d2;
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-family: 'Lora', serif;
+            transition: color 0.3s;
+        }
+        
+        nav a:hover {
+            color: #d4af9f;
+        }
+
+        /* Persistent Mini Footer */
+        .mini-footer {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #2c2c2c;
+            color: #f0e6d2;
+            padding: 0.75rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
+            z-index: 99;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+        }
+
+        .mini-footer.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .mini-footer-content {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .mini-footer-brand {
+            font-weight: 600;
+            font-family: 'Lora', serif;
+        }
+
+        .mini-footer-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .mini-footer a {
+            color: #d4af9f;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+
+        .mini-footer a:hover {
+            color: #f0e6d2;
+            text-decoration: underline;
+        }
+
+        /* Adjust main content for fixed footer */
+        main {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+            padding-bottom: 100px;
+        }
+        
+        section {
+            margin-bottom: 5rem;
+            padding-bottom: 3rem;
+            border-bottom: 1px solid #e8dcc8;
+        }
+        
+        section:last-child {
+            border-bottom: none;
+        }
+        
+        h2 {
+            font-family: 'Lora', serif;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            color: #1a1a2e;
+            margin-top: 2rem;
+        }
+        
+        h3 {
+            font-family: 'Lora', serif;
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            color: #2c2c2c;
+        }
+        
+        h4 {
+            font-family: 'Lora', serif;
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.8rem;
+            color: #2c2c2c;
+        }
+        
+        p {
+            margin-bottom: 1.2rem;
+            text-align: justify;
+        }
+        
+        .intro-hero {
+            text-align: center;
+            margin-bottom: 4rem;
+            padding: 3rem 0;
+        }
+        
+        .intro-hero p {
+            font-size: 1.3rem;
+            color: #444;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: center;
+        }
+        
+        /* Blockquotes */
+        blockquote {
+            border-left: 4px solid #c9b8a0;
+            padding-left: 2rem;
+            margin: 2rem 0;
+            font-style: italic;
+            color: #555;
+        }
+        
+        /* Code blocks */
+        pre {
+            background: #2c2c2c;
+            color: #f0e6d2;
+            padding: 1.5rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 1.5rem 0;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        
+        code {
+            font-family: 'IBM Plex Mono', monospace;
+            background: #f0e6d2;
+            color: #2c2c2c;
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.95em;
+        }
+        
+        pre code {
+            background: none;
+            color: inherit;
+            padding: 0;
+        }
+        
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2rem 0;
+            font-size: 0.95rem;
+        }
+        
+        th {
+            background: #2c2c2c;
+            color: #f0e6d2;
+            padding: 0.8rem;
+            text-align: left;
+            font-family: 'Lora', serif;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 0.8rem;
+            border-bottom: 1px solid #e8dcc8;
+        }
+        
+        tr:nth-child(even) {
+            background: #f5f1ea;
+        }
+        
+        tr:hover {
+            background: #ebe5d9;
+        }
+        
+        /* Lists */
+        ul, ol {
+            margin-left: 2rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        li {
+            margin-bottom: 0.6rem;
+        }
+        
+        /* Character cards */
+        .character {
+            background: #f5f1ea;
+            padding: 2rem;
+            margin: 2rem 0;
+            border-radius: 4px;
+            border-left: 4px solid #c9b8a0;
+        }
+        
+        .character h4 {
+            margin-top: 0;
+            color: #1a1a2e;
+        }
+        
+        /* Callout boxes */
+        .callout {
+            background: #fffaf5;
+            border: 2px solid #c9b8a0;
+            padding: 1.5rem;
+            margin: 2rem 0;
+            border-radius: 4px;
+        }
+        
+        .callout p {
+            margin-bottom: 0;
+        }
+        
+        /* Whitespace helpers */
+        .spacer {
+            height: 3rem;
+        }
+        
+        /* Footer */
+        footer {
+            background: #2c2c2c;
+            color: #f0e6d2;
+            text-align: center;
+            padding: 3rem 2rem;
+            margin-top: 5rem;
+            font-size: 0.95rem;
+        }
+        
+        footer p {
+            margin-bottom: 0.8rem;
+        }
+        
+        .footer-links {
+            margin-top: 1.5rem;
+        }
+        
+        .footer-links a {
+            color: #d4af9f;
+            text-decoration: none;
+            margin: 0 1rem;
+        }
+        
+        .footer-links a:hover {
+            text-decoration: underline;
+        }
+        
+        /* Section IDs for navigation */
+        section {
+            scroll-margin-top: 80px;
+        }
+        
+        /* Image with caption */
+        .hero-image {
+            margin: 3rem 0;
+            text-align: center;
+        }
+        
+        .hero-image img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+        }
+        
+        .image-caption {
+            font-size: 0.9rem;
+            color: #666;
+            font-style: italic;
+            margin-top: 0.8rem;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 2.2rem;
+            }
+            
+            header .subtitle {
+                font-size: 1.1rem;
+            }
+            
+            h2 {
+                font-size: 1.8rem;
+            }
+            
+            h3 {
+                font-size: 1.4rem;
+            }
+            
+            nav ul {
+                gap: 1rem;
+            }
+            
+            nav a {
+                font-size: 0.85rem;
+            }
+
+            .mini-footer-content {
+                gap: 1rem;
+            }
+
+            .mini-footer {
+                flex-direction: column;
+                gap: 0.5rem;
+                padding: 0.5rem 1rem;
+            }
+
+            .mini-footer-links {
+                gap: 0.5rem;
+            }
+
+            main {
+                padding-bottom: 120px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>✨ aver</h1>
+    <div class="subtitle">A Versioned Knowledge Tracking Tool</div>
+    <div class="tagline">A Quest for the Perfect Record</div>
+</header>
+
+<nav>
+    <ul>
+        <li><a href="#prologue">The Prologue</a></li>
+        <li><a href="#fellowship">The Fellowship</a></li>
+        <li><a href="#artifact">The Artifact</a></li>
+        <li><a href="#quickstart">Quick Start</a></li>
+        <li><a href="#manual">The Manual</a></li>
+        <li><a href="#repository">The Code</a></li>
+    </ul>
+</nav>
+
+<!-- Persistent Mini Footer -->
+<div class="mini-footer" id="miniFooter">
+    <div class="mini-footer-content">
+        <div class="mini-footer-brand">✨ aver</div>
+        <div>A Versioned Knowledge Tracking Tool</div>
+    </div>
+    <div class="mini-footer-links">
+        <a href="#prologue">Prologue</a>
+        <a href="#fellowship">Fellowship</a>
+        <a href="#artifact">Artifact</a>
+        <a href="#quickstart">Quick Start</a>
+        <a href="#manual">Manual</a>
+        <a href="#repository">Code</a>
+        <a href="https://github.com/">GitHub</a>
+    </div>
+</div>
+
+<main>
+
+<!-- HERO SECTION -->
+<div class="intro-hero">
+    <p>In an age of crumbling servers, forgotten spreadsheets, and SaaS subscriptions that devoured kingdoms… a fellowship arose in search of a better way.</p>
+</div>
+
+<div class="hero-image">
+    <img src="aver-hero-image.png" alt="A mystical library archive with candlelit tomes, ancient scrolls, and an ornate desk with open ledgers" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+    <div class="placeholder-hero" style="display: none; background: linear-gradient(135deg, #2c2416 0%, #1a1a2e 100%); padding: 8rem 2rem; border-radius: 8px; box-shadow: inset 0 0 60px rgba(0,0,0,0.3);">
+        <div style="font-family: 'Lora', serif; font-size: 2.5rem; color: #c9b8a0; font-style: italic; text-align: center; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">
+            📚 The Archive Eternal 📚
+        </div>
+        <div style="font-size: 1.2rem; color: #b8a896; text-align: center; margin-top: 1rem; font-style: italic;">
+            Where knowledge dwells in scrolls and ledgers
+        </div>
+    </div>
+    <div class="image-caption">The Archive Eternal — where knowledge dwells</div>
+</div>
+
+<!-- PROLOGUE -->
+<section id="prologue">
+    <h2>Prologue: The Problem in the Realm</h2>
+    
+    <p>Across the lands, many orders struggled:</p>
+    
+    <ul>
+        <li>Records lost to dead platforms</li>
+        <li>Knowledge buried in email tombs</li>
+        <li>Notes scattered like ashes in the wind</li>
+        <li>Tools that required mighty infrastructure beasts just to stay alive</li>
+    </ul>
+    
+    <p>The sages all agreed:</p>
+    
+    <blockquote>
+        "There must be a way to keep structured records…<br>
+        With history… with search…<br>
+        Without summoning a server daemon."
+    </blockquote>
+    
+    <p>Thus began the quest.</p>
+</section>
+
+<!-- THE FELLOWSHIP -->
+<section id="fellowship">
+    <h2>The Fellowship of Seekers</h2>
+    
+    <p>Each hero came from a different discipline, seeking the same tool: a system to version and track evolving knowledge over time — safely, portably, and without dark magic.</p>
+    
+    <div class="spacer"></div>
+    
+    <!-- Lyra -->
+    <div class="character">
+        <h4>Lyra Quillshade — Bard of the Publishing Guild</h4>
+        <p>Lyra's struggles were many:</p>
+        <ul>
+            <li>Manuscripts full of continuity errors</li>
+            <li>Fact-checking notes lost in margins</li>
+            <li>Editorial decisions trapped in comment threads</li>
+            <li>Versions of drafts scattered across realms</li>
+        </ul>
+        <p>She sought:</p>
+        <blockquote>
+            "A living ledger of story issues, where every note is remembered, every revision traced, and nothing is locked in cursed proprietary scrolls."
+        </blockquote>
+        <p>She found a tool where each Record could be a continuity issue, a fact-check request, a layout problem, or a rights question—each tied to chapters, characters, and drafts, searchable forever.</p>
+        <p><em>Lyra wept (poetically).</em></p>
+    </div>
+    
+    <div class="spacer"></div>
+    
+    <!-- Null -->
+    <div class="character">
+        <h4>Null Pointer — Rogue Software Bounty Hunter</h4>
+        <p>Null had hunted bugs in many kingdoms:</p>
+        <ul>
+            <li>Ticket systems that required tribute (monthly billing cycles)</li>
+            <li>Platforms that vanished, taking issues with them</li>
+            <li>Tools that could not travel offline</li>
+            <li>Histories hidden behind glass dashboards</li>
+        </ul>
+        <p>Null wanted:</p>
+        <blockquote>
+            "Plain text. Full history. No gatekeepers."
+        </blockquote>
+        <p>He found a tool where every issue lived as a file, every change was recorded in Git history, search was fast and local, and no server dragon needed feeding.</p>
+        <p><em>Null nodded once. High praise.</em></p>
+    </div>
+    
+    <div class="spacer"></div>
+    
+    <!-- Dr. Aria -->
+    <div class="character">
+        <h4>Dr. Aria Voss — Scientific Sorcerer of the Seventh Lab</h4>
+        <p>Aria tracked experimental anomalies, equipment misbehavior, environmental drift, and observations that did not fit the model. Her previous tools were spreadsheets of despair, notebooks of entropy, and institutional systems that no one maintained.</p>
+        <p>She needed:</p>
+        <blockquote>
+            "A versioned, searchable lab logbook that speaks both human and machine."
+        </blockquote>
+        <p>With structured metadata, she could now ask: "Show all runs where temperature &gt; 37°C" or "All anomalies involving centrifuge-3." Her lab notes became queryable history.</p>
+        <p><em>The data spirits were appeased.</em></p>
+    </div>
+    
+    <div class="spacer"></div>
+    
+    <!-- Toren -->
+    <div class="character">
+        <h4>Toren Steelhand — Field Engineer of the Outer Works</h4>
+        <p>Toren maintained machines older than some empires, equipment in places where the signal bars went to die, and logs written on clipboards and later forgotten.</p>
+        <p>He required:</p>
+        <blockquote>
+            "A rugged log that works offline, syncs when it can, and doesn't demand a glowing web altar."
+        </blockquote>
+        <p>He found records stored locally, synced through Git when back in civilization, with structured fields for pressure, temperature, batch, and shift. For the first time, field notes and central history matched.</p>
+        <p><em>Toren approved with a single grunt.</em></p>
+    </div>
+    
+    <div class="spacer"></div>
+    
+    <!-- Elarion -->
+    <div class="character">
+        <h4>Elarion the Infinite — World-Building Deity & Dungeon Master</h4>
+        <p>Elarion ruled a sprawling world with hundreds of NPCs, dozens of unresolved plot threads, and players who delighted in derailing destiny. He lamented:</p>
+        <blockquote>
+            "I cannot remember what happened 14 sessions ago in the ruined city of Valemire."
+        </blockquote>
+        <p>With the tool, each Record became a quest, an NPC arc, a world event, or a faction scheme. Each session added Notes. He could now ask: "All active quests in the Ashlands" or "NPCs currently hostile to the party." Canon was preserved. Retcons were minimized. Chaos remained… but documented.</p>
+        <p><em>Canon was upheld.</em></p>
+    </div>
+</section>
+
+<!-- THE ARTIFACT -->
+<section id="artifact">
+    <h2>The Artifact They Discovered</h2>
+    
+    <p>At journey's end, the fellowship uncovered not a cloud platform, nor a SaaS throne… but something older. Simpler. Stronger.</p>
+    
+    <div class="callout">
+        <p><strong>✨ aver: A Versioned Knowledge Tracking Tool</strong></p>
+        <p>A tool that provides:</p>
+        <ul>
+            <li>Plain-text records (human-readable, future-proof)</li>
+            <li>Structured metadata (queryable, sortable)</li>
+            <li>Full version history (via Git)</li>
+            <li>Fast local search (via SQLite index)</li>
+            <li>No required server</li>
+            <li>Rebuildable index from source files</li>
+        </ul>
+    </div>
+    
+    <h3>What This Tool Is</h3>
+    <p>A file-native system for tracking structured records with history and search. Used for software issues, research logs, engineering deviations, editorial tracking, campaign lore, and any evolving body of knowledge that deserves to be versioned and remembered.</p>
+    
+    <h3>What It Is Not</h3>
+    <ul>
+        <li>Not a real-time alerting system</li>
+        <li>Not a corporate workflow labyrinth</li>
+        <li>Not a dashboard empire</li>
+    </ul>
+    <p>It is a versioned record, not a command center.</p>
+    
+    <h3>Epilogue</h3>
+    <p>And so the heroes returned to their domains: the Bard with her manuscripts, the Rogue with his bugs, the Sorcerer with her experiments, the Engineer with his machines, the Deity with their world. All carrying the same artifact.</p>
+    
+    <p>A simple truth, etched into plain text:</p>
+    
+    <blockquote>
+        What matters should be recorded.<br>
+        What is recorded should be searchable.<br>
+        What is searchable should endure.
+    </blockquote>
+    
+    <p><strong>aver awaits your first entry.</strong></p>
+</section>
+
+<!-- MANUAL SECTION -->
+
+<!-- QUICKSTART SECTION -->
+<section id="quickstart">
+    <h2>Quick Start: Get Up and Running in Minutes</h2>
+    
+    <p>This guide will get you started with Aver quickly. For comprehensive documentation, see the <a href="#manual">full manual</a>.</p>
+    
+    <div class="spacer"></div>
+    
+<h2 id="aver-quick-start-guide">Aver Quick Start Guide</h2>
+<h3 id="what-is-aver">What is Aver?</h3>
+<p>Aver is a lightweight knowledge tracking tool that stores structured data in <strong>plain Markdown files</strong>. Think of it as a flexible issue tracker, note-taking system, or knowledge base where your data stays readable and portable.</p>
+<p><strong>Key Concept</strong>: Aver manages <strong>records</strong> (the things you're tracking) and <strong>notes</strong> (chronological updates to those records). Everything is stored as text files with YAML frontmatter for metadata.</p>
+<p><strong>The Sovereignty Advantage</strong>: A single git commit can include both the fix and the updated status of the record creating an Atomic History. 100 years from now, someone can check out your repository and see not just how the code changed, but the exact context of the decision, all without needing an API key for a defunct service.</p>
+<div class="spacer"></div>
+<h3 id="installation">Installation</h3>
+<pre><code>
+# Install dependencies
+pip install pyyaml tomli tomli_w
+
+# Make executable and add to PATH
+chmod +x aver.py
+sudo ln -s /path/to/aver.py /usr/local/bin/aver
+</code></pre>
+<div class="spacer"></div>
+<h3 id="basic-workflow">Basic Workflow</h3>
+<h4 id="1-initialize-a-database">1. Initialize a Database</h4>
+<pre><code>
+cd /path/to/your/project
+aver admin init
+</code></pre>
+<p>This creates:</p>
+<ul>
+<li><code>.aver/</code> directory with config and SQLite index</li>
+<li><code>records/</code> directory for your data</li>
+<li><code>updates/</code> directory for notes</li>
+</ul>
+<h4 id="2-set-your-user-info">2. Set Your User Info</h4>
+<pre><code>
+aver admin config set-user --handle yourname --email you@example.com
+</code></pre>
+<h4 id="3-create-your-first-record">3. Create Your First Record</h4>
+<pre><code>
+aver record new --title "Fix login bug" --status open
+</code></pre>
+<p>This opens your editor (set via <code>$EDITOR</code>) with a template. Save and close to create the record.</p>
+<h4 id="4-add-a-note-to-the-record">4. Add a Note to the Record</h4>
+<pre><code>
+aver note add REC-001 --message "Investigated - issue is in auth module"
+</code></pre>
+<h4 id="5-search-and-list">5. Search and List</h4>
+<pre><code>
+# List all records
+aver record list
+
+# Search by field
+aver record search --ksearch status=open
+
+# View a specific record
+aver record view REC-001
+
+# List notes for a record
+aver note list REC-001
+</code></pre>
+<div class="spacer"></div>
+<h3 id="understanding-fields">Understanding Fields</h3>
+<p>Aver has two types of fields:</p>
+<h4 id="special-fields-configured">Special Fields (Configured)</h4>
+<ul>
+<li>Defined in your <code>config.toml</code></li>
+<li>Validated and can be auto-populated</li>
+<li>Appear in YAML without type hints</li>
+<li>Can be required, have defaults, or be auto-generated</li>
+</ul>
+<p><strong>Example</strong>: <code>title</code>, <code>status</code>, <code>created_by</code>, <code>author</code></p>
+<h4 id="custom-fields-ad-hoc">Custom Fields (Ad-hoc)</h4>
+<ul>
+<li>Created on-the-fly</li>
+<li>No validation</li>
+<li>Appear in YAML with type hints like <code>myfield__string</code></li>
+</ul>
+<p><strong>Example</strong>: <code>--text server=web-01 --number port=8080</code></p>
+<div class="spacer"></div>
+<h3 id="common-commands">Common Commands</h3>
+<h4 id="records">Records</h4>
+<pre><code>
+# Create with editor
+aver record new
+
+# Create with fields
+aver record new --title "Task name" --status open --priority high
+
+# See available fields for your config
+aver record new --help-fields
+
+# Update a record
+aver record update REC-001 --status closed
+
+# Import from file
+aver record new --from-file record.md
+</code></pre>
+<h4 id="notes">Notes</h4>
+<pre><code>
+# Add with editor
+aver note add REC-001
+
+# Add with message
+aver note add REC-001 --message "Fixed and tested"
+
+# See available fields for this record's notes
+aver note add REC-001 --help-fields
+
+# Search notes
+aver note search --ksearch category=bugfix
+</code></pre>
+<div class="spacer"></div>
+<h3 id="templates-optional-but-powerful">Templates (Optional but Powerful)</h3>
+<p>Templates let you define different field sets for different record types. For example:</p>
+<p><strong>Bug Template</strong> (<code>config.toml</code>):</p>
+<pre><code>
+[template.bug]
+record_prefix = "BUG"
+note_prefix = "COMMENT"
+
+[template.bug.record_special_fields.severity]
+type = "single"
+value_type = "integer"
+accepted_values = ["1", "2", "3", "4", "5"]
+default = "3"
+
+[template.bug.note_special_fields.category]
+type = "single"
+value_type = "string"
+accepted_values = ["investigation", "bugfix", "workaround"]
+</code></pre>
+<p><strong>Usage</strong>:</p>
+<pre><code>
+# Create bug with custom ID prefix
+aver record new --template bug --title "App crashes on login" --severity 2
+
+# Add categorized note
+aver note add BUG-001 --message "Root cause found" --category investigation
+</code></pre>
+<div class="spacer"></div>
+<h3 id="file-structure">File Structure</h3>
+<pre><code>
+project/
+├── .aver/
+│   ├── aver.db          # SQLite index (ignore in Git)
+│   └── config.toml      # Your field definitions
+├── records/
+│   ├── REC-001.md       # A record
+│   └── BUG-042.md       # Another record
+└── updates/
+    ├── REC-001/
+    │   ├── NT-001.md    # A note
+    │   └── NT-002.md    # Another note
+    └── BUG-042/
+        └── COMMENT-001.md
+</code></pre>
+<p><strong>Record file</strong> (<code>REC-001.md</code>):</p>
+<pre><code>
+---
+title: Fix login bug
+status: open
+priority: high
+created_by: alice
+created_at: 2024-02-15 10:30:00
+---
+Users cannot log in when using special characters in password.
+Affects approximately 5% of users.
+</code></pre>
+<p><strong>Note file</strong> (<code>NT-001.md</code>):</p>
+<pre><code>
+---
+author: alice
+timestamp: 2024-02-15 11:00:00
+category: investigation
+---
+Investigated the issue. Found that password validation
+is incorrectly escaping special characters.
+</code></pre>
+<div class="spacer"></div>
+<h3 id="configuration-basics">Configuration Basics</h3>
+<p>Edit <code>.aver/config.toml</code> to define your special fields:</p>
+<pre><code>
+# Default ID prefixes
+default_record_prefix = "REC"
+default_note_prefix = "NT"
+
+# Global record fields (apply to ALL records)
+[record_special_fields.title]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+
+[record_special_fields.status]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+accepted_values = ["open", "in_progress", "closed"]
+default = "open"
+
+[record_special_fields.created_by]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"  # Auto-populated
+
+# Global note fields (apply to ALL notes)
+[note_special_fields.author]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"  # Auto-populated
+
+[note_special_fields.timestamp]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "datetime"  # Auto-populated
+</code></pre>
+<div class="spacer"></div>
+<h3 id="key-tips">Key Tips</h3>
+<ol>
+<li><strong>Use <code>--help-fields</code></strong> to discover what fields are available:</li>
+</ol>
+<p>aver record new --help-fields</p>
+<p>aver note add REC-001 --help-fields</p>
+<p>```</p>
+<ol>
+<li><strong>Records and notes have different fields</strong> - Notes can track different information than their parent records.</li>
+</ol>
+<ol>
+<li><strong>Special fields are validated</strong> - The system won't let you set <code>status=invalid</code> if it's not in <code>accepted_values</code>.</li>
+</ol>
+<ol>
+<li><strong>System values are automatic</strong> - Fields like <code>author</code>, <code>timestamp</code>, <code>created_by</code> are auto-populated.</li>
+</ol>
+<ol>
+<li><strong>Everything is plain text</strong> - You can edit files directly, use <code>grep</code>, and version control with Git.</li>
+</ol>
+<ol>
+<li><strong>Reindex after manual edits</strong>:</li>
+</ol>
+<p>aver admin reindex</p>
+<p>```</p>
+<div class="spacer"></div>
+<h3 id="multiple-projects-libraries">Multiple Projects (Libraries)</h3>
+<p>Work with multiple databases:</p>
+<pre><code>
+# Add library aliases
+aver admin config add-alias --alias work --path ~/work/aver-db
+aver admin config add-alias --alias personal --path ~/personal/aver-db
+
+# Use them
+aver --use work record list
+aver --use personal record new --title "Personal task"
+</code></pre>
+<div class="spacer"></div>
+<h3 id="next-steps">Next Steps</h3>
+<ul>
+<li><strong>Read the full manual</strong> for comprehensive coverage of templates, search, and advanced features</li>
+<li><strong>Experiment</strong> with a test database to understand the workflow</li>
+<li><strong>Configure special fields</strong> in <code>config.toml</code> for your specific use case</li>
+<li><strong>Set up templates</strong> for different record types (bugs, features, tasks)</li>
+<li><strong>Integrate with Git</strong> for version control and collaboration</li>
+</ul>
+<div class="spacer"></div>
+<h3 id="quick-reference">Quick Reference</h3>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Initialize database</td>
+<td><code>aver admin init</code></td>
+</tr>
+<tr>
+<td>Set user</td>
+<td><code>aver admin config set-user --handle name --email email</code></td>
+</tr>
+<tr>
+<td>Create record</td>
+<td><code>aver record new --title "..." --status open</code></td>
+</tr>
+<tr>
+<td>List records</td>
+<td><code>aver record list</code></td>
+</tr>
+<tr>
+<td>Search records</td>
+<td><code>aver record search --ksearch status=open</code></td>
+</tr>
+<tr>
+<td>Add note</td>
+<td><code>aver note add REC-001 --message "..."</code></td>
+</tr>
+<tr>
+<td>List notes</td>
+<td><code>aver note list REC-001</code></td>
+</tr>
+<tr>
+<td>Search notes</td>
+<td><code>aver note search --ksearch category=bugfix</code></td>
+</tr>
+<tr>
+<td>Show available fields</td>
+<td><code>aver record new --help-fields</code></td>
+</tr>
+<tr>
+<td>Show note fields</td>
+<td><code>aver note add REC-001 --help-fields</code></td>
+</tr>
+<tr>
+<td>Reindex</td>
+<td><code>aver admin reindex</code></td>
+</tr>
+</tbody>
+</table>
+<div class="spacer"></div>
+<p><strong>Remember</strong>: Your data is just Markdown files. You can always read, edit, or process them with any text tool. Aver just adds structure, validation, and fast searching on top.</p></section>
+
+<!-- MANUAL SECTION -->
+<section id="manual">
+    <h2>The User Manual: A Complete Guide</h2>
+    
+    <p>This manual provides comprehensive documentation for Aver, the versioned knowledge tracking tool. From installation to advanced features, everything you need to know is contained within.</p>
+    
+    <div class="spacer"></div>
+    
+<h2 id="aver-a-verified-knowledge-tracking-tool">Aver: A Verified Knowledge Tracking Tool</h2>
+<p><strong>User Manual - Updated Edition</strong></p>
+<div class="spacer"></div>
+<h3 id="table-of-contents">Table of Contents</h3>
+<h4 id="1-introduction">1. Introduction</h4>
+<ul>
+<li><a href="#what-is-aver">What is Aver?</a></li>
+<li><a href="#why-use-aver">Why Use Aver?</a></li>
+<li><a href="#use-cases">Use Cases</a></li>
+<li><a href="#key-features">Key Features</a></li>
+<li><a href="#how-it-works">How It Works</a></li>
+</ul>
+<h4 id="2-getting-started">2. Getting Started</h4>
+<ul>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#system-requirements">System Requirements</a></li>
+<li><a href="#creating-your-first-database">Creating Your First Database</a></li>
+<li><a href="#understanding-database-locations">Understanding Database Locations</a></li>
+<li><a href="#configuration-files">Configuration Files</a></li>
+</ul>
+<h4 id="3-core-concepts">3. Core Concepts</h4>
+<ul>
+<li><a href="#records-vs-notes-updates">Records vs Notes (Updates)</a></li>
+<li><a href="#special-fields-vs-custom-fields">Special Fields vs Custom Fields</a></li>
+<li><a href="#templates">Templates</a></li>
+<li><a href="#the-markdown-storage-model">The Markdown Storage Model</a></li>
+</ul>
+<h4 id="4-working-with-records">4. Working with Records</h4>
+<ul>
+<li><a href="#creating-a-new-record">Creating a New Record</a></li>
+<li><a href="#viewing-records">Viewing Records</a></li>
+<li><a href="#searching-for-records">Searching for Records</a></li>
+<li><a href="#updating-record-information">Updating Record Information</a></li>
+<li><a href="#using---help-fields-for-records">Using --help-fields</a></li>
+</ul>
+<h4 id="5-working-with-notes-updates">5. Working with Notes (Updates)</h4>
+<ul>
+<li><a href="#adding-a-note">Adding a Note</a></li>
+<li><a href="#viewing-notes">Viewing Notes</a></li>
+<li><a href="#searching-notes">Searching Notes</a></li>
+<li><a href="#using---help-fields-for-notes">Using --help-fields for Notes</a></li>
+<li><a href="#note-templates">Note Templates</a></li>
+</ul>
+<h4 id="6-special-fields-system">6. Special Fields System</h4>
+<ul>
+<li><a href="#understanding-special-fields">Understanding Special Fields</a></li>
+<li><a href="#record-special-fields">Record Special Fields</a></li>
+<li><a href="#note-special-fields">Note Special Fields</a></li>
+<li><a href="#system-values">System Values</a></li>
+<li><a href="#field-properties">Field Properties</a></li>
+<li><a href="#default-values">Default Values</a></li>
+<li><a href="#secure-fields">Secure Fields (securestring)</a></li>
+<li><a href="#system-generated-notes">System-Generated Notes (is_system_update)</a></li>
+</ul>
+<h4 id="7-configuration-and-templates">7. Configuration and Templates</h4>
+<ul>
+<li><a href="#global-configuration">Global Configuration</a></li>
+<li><a href="#record-special-fields-configuration">Record Special Fields Configuration</a></li>
+<li><a href="#note-special-fields-configuration">Note Special Fields Configuration</a></li>
+<li><a href="#template-system">Template System</a></li>
+<li><a href="#template-special-fields">Template Special Fields</a></li>
+</ul>
+<h4 id="8-advanced-features">8. Advanced Features</h4>
+<ul>
+<li><a href="#search-queries">Search Queries</a></li>
+<li><a href="#database-management">Database Management</a></li>
+<li><a href="#library-aliases">Library Aliases</a></li>
+<li><a href="#importing-from-files">Importing from Files</a></li>
+<li><a href="#reindexing">Reindexing</a></li>
+</ul>
+<h4 id="9-command-reference">9. Command Reference</h4>
+<ul>
+<li><a href="#admin-init">admin init</a></li>
+<li><a href="#admin-config">admin config</a></li>
+<li><a href="#record-new">record new</a></li>
+<li><a href="#record-unmask">record unmask</a></li>
+<li><a href="#record-update">record update</a></li>
+<li><a href="#record-list">record list</a></li>
+<li><a href="#record-search">record search</a></li>
+<li><a href="#note-add">note add</a></li>
+<li><a href="#note-list">note list</a></li>
+<li><a href="#note-search">note search</a></li>
+<li><a href="#note-unmask">note unmask</a></li>
+<li><a href="#admin-reindex">admin reindex</a></li>
+<li><a href="#admin-template-data">admin template-data</a></li>
+<li><a href="#admin-validate">admin validate</a></li>
+</ul>
+<h4 id="10-administrators-guide">10. Administrator's Guide</h4>
+<ul>
+<li><a href="#setting-up-special-fields">Setting Up Special Fields</a></li>
+<li><a href="#designing-templates">Designing Templates</a></li>
+<li><a href="#managing-multiple-databases">Managing Multiple Databases</a></li>
+<li><a href="#user-configuration">User Configuration</a></li>
+<li><a href="#best-practices">Best Practices</a></li>
+</ul>
+<div class="spacer"></div>
+<h3 id="1-introduction">1. Introduction</h3>
+<h4 id="what-is-aver">What is Aver?</h4>
+<p>Aver (pronounced "AH-ver") is a lightweight, flexible knowledge tracking tool designed to help you organize, track, and search through structured information. At its core, Aver manages <strong>records</strong> (primary items you're tracking) and <strong>notes</strong> (chronological updates to those records).</p>
+<p>Unlike traditional database systems that lock your data away in proprietary formats, Aver stores everything in plain <strong>Markdown files</strong> with <strong>YAML frontmatter</strong>. This means your data is always readable, portable, and easy to work with using standard text tools. SQLite is used only for indexing and searching—your actual data lives in files you can read, edit, and version control.</p>
+<h4 id="why-use-aver">Why Use Aver?</h4>
+<p><strong>Human-Readable Storage</strong>: Every record and note is stored as a Markdown file. You can read them with any text editor, search them with <code>grep</code>, and track changes with Git.</p>
+<p><strong>Flexible Metadata</strong>: Aver supports two types of fields:</p>
+<ul>
+<li><strong>Special Fields</strong>: Predefined, validated fields with automatic population (like author, timestamps)</li>
+<li><strong>Custom Fields</strong>: Ad-hoc key-value pairs for any data you need</li>
+</ul>
+<p><strong>Fast Searching</strong>: Despite using plain text files, Aver maintains a SQLite index that enables lightning-fast searches across thousands of records.</p>
+<p><strong>Template System</strong>: Define record and note templates with their own special fields, enabling different workflows for different types of records (bugs, features, experiments, etc.).</p>
+<p><strong>Git-Friendly</strong>: Because everything is text files, your entire database works beautifully with version control.</p>
+<p><strong>Offline-First</strong>: No internet required. No cloud dependencies. Your data stays on your machine.</p>
+<h4 id="key-features">Key Features</h4>
+<ul>
+<li><strong>Dual Storage Model</strong>: Records for primary entities, notes for chronological changes</li>
+<li><strong>Special Fields System</strong>: Define validated, auto-populated fields at global and template levels</li>
+<li><strong>Template System</strong>: Configure different field sets for different record types</li>
+<li><strong>Flexible Search</strong>: Query by any field with support for ranges, wildcards, and combinations</li>
+<li><strong>Multiple Databases</strong>: Work with different databases (called "libraries") for different projects</li>
+<li><strong>Editor Integration</strong>: Write in your favorite text editor</li>
+<li><strong>File Import</strong>: Import records and notes from Markdown files</li>
+<li><strong>Auto-Discovery</strong>: Automatically finds databases in your working directory or home folder</li>
+</ul>
+<h4 id="how-it-works">How It Works</h4>
+<p>Aver uses a three-layer architecture:</p>
+<p><strong>1. Storage Layer (Markdown Files)</strong></p>
+<ul>
+<li>Records stored as <code>{record-id}.md</code> in a <code>records/</code> directory</li>
+<li>Notes stored as <code>{note-id}.md</code> in <code>updates/{record-id}/</code> directories</li>
+<li>All files use YAML frontmatter for structured data</li>
+</ul>
+<p><strong>2. Index Layer (SQLite)</strong></p>
+<ul>
+<li>A <code>.aver/aver.db</code> file maintains searchable indexes</li>
+<li>Tracks all metadata fields for fast queries</li>
+<li>Automatically updated when you create or modify records</li>
+</ul>
+<p><strong>3. Application Layer (Python CLI)</strong></p>
+<ul>
+<li>Provides a friendly command-line interface</li>
+<li>Validates special fields</li>
+<li>Manages templates and configuration</li>
+</ul>
+<div class="spacer"></div>
+<h3 id="3-core-concepts">3. Core Concepts</h3>
+<h4 id="records-vs-notes-updates">Records vs Notes (Updates)</h4>
+<p><strong>Records</strong> are the primary entities you're tracking. Each record represents one "thing" in your system:</p>
+<ul>
+<li>A bug report</li>
+<li>A feature request</li>
+<li>An experiment</li>
+<li>A D&D character</li>
+<li>A maintenance log entry</li>
+</ul>
+<p><strong>Notes</strong> (also called updates) are chronological entries attached to a record. They represent changes, observations, or progress:</p>
+<ul>
+<li>Status updates</li>
+<li>Comments</li>
+<li>Test results</li>
+<li>Investigation notes</li>
+</ul>
+<p>Records and notes can have completely different sets of special fields, allowing notes to track different information than their parent records.</p>
+<h4 id="special-fields-vs-custom-fields">Special Fields vs Custom Fields</h4>
+<p><strong>Special Fields</strong> are predefined in your configuration:</p>
+<ul>
+<li>Validated against allowed values</li>
+<li>Can be automatically populated (like <code>author</code>, <code>timestamp</code>)</li>
+<li>Can be required or optional</li>
+<li>Can be editable or read-only</li>
+<li>Appear in YAML frontmatter without type hints</li>
+<li>Can be different for records vs notes</li>
+<li>Can be overridden by templates</li>
+</ul>
+<p><strong>Custom Fields</strong> are ad-hoc key-value pairs:</p>
+<ul>
+<li>Created on-the-fly with <code>--text</code>, <code>--number</code>, <code>--decimal</code> flags</li>
+<li>No validation</li>
+<li>Always editable</li>
+<li>Appear in YAML frontmatter with type hints (e.g., <code>myfield__string</code>)</li>
+</ul>
+<p><strong>Example:</strong></p>
+<pre><code>
+---
+# Special fields (no type hints)
+title: Database Connection Error
+status: open
+priority: high
+created_by: alice
+created_at: 2024-02-15 10:30:00
+
+# Custom fields (with type hints)
+server_ip__string: 192.168.1.100
+retry_count__integer: 5
+---
+</code></pre>
+<h4 id="templates">Templates</h4>
+<p>Templates define:</p>
+<ol>
+<li><strong>ID Prefixes</strong>: Custom prefixes for records (BUG-, FEAT-) and notes (COMMENT-, FEEDBACK-)</li>
+<li><strong>Special Fields</strong>: Template-specific fields that add to or override global fields</li>
+<li><strong>Content Templates</strong>: Pre-filled text for records and notes</li>
+</ol>
+<p>Templates allow you to have different field sets for different types of records. For example:</p>
+<ul>
+<li>Bug template: <code>severity</code>, <code>reproducible</code>, <code>component</code></li>
+<li>Feature template: <code>priority</code>, <code>effort_estimate</code>, <code>stakeholder</code></li>
+<li>Notes in bug records: <code>category</code> (investigation, bugfix, etc.), <code>priority</code></li>
+<li>Notes in feature records: <code>feedback_type</code>, <code>implementation_status</code></li>
+</ul>
+<div class="spacer"></div>
+<h3 id="4-working-with-records">4. Working with Records</h3>
+<h4 id="creating-a-new-record">Creating a New Record</h4>
+<p><strong>Basic creation</strong> (opens editor):</p>
+<pre><code>
+aver record new
+</code></pre>
+<p><strong>With special fields</strong> (if defined in config):</p>
+<pre><code>
+aver record new --title "Cannot connect to database" --status open --priority high
+</code></pre>
+<p><strong>Using a template</strong>:</p>
+<pre><code>
+aver record new --template bug --title "Login fails" --severity 3
+</code></pre>
+<p><strong>With custom fields</strong>:</p>
+<pre><code>
+aver record new --title "Server down" --text location=us-west-2 --number error_code=500
+</code></pre>
+<p><strong>From a file</strong>:</p>
+<pre><code>
+aver record new --from-file bug-report.md
+</code></pre>
+<p><strong>With a custom record ID</strong>:</p>
+<pre><code>
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
+</code></pre>
+<p>The ID must use only A-Z, a-z, 0-9, <code>_</code>, and <code>-</code>, and must be unique. If omitted, an ID is auto-generated.</p>
+<h4 id="using-help-fields-for-records">Using --help-fields for Records</h4>
+<p>To see what special fields are available for records:</p>
+<p><strong>Global fields</strong>:</p>
+<pre><code>
+aver record new --help-fields
+</code></pre>
+<p><strong>Template-specific fields</strong>:</p>
+<pre><code>
+aver record new --template bug --help-fields
+</code></pre>
+<p>This shows:</p>
+<ul>
+<li>Field names</li>
+<li>Field types (single/multi, string/integer/float)</li>
+<li>Accepted values (if constrained)</li>
+<li>Default values</li>
+<li>Required vs optional</li>
+</ul>
+<p><strong>Example output</strong>:</p>
+<pre><code>
+Available fields for record creation (template: bug):
+
+  title (single, string)
+    Required
+
+  status (single, string)
+    Required
+    Accepted: new, confirmed, in_progress, fixed, verified, closed
+    Default: new
+
+  severity (single, integer)
+    Required
+    Accepted: 1, 2, 3, 4, 5
+    Default: 3
+
+  priority (single, string)
+    Accepted: low, medium, high, critical
+    Default: medium
+
+  tags (multi, string)
+
+Usage:
+  aver record new --template bug --title "..." --status new --severity 3
+</code></pre>
+<div class="spacer"></div>
+<h3 id="5-working-with-notes-updates">5. Working with Notes (Updates)</h3>
+<h4 id="adding-a-note">Adding a Note</h4>
+<p><strong>Basic note</strong> (opens editor):</p>
+<pre><code>
+aver note add REC-001
+</code></pre>
+<p><strong>With message</strong>:</p>
+<pre><code>
+aver note add REC-001 --message "Investigated issue, found root cause in auth module"
+</code></pre>
+<p><strong>With special fields</strong> (if note fields defined):</p>
+<pre><code>
+aver note add BUG-042 --message "Applied fix" --category bugfix --priority critical
+</code></pre>
+<p><strong>From a file</strong>:</p>
+<pre><code>
+aver note add BUG-042 --from-file investigation-notes.md
+</code></pre>
+<h4 id="using-help-fields-for-notes">Using --help-fields for Notes</h4>
+<p>Notes can have their own special fields, different from records. To see available note fields for a specific record:</p>
+<pre><code>
+aver note add BUG-042 --help-fields
+</code></pre>
+<p><strong>Example output</strong>:</p>
+<pre><code>
+Available fields for BUG-042 (template: bug):
+
+  category (single, string)
+    Accepted: investigation, bugfix, workaround, regression, documentation
+
+  priority (single, string)
+    Accepted: low, medium, high, critical
+    Default: medium
+
+Usage:
+  aver note add BUG-042 --category=investigation --priority=high
+  aver note add BUG-042 --message 'Found it' --category=bugfix
+</code></pre>
+<p><strong>Important</strong>: Note fields are template-specific and inherit from:</p>
+<ol>
+<li>Global <code>note_special_fields</code> (like <code>author</code>, <code>timestamp</code>)</li>
+<li>Template's <code>note_special_fields</code> (like <code>category</code>, <code>priority</code>)</li>
+</ol>
+<h4 id="viewing-notes">Viewing Notes</h4>
+<pre><code>
+aver note list BUG-042
+</code></pre>
+<h4 id="searching-notes">Searching Notes</h4>
+<p>Search notes by their special fields:</p>
+<pre><code>
+# Search by note field
+aver note search --ksearch category=bugfix
+
+# Search by priority
+aver note search --ksearch priority=critical
+</code></pre>
+<div class="spacer"></div>
+<h3 id="6-special-fields-system">6. Special Fields System</h3>
+<h4 id="understanding-special-fields">Understanding Special Fields</h4>
+<p>Special fields are the heart of Aver's structured data system. They provide:</p>
+<ul>
+<li><strong>Validation</strong>: Ensure data consistency</li>
+<li><strong>Automation</strong>: Auto-populate timestamps, authors, etc.</li>
+<li><strong>Structure</strong>: Define what information belongs in records and notes</li>
+<li><strong>Templates</strong>: Different field sets for different record types</li>
+</ul>
+<h4 id="record-special-fields">Record Special Fields</h4>
+<p>Record special fields are defined globally and can be overridden by templates. Common examples:</p>
+<p><strong>System-populated fields</strong>:</p>
+<ul>
+<li><code>created_by</code>: Auto-set to current user (non-editable)</li>
+<li><code>created_at</code>: Auto-set to current timestamp (non-editable)</li>
+<li><code>template_id</code>: Auto-set when using templates (non-editable)</li>
+<li><code>updated_at</code>: Auto-updated on changes (editable)</li>
+</ul>
+<p><strong>User-defined fields</strong>:</p>
+<ul>
+<li><code>title</code>: Record title (required)</li>
+<li><code>status</code>: Workflow status with constrained values</li>
+<li><code>priority</code>: Priority level</li>
+<li><code>tags</code>: Multi-value categorization</li>
+</ul>
+<h4 id="note-special-fields">Note Special Fields</h4>
+<p>Notes have their own special fields, completely independent from record fields:</p>
+<p><strong>Global note fields</strong> (apply to all notes):</p>
+<ul>
+<li><code>author</code>: Who created the note (auto-populated)</li>
+<li><code>timestamp</code>: When the note was created (auto-populated)</li>
+</ul>
+<p><strong>Template-specific note fields</strong> (only for notes in templated records):</p>
+<ul>
+<li><code>category</code>: Type of note (investigation, bugfix, etc.)</li>
+<li><code>priority</code>: Note urgency</li>
+<li><code>status</code>: Note-specific status</li>
+</ul>
+<p><strong>Key insight</strong>: When you add a note to a bug record, the note gets:</p>
+<ul>
+<li>Global note fields (author, timestamp)</li>
+<li>Bug template note fields (category, priority)</li>
+<li>Does NOT get record fields (severity, reproducible)</li>
+</ul>
+<h4 id="system-values">System Values</h4>
+<p>System values automatically populate special fields:</p>
+<table>
+<thead>
+<tr>
+<th>System Value</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>datetime</code></td>
+<td>Full timestamp</td>
+<td><code>2024-02-15 10:30:00</code></td>
+</tr>
+<tr>
+<td><code>datestamp</code></td>
+<td>Date only</td>
+<td><code>2024-02-15</code></td>
+</tr>
+<tr>
+<td><code>user_name</code></td>
+<td>User handle</td>
+<td><code>alice</code></td>
+</tr>
+<tr>
+<td><code>user_email</code></td>
+<td>User email</td>
+<td><code>alice@example.com</code></td>
+</tr>
+<tr>
+<td><code>recordid</code></td>
+<td>Record ID</td>
+<td><code>BUG-042</code></td>
+</tr>
+<tr>
+<td><code>updateid</code></td>
+<td>Note ID</td>
+<td><code>COMMENT-001</code></td>
+</tr>
+<tr>
+<td><code>template_id</code></td>
+<td>Template name</td>
+<td><code>bug</code></td>
+</tr>
+<tr>
+<td><code>is_system_update</code></td>
+<td><code>1</code> for system-generated notes, <code>0</code> for user notes</td>
+<td><code>1</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Configuration example</strong>:</p>
+<pre><code>
+[record_special_fields.created_by]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"
+index_values = true
+</code></pre>
+<h4 id="field-properties">Field Properties</h4>
+<p>Each special field has these properties:</p>
+<p><strong>type</strong>: <code>single</code> or <code>multi</code></p>
+<ul>
+<li><code>single</code>: One value per field</li>
+<li><code>multi</code>: Multiple values allowed (like tags)</li>
+</ul>
+<p><strong>value_type</strong>: <code>string</code>, <code>integer</code>, <code>float</code>, or <code>securestring</code></p>
+<ul>
+<li>Determines storage and search behavior</li>
+<li><code>securestring</code>: Stores plaintext on disk but is <strong>masked</strong> as <code>{securestring}</code> in all user-facing output (view, list, JSON export, editor). Supports <code>=</code>, <code>!=</code>, and <code>^</code> search operators only. Use for passwords, API keys, tokens, and other sensitive values.</li>
+</ul>
+<p><strong>editable</strong>: <code>true</code> or <code>false</code></p>
+<ul>
+<li><code>false</code>: Field is set once on creation and locked thereafter
+  <ul>
+    <li>If <code>system_value</code> is set: system auto-populates; user-supplied value is discarded</li>
+    <li>If <code>system_value</code> is not set: user supplies the value at creation; it is then immutable</li>
+  </ul>
+</li>
+<li><code>true</code>: Users can edit; if <code>system_value</code> is set, auto-updates on every edit</li>
+</ul>
+<p><strong>enabled</strong>: <code>true</code> or <code>false</code></p>
+<ul>
+<li>Disabled fields are ignored</li>
+</ul>
+<p><strong>required</strong>: <code>true</code> or <code>false</code></p>
+<ul>
+<li>Required fields must have a value</li>
+</ul>
+<p><strong>index_values</strong>: <code>true</code> or <code>false</code> (default: <code>true</code>)</p>
+<ul>
+<li><code>true</code>: Field values are indexed in the database and searchable</li>
+<li><code>false</code>: Field values stored only in Markdown files, not searchable via database</li>
+<li>Note: <code>securestring</code> fields are always indexed for search (regardless of <code>index_values</code>), but the plaintext is stored in a separate secure column never exposed in output</li>
+</ul>
+<p><strong>system_value</strong>: System value source (optional)</p>
+<ul>
+<li>If set, field is auto-populated</li>
+<li>Non-editable system fields only set on creation</li>
+<li>Editable system fields update on every edit</li>
+</ul>
+<p><strong>accepted_values</strong>: List of valid values (optional)</p>
+<ul>
+<li>Constrains field to specific choices</li>
+<li>Example: <code>["open", "closed", "in_progress"]</code></li>
+</ul>
+<p><strong>default</strong>: Default value (optional)</p>
+<ul>
+<li>Used if field is empty on creation</li>
+<li>Can reference system values</li>
+</ul>
+<h4 id="default-values">Default Values</h4>
+<p>Defaults can be static or dynamic:</p>
+<p><strong>Static default</strong>:</p>
+<pre><code>
+[record_special_fields.priority]
+type = "single"
+value_type = "string"
+default = "medium"
+</code></pre>
+<p><strong>Dynamic default</strong> (references system value):</p>
+<pre><code>
+[note_special_fields.created_date]
+type = "single"
+value_type = "string"
+default = "${datestamp}"
+</code></pre>
+<h4 id="secure-fields">Secure Fields (<code>securestring</code>)</h4>
+<p>Aver supports a special <code>value_type = "securestring"</code> for fields that contain sensitive data like passwords, API keys, and authentication tokens.</p>
+<p><strong>How it works:</strong></p>
+<ul>
+<li>Values are stored <strong>plaintext</strong> in Markdown files on disk (source of truth, under your control)</li>
+<li>Values are <strong>masked</strong> as <code>{securestring}</code> everywhere they surface to the user:
+  <ul>
+    <li><code>record view</code> and <code>note view</code> output</li>
+    <li><code>record list</code> / <code>note search</code> output</li>
+    <li>JSON export and JSON IO search results</li>
+    <li>The YAML editor (when editing a record)</li>
+  </ul>
+</li>
+<li>Values are <strong>fully searchable</strong> via <code>=</code>, <code>!=</code>, and <code>^</code> operators (exact match and IN-list)</li>
+</ul>
+<p><strong>Configuration example</strong>:</p>
+<pre><code>
+[record_special_fields.api_token]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+</code></pre>
+<p><strong>Usage</strong>:</p>
+<pre><code>
+# Set a secure field value on creation
+aver record new --api_token mysecretkey123
+
+# View record — secure field shown as mask
+aver record view REC-001
+#   api_token: {securestring}
+
+# Search by exact value (works even though display is masked)
+aver record list --ksearch api_token=mysecretkey123
+
+# Search using IN-list
+aver record list --ksearch 'api_token^key1|key2|key3'
+
+# Exclude by value
+aver record list --ksearch api_token!=mysecretkey123
+</code></pre>
+<p><strong>Editor behavior for editable securestring fields:</strong> When you open a record in the YAML editor, the field appears as <code>{securestring}</code>. If you leave it unchanged, the original value is preserved. To update it, replace the mask with the new value.</p>
+<p><strong>Non-editable securestring fields:</strong> Fields with <code>editable = false</code> can be set at creation time and cannot be changed afterward. They are never shown in the editor.</p>
+<p><strong>Security note</strong>: Plaintext values are stored in Markdown files and indexed in SQLite. Aver's masking is a display-layer feature to prevent accidental exposure in terminal output, logs, and exports. If you need true encryption at rest, consider encrypting the database directory.</p>
+<h4 id="system-generated-notes">System-Generated Notes (<code>is_system_update</code>)</h4>
+<p>Aver automatically creates notes on your behalf in two situations:</p>
+<ol>
+<li><strong>Record creation</strong> — an initial note is created when a new record is saved, capturing the full initial state.</li>
+<li><strong>Record updates</strong> — when you update a record's content or metadata, aver appends a note recording what changed and what the previous values were.</li>
+</ol>
+<p>These system-generated notes are functionally identical to user notes, but it can be useful to distinguish them in searches and integrations. The <code>is_system_update</code> system value enables this.</p>
+<p><strong>Configuration</strong>:</p>
+<pre><code>
+[note_special_fields.is_system_update]
+type = "single"
+value_type = "integer"
+editable = false
+enabled = true
+required = false
+system_value = "is_system_update"
+index_values = true
+</code></pre>
+<p>When this field is defined, every note receives the value automatically:</p>
+<ul>
+<li><code>1</code> — system-generated note (record creation or update tracking)</li>
+<li><code>0</code> — user-created note (<code>note add</code>)</li>
+</ul>
+<p><strong>Filtering system notes out of search results</strong>:</p>
+<pre><code>
+# Show only user-authored notes
+aver note search --ksearch is_system_update=0
+
+# Show only system-generated tracking notes
+aver note search --ksearch is_system_update=1
+
+# Combine with other filters
+aver note search --ksearch is_system_update=0 --ksearch category=investigation
+</code></pre>
+<p><strong>JSON IO</strong>:</p>
+<pre><code>
+{"command": "search-notes", "params": {"ksearch": ["is_system_update=0"]}}
+</code></pre>
+<div class="spacer"></div>
+<h3 id="7-configuration-and-templates">7. Configuration and Templates</h3>
+<h4 id="global-configuration">Global Configuration</h4>
+<p>Aver uses a <code>config.toml</code> file in the database directory (<code>.aver/config.toml</code>).</p>
+<p><strong>Basic structure</strong>:</p>
+<pre><code>
+default_record_prefix = "REC"
+default_note_prefix = "NT"
+
+# Global record fields (apply to ALL records)
+[record_special_fields.FIELDNAME]
+# ... field definition
+
+# Global note fields (apply to ALL notes)
+[note_special_fields.FIELDNAME]
+# ... field definition
+
+# Templates
+[template.TEMPLATENAME]
+# ... template definition
+</code></pre>
+<h4 id="record-special-fields-configuration">Record Special Fields Configuration</h4>
+<p>Define fields that apply to all records:</p>
+<pre><code>
+[record_special_fields.title]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+index_values = true
+
+[record_special_fields.status]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+accepted_values = ["open", "in_progress", "resolved", "closed"]
+default = "open"
+index_values = true
+
+[record_special_fields.created_by]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"
+index_values = true
+
+[record_special_fields.created_at]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "datetime"
+index_values = true
+
+[record_special_fields.tags]
+type = "multi"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+</code></pre>
+<h4 id="note-special-fields-configuration">Note Special Fields Configuration</h4>
+<p>Define fields that apply to all notes:</p>
+<pre><code>
+[note_special_fields.author]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "user_name"
+index_values = true
+
+[note_special_fields.timestamp]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = true
+system_value = "datetime"
+index_values = true
+</code></pre>
+<p>These global note fields appear in EVERY note, regardless of template.</p>
+<h4 id="template-system">Template System</h4>
+<p>Templates define:</p>
+<ol>
+<li>Custom ID prefixes</li>
+<li>Record-specific special fields (add to or override global record fields)</li>
+<li>Note-specific special fields (add to or override global note fields)</li>
+<li>Template record IDs (for content templates)</li>
+</ol>
+<h5>Connecting Content Templates with Field Enforcement</h5>
+<p><code>record new --template bug</code> does two things at once:</p>
+<ol>
+<li><strong>Field enforcement</strong> — the new record is validated against the <code>bug</code> template's field rules.</li>
+<li><strong>Content import</strong> — if a record file named <code>bug.md</code> (matching the template ID) exists in the <code>records/</code> directory, its body text is copied into the new record as initial content.</li>
+</ol>
+<p>Admins can create a <code>bug.md</code> record file to provide a standard starting document (checklists, instructions, boilerplate) that gets pre-filled whenever someone creates a new bug record. This is an optional convention — if no such file exists, <code>record new --template bug</code> still works normally with an empty body.</p>
+<p><code>record update --template</code> is <strong>field-scope only</strong>: it scopes validation to the named template's field rules but never imports content from any record file.</p>
+<p><strong>Complete template example</strong>:</p>
+<pre><code>
+[template.bug]
+record_prefix = "BUG"
+note_prefix = "COMMENT"
+
+# Template record special fields (adds to global record fields)
+[template.bug.record_special_fields.severity]
+type = "single"
+value_type = "integer"
+editable = true
+enabled = true
+required = true
+accepted_values = ["1", "2", "3", "4", "5"]
+default = "3"
+index_values = true
+
+[template.bug.record_special_fields.status]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = true
+accepted_values = ["new", "confirmed", "in_progress", "fixed", "verified", "closed"]
+default = "new"
+index_values = true
+
+# Template note special fields (adds to global note fields)
+[template.bug.note_special_fields.category]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+accepted_values = ["investigation", "bugfix", "workaround", "regression", "documentation"]
+index_values = true
+
+[template.bug.note_special_fields.priority]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+accepted_values = ["low", "medium", "high", "critical"]
+default = "medium"
+index_values = true
+</code></pre>
+<h4 id="template-special-fields">Template Special Fields</h4>
+<p><strong>How template fields work</strong>:</p>
+<p>For <strong>records</strong>: <strong>Additive + Override</strong></p>
+<ul>
+<li>Starts with global <code>record_special_fields</code></li>
+<li>Adds template's <code>record_special_fields</code></li>
+<li>Template fields override global fields with same name</li>
+</ul>
+<p>For <strong>notes</strong>: <strong>Additive + Override</strong></p>
+<ul>
+<li>Starts with global <code>note_special_fields</code></li>
+<li>Adds template's <code>note_special_fields</code></li>
+<li>Template fields override global note fields with same name</li>
+</ul>
+<p><strong>Example</strong>: Bug template records have:</p>
+<ul>
+<li>Global fields: <code>title</code>, <code>created_by</code>, <code>created_at</code>, <code>tags</code></li>
+<li>Bug-specific fields: <code>severity</code>, <code>status</code> (bug version overrides global)</li>
+</ul>
+<p><strong>Example</strong>: Notes in bug records have:</p>
+<ul>
+<li>Global note fields: <code>author</code>, <code>timestamp</code></li>
+<li>Bug note fields: <code>category</code>, <code>priority</code></li>
+</ul>
+<div class="spacer"></div>
+<h3 id="8-advanced-features">8. Advanced Features</h3>
+<h4 id="search-queries">Search Queries</h4>
+<p>Search by special fields:</p>
+<pre><code>
+# Record search
+aver record search --ksearch status=open
+aver record search --ksearch "priority=high"
+aver record search --ksearch "severity#&gt;2"
+
+# Note search
+aver note search --ksearch category=bugfix
+aver note search --ksearch priority=critical
+</code></pre>
+<h5>Search Operators</h5>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>=</code></td>
+<td>Equals</td>
+<td><code>status=open</code></td>
+</tr>
+<tr>
+<td><code>!=</code></td>
+<td>Not equals</td>
+<td><code>status!=closed</code></td>
+</tr>
+<tr>
+<td><code>&gt;</code></td>
+<td>Greater than</td>
+<td><code>severity&gt;2</code></td>
+</tr>
+<tr>
+<td><code>&lt;</code></td>
+<td>Less than</td>
+<td><code>severity&lt;4</code></td>
+</tr>
+<tr>
+<td><code>&gt;=</code></td>
+<td>Greater or equal</td>
+<td><code>severity&gt;=3</code></td>
+</tr>
+<tr>
+<td><code>&lt;=</code></td>
+<td>Less or equal</td>
+<td><code>severity&lt;=3</code></td>
+</tr>
+<tr>
+<td><code>^</code></td>
+<td>In (matches any of a pipe-delimited list)</td>
+<td><code>status^open|in_progress</code></td>
+</tr>
+</tbody>
+</table>
+<h5>The <code>^</code> (In) Operator</h5>
+<p>The <code>^</code> operator matches records or notes where the field value is any one of a pipe-delimited list of values. It is equivalent to a SQL <code>IN(...)</code> clause.</p>
+<pre><code>
+# Match records where status is open OR closed
+aver record list --ksearch 'status^open|closed'
+
+# Match records where priority is high OR critical
+aver record list --ksearch 'priority^high|critical'
+
+# Combine with other filters (AND logic between different --ksearch flags)
+aver record list --ksearch 'status^open|in_progress' --ksearch priority=high
+
+# Works with note search too
+aver note search --ksearch 'category^bugfix|investigation'
+</code></pre>
+<p>A single-value <code>^</code> expression (<code>status^open</code>) is equivalent to <code>status=open</code>.</p>
+<p>Multiple <code>--ksearch</code> flags are always combined with AND logic; the <code>^</code> operator provides OR logic <strong>within a single field</strong>.</p>
+<h4 id="database-management">Database Management</h4>
+<p><strong>Initialize a new database</strong>:</p>
+<pre><code>
+aver admin init
+</code></pre>
+<p><strong>Reindex after manual changes</strong>:</p>
+<pre><code>
+aver admin reindex
+</code></pre>
+<h5>The <code>file_index</code> Table</h5>
+<p>Every time a record or note is indexed, Aver records three pieces of file metadata in the <code>file_index</code> SQLite table (<code>.aver/aver.db</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER</td>
+<td>Auto-increment primary key</td>
+</tr>
+<tr>
+<td><code>file_path</code></td>
+<td>TEXT</td>
+<td>Absolute path to the Markdown file</td>
+</tr>
+<tr>
+<td><code>file_hash</code></td>
+<td>TEXT</td>
+<td>MD5 hex digest of the file's UTF-8 content</td>
+</tr>
+<tr>
+<td><code>file_mtime</code></td>
+<td>TEXT</td>
+<td>File modification time (ISO 8601 UTC) at index time</td>
+</tr>
+</tbody>
+</table>
+<p>When <strong>indexing from existing files</strong> (e.g., <code>admin reindex</code>), <code>file_mtime</code> is read from the filesystem. When a file is indexed <strong>immediately after being written</strong> (e.g., <code>record new</code>, <code>note add</code>), <code>file_mtime</code> reflects the mtime of the newly written file.</p>
+<p>This table is useful for:</p>
+<ul>
+<li>Detecting files that have changed since the last index (<code>file_hash</code> mismatch)</li>
+<li>Auditing when files were last indexed (<code>file_mtime</code>)</li>
+<li>Building external tools that need to track file provenance</li>
+</ul>
+<p><code>admin reindex</code> uses this table to skip unchanged files. Entries are updated each time a file is reindexed. Use <code>--force</code> to bypass the table entirely and reindex everything unconditionally.</p>
+<h4 id="library-aliases">Library Aliases</h4>
+<p>Work with multiple databases using library aliases:</p>
+<p><strong>Add a library</strong>:</p>
+<pre><code>
+aver admin config add-alias --alias work --path /path/to/work/database
+</code></pre>
+<p><strong>Use a library</strong>:</p>
+<pre><code>
+aver --use work record list
+aver --use work record new --title "Work task"
+</code></pre>
+<p><strong>Set per-library user</strong>:</p>
+<pre><code>
+aver admin config set-user --library work --handle work_user --email work@example.com
+</code></pre>
+<h4 id="importing-from-files">Importing from Files</h4>
+<p><strong>Import a record from Markdown</strong>:</p>
+<pre><code>
+aver record new --from-file record.md
+</code></pre>
+<p><strong>File format</strong>:</p>
+<pre><code>
+---
+title: Imported Record
+status: open
+priority: high
+custom_field: custom_value
+---
+This is the record description.
+</code></pre>
+<p><strong>Important notes</strong>:</p>
+<ul>
+<li>Non-editable special fields (like <code>author</code>, <code>created_by</code>) are filtered out</li>
+<li>They will be automatically generated based on current user</li>
+<li>Custom fields can be included with or without type hints</li>
+</ul>
+<p><strong>Import a note</strong>:</p>
+<pre><code>
+aver note add REC-001 --from-file note.md
+</code></pre>
+<p><strong>Note file format</strong>:</p>
+<pre><code>
+---
+category: investigation
+priority: high
+---
+Investigation findings...
+</code></pre>
+<div class="spacer"></div>
+<h3 id="9-command-reference">9. Command Reference</h3>
+<h4 id="admin-init">admin init</h4>
+<p>Initialize a new database in the current directory.</p>
+<pre><code>
+aver admin init
+</code></pre>
+<p>Creates:</p>
+<ul>
+<li><code>.aver/</code> directory</li>
+<li><code>records/</code> directory</li>
+<li><code>updates/</code> directory</li>
+<li><code>.aver/aver.db</code> (SQLite index)</li>
+</ul>
+<h4 id="admin-config">admin config</h4>
+<p>Manage configuration and user settings.</p>
+<p><strong>Set global user</strong>:</p>
+<pre><code>
+aver admin config set-user --handle alice --email alice@example.com
+</code></pre>
+<p><strong>Set library-specific user</strong>:</p>
+<pre><code>
+aver admin config set-user --library work --handle work_alice --email work.alice@example.com
+</code></pre>
+<p><strong>Add library alias</strong>:</p>
+<pre><code>
+aver admin config add-alias --alias project1 --path /path/to/database
+</code></pre>
+<p><strong>List library aliases</strong>:</p>
+<pre><code>
+aver admin config list-aliases
+</code></pre>
+<h4 id="record-new">record new</h4>
+<p>Create a new record.</p>
+<p><strong>Basic</strong>:</p>
+<pre><code>
+aver record new
+</code></pre>
+<p><strong>With fields</strong>:</p>
+<pre><code>
+aver record new --title "Fix login" --status open --priority high
+</code></pre>
+<p><strong>With template</strong>:</p>
+<pre><code>
+aver record new --template bug --title "App crashes" --severity 3
+</code></pre>
+<p><strong>Show available fields</strong>:</p>
+<pre><code>
+aver record new --help-fields
+aver record new --template bug --help-fields
+</code></pre>
+<p><strong>From file</strong>:</p>
+<pre><code>
+aver record new --from-file record.md
+</code></pre>
+<p><strong>With custom record ID</strong>:</p>
+<pre><code>
+aver record new --use-id MY-CUSTOM-ID --title "Custom ID record"
+</code></pre>
+<h4 id="record-unmask">record unmask</h4>
+<p>Show the plaintext values of one or more fields on a record. Securestring fields are returned unmasked; all other field types are returned with their normal value. Fields that do not exist on the record are silently omitted.</p>
+<pre><code>
+aver record unmask REC-001 --fields "api_token"
+aver record unmask REC-001 --fields "api_token,title,status"
+</code></pre>
+<p><strong>Example output</strong>:</p>
+<pre><code>
+api_token: s3cr3t-v4lu3
+title: My Record
+</code></pre>
+<p>For programmatic use, the <code>unmask</code> command is available via <strong>JSON IO</strong>:</p>
+<pre><code class="language-json">
+{"command": "unmask", "params": {"record_id": "REC-001", "fields": ["api_token", "title"]}}
+</code></pre>
+<h4 id="record-update">record update</h4>
+<p>Update an existing record.</p>
+<pre><code>
+aver record update REC-001 --status closed
+aver record update BUG-042 --priority critical --description "Updated description"
+</code></pre>
+<p><strong>With template scope</strong> — restrict field enforcement to a specific template without importing any content:</p>
+<pre><code>
+aver record update REC-001 --template bug --severity 3
+</code></pre>
+<p><strong>Note</strong>: <code>--template</code> on <code>record update</code> is field-scope enforcement only. It does <strong>not</strong> copy any content from a template record. This differs from <code>record new --template</code>, which also copies initial content if a record named after the template exists.</p>
+<p><strong>Show available fields for this record</strong> (template-aware):</p>
+<pre><code>
+aver record update REC-001 --help-fields
+aver record update REC-001 --help-fields --template bug
+</code></pre>
+<h4 id="record-list">record list</h4>
+<p>List records.</p>
+<pre><code>
+aver record list
+aver record list --limit 10
+</code></pre>
+<p><strong>Paginate with <code>--offset</code></strong>:</p>
+<pre><code>
+# First page: records 1–10
+aver record list --limit 10 --offset 0
+
+# Second page: records 11–20
+aver record list --limit 10 --offset 10
+
+# With search filters
+aver record list --ksearch status=open --limit 25 --offset 25
+</code></pre>
+<p><code>--offset</code> skips the first N results. Use with <code>--limit</code> for cursor-style pagination. Default is <code>0</code>.</p>
+<p><strong>Count matching records</strong> (requires <code>--ksearch</code>):</p>
+<pre><code>
+aver record list --ksearch status=open --count
+aver record list --ksearch "priority=high" --count
+</code></pre>
+<p>Returns only the integer count of matching records with no other output.</p>
+<p><strong>Return records with the maximum value of a key</strong> (requires <code>--ksort</code>):</p>
+<pre><code>
+aver record list --ksort severity --max severity
+aver record list --ksearch status=open --ksort severity --max severity
+aver record list --ksort priority --max priority,severity
+aver record list --ksort priority --max priority --max severity
+</code></pre>
+<p><code>--max</code> runs the full query (ksearch + ksort + limit) as a working set, then post-filters to return only records that hold the <strong>maximum value</strong> for any of the specified keys (keys are evaluated independently; OR logic). <code>--ksort</code> is required to ensure the relevant records are within the result window.</p>
+<ul>
+<li><code>--max KEY</code> accepts a single key or a comma-delimited list.</li>
+<li><code>--max</code> may be specified more than once.</li>
+<li>Keys are evaluated independently — a record is included if it has the max for <strong>any</strong> of the keys.</li>
+</ul>
+<p>The <code>max</code> parameter is also available via <strong>JSON IO</strong> as a <code>search-records</code> parameter:</p>
+<pre><code>
+{"command": "search-records", "params": {"ksort": "severity", "max": "severity"}}
+{"command": "search-records", "params": {"ksearch": "status=open", "ksort": "severity", "max": ["severity", "priority"]}}
+</code></pre>
+<p><code>--offset</code> is also available via <strong>JSON IO</strong> for both <code>search-records</code> and <code>search-notes</code>:</p>
+<pre><code>
+{"command": "search-records", "params": {"ksearch": "status=open", "limit": 25, "offset": 25}}
+{"command": "search-notes", "params": {"ksearch": "category=bugfix", "limit": 20, "offset": 20}}
+</code></pre>
+<h4 id="record-search">record search</h4>
+<p>Search for records.</p>
+<pre><code>
+aver record search --ksearch status=open
+aver record search --ksearch "priority=high"
+aver record search --ksearch "severity#&gt;=3"
+</code></pre>
+<h4 id="note-add">note add</h4>
+<p>Add a note to a record.</p>
+<p><strong>Basic</strong>:</p>
+<pre><code>
+aver note add REC-001
+</code></pre>
+<p><strong>With message</strong>:</p>
+<pre><code>
+aver note add REC-001 --message "Investigation complete"
+</code></pre>
+<p><strong>With note fields</strong>:</p>
+<pre><code>
+aver note add BUG-042 --message "Applied fix" --category bugfix --priority high
+</code></pre>
+<p><strong>Show available fields</strong>:</p>
+<pre><code>
+aver note add BUG-042 --help-fields
+</code></pre>
+<p><strong>For automation (suppress editor)</strong>:</p>
+<pre><code>
+aver note add REC-001 --message "Automated check complete" --no-validation-editor
+echo "Note text" | aver note add REC-001 --no-validation-editor
+</code></pre>
+<p><code>--no-validation-editor</code> prevents the editor from opening on validation failure. If no <code>--message</code> and no stdin are provided, the command errors immediately rather than prompting.</p>
+<p><strong>From file</strong>:</p>
+<pre><code>
+aver note add REC-001 --from-file note.md
+</code></pre>
+<h4 id="note-list">note list</h4>
+<p>List notes for a record.</p>
+<pre><code>
+aver note list REC-001
+aver note list BUG-042
+</code></pre>
+<h4 id="note-search">note search</h4>
+<p>Search notes across all records.</p>
+<pre><code>
+aver note search --ksearch category=bugfix
+aver note search --ksearch priority=critical
+</code></pre>
+<p><strong>Paginate with <code>--offset</code></strong>:</p>
+<pre><code>
+# First page: notes 1–20
+aver note search --ksearch category=bugfix --limit 20 --offset 0
+
+# Next page: notes 21–40
+aver note search --ksearch category=bugfix --limit 20 --offset 20
+</code></pre>
+<p><strong>Count matching notes</strong>:</p>
+<pre><code>
+aver note search --ksearch category=bugfix --count
+aver note search --ksearch priority=critical --count
+</code></pre>
+<p>Returns only the integer count of matching notes with no other output.</p>
+<h4 id="note-unmask">note unmask</h4>
+<p>Show the plaintext values of one or more fields on a specific note. Securestring fields are returned unmasked; all other field types are returned with their normal value. Fields that do not exist on the note are silently omitted.</p>
+<pre><code>
+aver note unmask REC-001 NT-001 --fields "session_token"
+aver note unmask REC-001 NT-001 --fields "session_token,author,timestamp"
+</code></pre>
+<p>For programmatic use, the <code>unmask</code> command is available via <strong>JSON IO</strong> (include <code>note_id</code> to target a note):</p>
+<pre><code class="language-json">
+{"command": "unmask", "params": {"record_id": "REC-001", "note_id": "NT-001", "fields": ["session_token"]}}
+</code></pre>
+<h4 id="admin-reindex">admin reindex</h4>
+<p>Rebuild the search index — all records, or a specific set of records.</p>
+<pre><code>
+# Full reindex (all records)
+aver admin reindex
+
+# Selective reindex (one or more records)
+aver admin reindex REC-001
+aver admin reindex REC-001 BUG-042 FEAT-007
+
+# Verbose progress output
+aver admin reindex --verbose
+
+# Force reindex even if files appear unchanged
+aver admin reindex --force
+aver admin reindex REC-001 --force
+
+# Skip mtime shortcut; always compare MD5 hash
+aver admin reindex --skip-mtime
+aver admin reindex REC-001 --skip-mtime
+
+# Skip field validation (index records even if they violate template rules)
+aver admin reindex --skip-validation
+</code></pre>
+<h5>Validation during reindex</h5>
+<p>By default, <code>admin reindex</code> validates each record against its template field rules before indexing it. Records that fail validation are <strong>not indexed</strong> and the command exits with an error listing every violation. This prevents non-conforming data from silently entering the search index.</p>
+<p>The same rules as <code>admin validate</code> apply: required-field presence and <code>accepted_values</code> constraints, using the template-specific field set for records that carry a <code>template_id</code>.</p>
+<p>Use <code>--skip-validation</code> to bypass this check and index all records regardless of conformance — useful when intentionally importing legacy data or working with records that pre-date a schema change.</p>
+<h5>How change detection works</h5>
+<p><code>admin reindex</code> is optimised to skip files that have not changed, making repeated full reindexes fast on large record sets. The check proceeds in two steps:</p>
+<ol>
+<li><strong>mtime check</strong> (fast): If the file's modification time matches the value stored in <code>file_index</code>, the file is assumed unchanged and skipped.</li>
+<li><strong>MD5 hash check</strong> (slower, only if mtime differs): If the mtime has changed, the file is read and its MD5 hash is compared against the stored value. If the hash matches the file is still skipped; if it differs, the file is reindexed.</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(none)</em></td>
+<td>mtime check → hash check on mtime miss → skip if match</td>
+</tr>
+<tr>
+<td><code>--skip-mtime</code></td>
+<td>Skip mtime check; always read file and compare MD5 hash</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>Skip all change detection; always reindex every file</td>
+</tr>
+<tr>
+<td><code>--skip-validation</code></td>
+<td>Skip template field validation before indexing</td>
+</tr>
+</tbody>
+</table>
+<p>Use <code>--skip-mtime</code> when files may have been copied with preserved timestamps (e.g. <code>cp -p</code>, <code>rsync -a</code>, <code>git checkout</code>). Use <code>--force</code> after schema changes or to recover from a corrupted index.</p>
+<h4 id="admin-template-data">admin template-data</h4>
+<p>Show field definitions for a template — record fields and note fields — as defined in <code>config.toml</code>. Useful for building UIs or validating data before submission.</p>
+<p><strong>Show all templates (human-readable)</strong>:</p>
+<pre><code>
+aver admin template-data
+</code></pre>
+<p><strong>Show a specific template</strong>:</p>
+<pre><code>
+aver admin template-data bug
+</code></pre>
+<p>When no <code>template_id</code> is given, global defaults (no template) are also included.</p>
+<p><strong>Example human-readable output</strong>:</p>
+<pre><code>
+======================================================================
+Template: bug
+  Record prefix: BUG
+  Note prefix:   COMMENT
+======================================================================
+
+  Record fields:
+    created_at  (single, string)  [read-only, system:datetime]
+    created_by  (single, string)  [required, read-only, system:user_name]
+    severity    (single, integer)  [required]
+      Accepted: 1, 2, 3, 4, 5
+      Default:  3
+    status      (single, string)  [required]
+      Accepted: new, confirmed, in_progress, fixed, verified, closed
+      Default:  new
+    title       (single, string)  [required]
+
+  Note fields:
+    author      (single, string)  [required, read-only, system:user_name]
+    category    (single, string)
+      Accepted: investigation, bugfix, workaround, regression, documentation
+    timestamp   (single, string)  [required, read-only, system:datetime]
+</code></pre>
+<p><strong>Example JSON output</strong> (single template):</p>
+<pre><code>
+{
+  "template_id": "bug",
+  "record_prefix": "BUG",
+  "note_prefix": "COMMENT",
+  "record_fields": {
+    "title":      {"type": "single", "value_type": "string", "editable": true, "required": true},
+    "status":     {"type": "single", "value_type": "string", "editable": true, "required": true,
+                   "accepted_values": ["new","confirmed","in_progress","fixed","verified","closed"],
+                   "default": "new"},
+    "severity":   {"type": "single", "value_type": "integer", "editable": true, "required": true,
+                   "accepted_values": ["1","2","3","4","5"], "default": "3"},
+    "created_by": {"type": "single", "value_type": "string", "editable": false, "required": true,
+                   "system_value": "user_name"},
+    "created_at": {"type": "single", "value_type": "string", "editable": false, "required": false,
+                   "system_value": "datetime"}
+  },
+  "note_fields": {
+    "author":    {"type": "single", "value_type": "string", "editable": false, "required": true,
+                  "system_value": "user_name"},
+    "timestamp": {"type": "single", "value_type": "string", "editable": false, "required": true,
+                  "system_value": "datetime"},
+    "category":  {"type": "single", "value_type": "string", "editable": true, "required": false,
+                  "accepted_values": ["investigation","bugfix","workaround","regression","documentation"]}
+  }
+}
+</code></pre>
+<p>This command is also available via <strong>JSON IO</strong> as the <code>template-data</code> command (see JSON IO documentation).</p>
+<h4 id="admin-validate">admin validate</h4>
+<p>Check that on-disk record files conform to template field rules. Validation covers:</p>
+<ul>
+<li><strong>Required fields</strong> — every field marked <code>required = true</code> must be present and non-empty.</li>
+<li><strong>Accepted values</strong> — every field with an <code>accepted_values</code> list must contain only listed values. Template-specific <code>accepted_values</code> override global ones for records that carry a <code>template_id</code>.</li>
+</ul>
+<p><strong>Validate all records</strong>:</p>
+<pre><code>
+aver admin validate
+</code></pre>
+<p><strong>Validate specific records</strong>:</p>
+<pre><code>
+aver admin validate REC-001
+aver admin validate REC-001 BUG-042 FEAT-007
+</code></pre>
+<p><strong>List only failing record IDs</strong> (one per line, useful in scripts):</p>
+<pre><code>
+aver admin validate --failed-list
+aver admin validate REC-001 BUG-042 --failed-list
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Exit code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>All checked records conform (or no records found)</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>One or more records failed validation</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example summary output</strong> (default mode):</p>
+<pre><code>
+Validation summary: 42 record(s) checked
+  Conforming:     39
+  Non-conforming: 3
+
+  FAIL  REC-KPZZ17D: field 'status': invalid value 'invalid' (accepted: open, in_progress, resolved, closed)
+  FAIL  REC-KSDJO4D: required field 'title' is missing or empty
+  FAIL  BUG-0042AB: field 'severity': invalid value '9' (accepted: 1, 2, 3, 4, 5)
+
+Use --failed-list to get a plain list of failing record IDs.
+</code></pre>
+<p><strong>Example <code>--failed-list</code> output</strong>:</p>
+<pre><code>
+REC-KPZZ17D
+REC-KSDJO4D
+BUG-0042AB
+</code></pre>
+<p><code>admin validate</code> only checks record files; it does not validate note files.</p>
+<div class="spacer"></div>
+<h3 id="10-administrators-guide">10. Administrator's Guide</h3>
+<h4 id="setting-up-special-fields">Setting Up Special Fields</h4>
+<p><strong>Planning your field structure</strong>:</p>
+<ol>
+<li><strong>Identify record types</strong>: What are you tracking? (bugs, features, tasks, experiments)</li>
+<li><strong>Define global fields</strong>: Fields that apply to ALL records and notes</li>
+<li><strong>Define template fields</strong>: Fields specific to each record type</li>
+</ol>
+<p><strong>Global fields</strong> (all records):</p>
+<ul>
+<li><code>title</code>: Every record needs a title</li>
+<li><code>created_by</code>, <code>created_at</code>: Tracking who and when</li>
+<li><code>status</code>: Most workflows have status</li>
+<li><code>tags</code>: General categorization</li>
+</ul>
+<p><strong>Global note fields</strong> (all notes):</p>
+<ul>
+<li><code>author</code>: Who wrote the note</li>
+<li><code>timestamp</code>: When the note was created</li>
+</ul>
+<p><strong>Template-specific fields</strong>:</p>
+<ul>
+<li>Bug records: <code>severity</code>, <code>reproducible</code>, <code>component</code></li>
+<li>Feature records: <code>effort</code>, <code>stakeholder</code>, <code>milestone</code></li>
+<li>Bug notes: <code>category</code> (investigation, bugfix, etc.)</li>
+<li>Feature notes: <code>feedback_type</code>, <code>implementation_status</code></li>
+</ul>
+<h4 id="designing-templates">Designing Templates</h4>
+<p><strong>Best practices</strong>:</p>
+<ol>
+<li><strong>Start simple</strong>: Begin with a few templates (bug, feature)</li>
+<li><strong>Use clear prefixes</strong>: BUG-, FEAT-, TASK- for records; COMMENT-, FEEDBACK- for notes</li>
+<li><strong>Inherit smartly</strong>: Let templates add to global fields, not replace them</li>
+<li><strong>Constrain carefully</strong>: Use <code>accepted_values</code> for fields with clear options</li>
+<li><strong>Default wisely</strong>: Set defaults for common values to reduce typing</li>
+</ol>
+<p><strong>Example workflow</strong>:</p>
+<pre><code>
+# Global fields apply to everything
+[record_special_fields.created_by]
+system_value = "user_name"
+editable = false
+required = true
+
+[note_special_fields.author]
+system_value = "user_name"
+editable = false
+required = true
+
+# Bug template adds severity and specific status values
+[template.bug]
+record_prefix = "BUG"
+note_prefix = "COMMENT"
+
+[template.bug.record_special_fields.severity]
+type = "single"
+value_type = "integer"
+accepted_values = ["1", "2", "3", "4", "5"]
+default = "3"
+
+[template.bug.note_special_fields.category]
+accepted_values = ["investigation", "bugfix", "workaround"]
+</code></pre>
+<h4 id="managing-multiple-databases">Managing Multiple Databases</h4>
+<p><strong>Use library aliases</strong> for different projects:</p>
+<pre><code>
+# Set up libraries
+aver admin config add-alias --alias personal --path ~/Documents/aver-personal
+aver admin config add-alias --alias work --path ~/Work/aver-work
+
+# Configure different users per library
+aver admin config set-user --library personal --handle myhandle --email personal@example.com
+aver admin config set-user --library work --handle work.name --email work@company.com
+
+# Use them
+aver --use personal record new --title "Personal task"
+aver --use work record new --template bug --title "Work bug"
+</code></pre>
+<h4 id="best-practices">Best Practices</h4>
+<ol>
+<li><strong>Define system fields early</strong>: <code>created_by</code>, <code>created_at</code>, <code>author</code>, <code>timestamp</code> should be in every config</li>
+</ol>
+<ol>
+<li><strong>Use templates for workflows</strong>: Different record types need different fields</li>
+</ol>
+<ol>
+<li><strong>Make non-editable fields clear</strong>: System-populated fields should be <code>editable = false</code></li>
+</ol>
+<ol>
+<li><strong>Provide defaults</strong>: Reduce typing with sensible defaults</li>
+</ol>
+<ol>
+<li><strong>Document your fields</strong>: Use clear field names and constrained values</li>
+</ol>
+<ol>
+<li><strong>Test with small data first</strong>: Set up your config, create test records, iterate</li>
+</ol>
+<ol>
+<li><strong>Version control your config</strong>: Keep <code>config.toml</code> in Git to track changes</li>
+</ol>
+<ol>
+<li><strong>Don't over-constrain</strong>: Only use <code>accepted_values</code> when truly necessary</li>
+</ol>
+<div class="spacer"></div>
+<h3 id="conclusion">Conclusion</h3>
+<p>Aver's special fields system provides structure and validation while maintaining the flexibility of plain text storage. By understanding the distinction between global and template-specific fields, and between record and note fields, you can create powerful, type-safe workflows for any tracking need.</p>
+<p><strong>Key takeaways</strong>:</p>
+<ul>
+<li>Special fields define structure, custom fields provide flexibility</li>
+<li>Records and notes have independent field sets</li>
+<li>Templates add fields on top of global fields</li>
+<li>System values automate common fields</li>
+<li>The <code>--help-fields</code> flag shows available fields for any context</li>
+</ul>
+<p><strong>Getting help</strong>:</p>
+<ul>
+<li>Use <code>aver COMMAND --help</code> for command-specific help</li>
+<li>Use <code>aver record new --help-fields</code> to see record fields</li>
+<li>Use <code>aver note add RECORD --help-fields</code> to see note fields for that record</li>
+<li>Check your <code>config.toml</code> to see all defined fields</li>
+</ul>
+<p><strong>Next steps</strong>:</p>
+<ul>
+<li>Set up your global special fields in <code>config.toml</code></li>
+<li>Define templates for your main workflows</li>
+<li>Use <code>--help-fields</code> to discover available fields</li>
+<li>Integrate with Git for version control</li>
+</ul>
+<p>Happy tracking!</p>
+    <div class="spacer"></div>
+    
+    <h3>Tales from the Field</h3>
+    
+    <h4>The Incident Master's Journey</h4>
+    <pre><code># 1. Consecrate a vault (once per quest)
+aver admin init
+
+# 2. Report a calamity
+aver record new \
+  --text "title=Production API returning 500 errors" \
+  --text "status=open" \
+  --text "severity=critical" \
+  --text-multi "tags=production" \
+  --text-multi "tags=api"
+
+# 3. Inscribe thoughts as they come
+aver note add REC-XXXXX --message "Checking application logs"
+
+aver note add REC-XXXXX \
+  --message "Found memory leak in request handler" \
+  --text "category=rca"
+
+# 4. Update the record's state
+aver record update REC-XXXXX --text "status=investigating"
+
+# 5. Chronicle the solution
+aver note add REC-XXXXX \
+  --message "Deployed hotfix v2.3.1" \
+  --number "time_to_resolve=45"
+
+# 6. Seal it closed
+aver record update REC-XXXXX \
+  --text "status=resolved" \
+  --text "resolution=Memory leak fixed in v2.3.1"</code></pre>
+    
+    <h4>The Lorekeeper's Archive</h4>
+    <pre><code># Create a tome of knowledge
+aver record new \
+  --text "title=How to reset user passwords" \
+  --text "type=howto" \
+  --text-multi "tags=admin" \
+  --text-multi "tags=security" \
+  --description "Step-by-step guide..."
+
+# Find all how-to articles
+aver record list --ksearch "type=howto"
+
+# Find all security-related knowledge
+aver record list --ksearch "tags=security"</code></pre>
+    
+    <h4>The Timekeeper's Ledger</h4>
+    <pre><code># Log your labors with time
+aver note add REC-XXXXX \
+  --message "Refactored authentication module" \
+  --number "hours=4" \
+  --text "work_type=development"
+
+# Later, find all labors you've tracked
+aver note search --ksearch "hours>0"</code></pre>
+    
+    <h4>The Multi-Library Keeper</h4>
+    <pre><code># Register your libraries
+aver admin config add-alias --alias work --path /home/you/work/.aver
+aver admin config add-alias --alias oss --path /home/you/opensource/.aver
+
+# Set different identities for each
+aver admin config set-user --library work \
+  --handle "you-corp" --email "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="146d7b6154777b66643a777b79">[email&#160;protected]</a>"
+aver admin config set-user --library oss \
+  --handle "you-oss" --email "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="a3daccd6e3c4cad7cbd6c18dcacc">[email&#160;protected]</a>"
+
+# Work on different projects without changing directory
+aver record list --use work
+aver note add REC-XXXXX --use oss --message "Fixed the build"
+
+# See what you've set up
+aver admin config list-aliases</code></pre>
+    
+    <div class="spacer"></div>
+    
+    <!-- Git Identity Verification -->
+    <h3>Git Identity Verification</h3>
+    
+    <p>When you perform a write operation (<code>record new</code>, <code>record update</code>, <code>note add</code>) inside a git repository, aver checks whether your aver config identity matches the git identity (<code>git config user.name</code> and <code>git config user.email</code>).</p>
+    
+    <p>If the identities differ, aver requires you to resolve the mismatch. There are three ways:</p>
+    
+    <h4>Per-Invocation Flags</h4>
+    <pre><code># Use git identity for this one command
+aver record new --use-git-id --text "title=Fix from git user"
+
+# Use aver config identity, ignoring the mismatch
+aver note add REC-XXXXX --no-use-git-id --message "Note from config user"</code></pre>
+    
+    <h4>Persistent Configuration</h4>
+    <p>Add <code>prefer_git_identity</code> to your config to resolve the mismatch automatically. This can be set at the per-library level or globally:</p>
+    <pre><code># Per-library (only affects this database)
+[libraries.myproject]
+path = "/home/you/projects/.aver"
+prefer_git_identity = true    # always use git identity
+# prefer_git_identity = false  # always use aver config identity
+
+# Global (affects all databases without a library-level setting)
+[user]
+handle = "you"
+email = "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="cab3a5bf8aafb2aba7baa6afe4a9a5a7">[email&#160;protected]</a>"
+prefer_git_identity = false</code></pre>
+    
+    <p>The resolution order is: per-library config → global config → CLI flag → error with instructions.</p>
+    <p>When <code>--use-git-id</code> is used, aver prints a notice showing how to configure <code>prefer_git_identity</code> so the flag won't be needed in the future.</p>
+    
+    <div class="spacer"></div>
+    
+    <!-- The Aver Compact -->
+    <h3>The Aver Compact</h3>
+    
+    <p>Aver is small by design. These are not limitations to be overcome, but boundaries chosen deliberately.</p>
+    
+    <ol>
+        <li><strong>The scrolls are the source</strong><br>
+        Markdown files are authoritative. The index may be destroyed and rebuilt at will.</li>
+        
+        <li><strong>State changes, history accumulates</strong><br>
+        Records change to reflect current understanding. Notes only grow, preserving context over time.</li>
+        
+        <li><strong>Versioning over verification</strong><br>
+        Aver does not attempt to prove correctness—only to preserve authorship, order, and change over time.</li>
+        
+        <li><strong>Meaning belongs to the archive</strong><br>
+        Field names and semantics are defined by each repository, not by Aver itself. Your domain, your language.</li>
+        
+        <li><strong>Nothing happens without a command</strong><br>
+        Reindexing, configuration, and structure are explicit acts. Aver does not act on your behalf unless asked.</li>
+    </ol>
+    
+    <p>These boundaries keep Aver predictable, auditable, and hard to surprise. The tool serves the archive; the archive does not serve the tool.</p>
+    
+    <div class="spacer"></div>
+    
+    <!-- Troubleshooting -->
+    <h3>When Darkness Falls</h3>
+    
+    <h4>"No record vault can be found"</h4>
+    <p><strong>The Cause:</strong> Aver cannot perceive a <code>.aver</code> directory.</p>
+    <p><strong>The Remedy:</strong></p>
+    <ol>
+        <li>Consecrate a vault: <code>aver admin init</code></li>
+        <li>Name its location: <code>aver record list --location /path/to/.aver</code></li>
+        <li>Use a library alias: <code>aver record list --use myproject</code></li>
+        <li>Confirm you are in the right realm</li>
+    </ol>
+    
+    <h4>"User identity has not been declared"</h4>
+    <p><strong>The Remedy:</strong></p>
+    <pre><code>aver admin config set-user --handle "yourname" --email "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="d9a0b6ac99bca1b8b4a9b5bcf7bab6b4">[email&#160;protected]</a>"</code></pre>
+    
+    <h4>"Identity mismatch between aver config and git"</h4>
+    <p><strong>The Cause:</strong> Your aver config identity differs from your git identity (<code>git config user.name</code> / <code>user.email</code>).</p>
+    <p><strong>The Remedy:</strong></p>
+    <ul>
+        <li>One-time resolution: use <code>--use-git-id</code> or <code>--no-use-git-id</code></li>
+        <li>Permanent resolution: add <code>prefer_git_identity = true</code> (or <code>false</code>) to the matching <code>[libraries.&lt;alias&gt;]</code> section or to <code>[user]</code> in <code>~/.config/aver/user.toml</code></li>
+    </ul>
+    
+    <h4>"Search results seem incorrect"</h4>
+    <p><strong>The Remedy:</strong></p>
+    <pre><code>aver admin reindex --verbose</code></pre>
+    
+    <div class="spacer"></div>
+    
+    <!-- Best Practices -->
+    <h3>Wisdom for the Ages</h3>
+    
+    <ol>
+        <li><strong>Title with care:</strong> Future seekers will search by these words</li>
+        <li><strong>Speak consistent keystones:</strong> Your fellowship will thank you</li>
+        <li><strong>Tags are your allies:</strong> Bestow them freely; they unlock many searches</li>
+        <li><strong>Notes hold the tale:</strong> Future you will hunger for this context</li>
+        <li><strong>Keep <code>.aver</code> in your repository:</strong> Plain text and Git history marry well</li>
+        <li><strong>Define your keystones:</strong> Use <code>config.toml</code> to enforce consistency</li>
+        <li><strong>Treat lengthy notes as prose:</strong> Write them in your editor, not at the command line</li>
+        <li><strong>Let records evolve:</strong> They are meant to change as understanding deepens</li>
+        <li><strong>Let notes accumulate:</strong> They are meant to preserve the path you walked</li>
+        <li><strong>Use library aliases:</strong> Name your archives; <code>--use work</code> is kinder than <code>--location /long/path/to/.aver</code></li>
+    </ol>
+</section>
+
+<!-- REPOSITORY SECTION -->
+</section>
+
+<section id="repository">
+    <h2>The Code</h2>
+    
+    <p>The artifact's source is held in a repository of version control, where all its mysteries are laid bare.</p>
+    
+    <div class="callout">
+        <p>📖 <strong>Find the source on GitHub:</strong></p>
+        <p><a href="https://github.com/" style="color: #1a1a2e; font-weight: 600; font-size: 1.1rem;">github.com/[username]/aver</a></p>
+        <p style="margin-top: 1rem; font-size: 0.95rem;">Here you may read the code, report troubles, contribute improvements, and join the fellowship in its ongoing quest.</p>
+    </div>
+    
+    <h3>Key Features Awaiting You</h3>
+    
+    <ul>
+        <li><strong>File-based storage:</strong> Records are plain Markdown, readable and versionable forever</li>
+        <li><strong>Typed key-value data:</strong> Attach structured metadata to records and notes</li>
+        <li><strong>Full-text search:</strong> Fast searching via SQLite FTS5 index</li>
+        <li><strong>Git-aware:</strong> Automatically detects git repositories and verifies identity consistency</li>
+        <li><strong>Library aliases:</strong> Name your databases and switch between them with <code>--use</code></li>
+        <li><strong>Per-library identity:</strong> Different handle and email for each archive</li>
+        <li><strong>Configurable fields:</strong> Define custom fields with validation rules per project</li>
+        <li><strong>Minimal dependencies:</strong> Works with Python 3.9+ and only essential packages</li>
+    </ul>
+    
+    <h3>License</h3>
+    <p>See the repository for terms of use and license information. The code is shared freely with the fellowship.</p>
+</section>
+
+</main>
+
+<footer>
+    <p><strong>✨ aver</strong> — A Versioned Knowledge Tracking Tool</p>
+    <p>In an age of crumbling servers, a fellowship sought a better way.</p>
+    <p style="margin-top: 2rem; font-size: 0.9rem; color: #b8a896;">
+        Crafted with care for those who believe that versioned knowledge, when searched and preserved, shall endure.
+    </p>
+    <div class="footer-links">
+        <a href="https://github.com/">GitHub Repository</a>
+        <a href="#top">Back to Top</a>
+    </div>
+    <p style="margin-top: 2rem; font-size: 0.85rem; color: #8b7f76;">
+        © 2026 — The Fellowship of Seekers
+    </p>
+</footer>
+
+<!-- JavaScript for persistent footer behavior -->
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/c

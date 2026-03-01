@@ -209,8 +209,8 @@ proc.wait()
 All standard JSON commands are supported in IO mode:
 - `export-record` - params: `{record_id, include_notes?}`
 - `export-note` - params: `{record_id, note_id}`
-- `search-records` - params: `{ksearch?, ksort?, limit?, count_only?, max?}`
-- `search-notes` - params: `{ksearch?, limit?, count_only?}`
+- `search-records` - params: `{ksearch?, ksort?, limit?, offset?, count_only?, max?}`
+- `search-notes` - params: `{ksearch?, limit?, offset?, count_only?}`
 - `import-record` - params: `{content, fields?, template?, record_id?}`
 - `import-note` - params: `{record_id, content, fields?}`
 - `update-record` - params: `{record_id, content?, fields?}`
@@ -219,6 +219,7 @@ All standard JSON commands are supported in IO mode:
 - `reply-template` - params: `{record_id, note_id}`
 - `template-data` - params: `{template_id?}`
 - `reindex` - params: `{record_ids?, force?, skip_mtime?}`
+- `unmask` - params: `{record_id, fields, note_id?}`
 
 ### IO Mode Benefits
 
