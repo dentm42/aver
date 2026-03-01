@@ -41,6 +41,11 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+__version__ = "0.9.0"
+
 import argparse
 import datetime
 import hashlib
@@ -116,7 +121,7 @@ class YAMLSerializer:
     @staticmethod
     def strip_type_hint(key: str) -> tuple[str, Optional[str]]:
         """Remove type hint suffix from key. Returns (clean_key, type_or_none)."""
-        for vtype in ("string", "integer", "float"):
+        for vtype in ("securestring", "string", "integer", "float"):
             suffix = f"{YAMLSerializer.TYPE_HINT_SUFFIX}{vtype}"
             if key.endswith(suffix):
                 return key[:-len(suffix)], vtype
@@ -345,12 +350,14 @@ class Incident:
         kv_strings: Optional[Dict[str, List[str]]] = None,
         kv_integers: Optional[Dict[str, List[int]]] = None,
         kv_floats: Optional[Dict[str, List[float]]] = None,
+        kv_secure: Optional[Dict[str, List[str]]] = None,
         content: Optional[str] = None,
     ):
         self.id = id
         self.kv_strings = kv_strings or {}
         self.kv_integers = kv_integers or {}
         self.kv_floats = kv_floats or {}
+        self.kv_secure = kv_secure or {}
         self.content = content or ""
     
     def get_value(
@@ -400,6 +407,10 @@ class Incident:
                     value = self.kv_floats.get(field_name, [0.0])[0]
                     if value == 0.0:
                         continue
+                elif field.value_type == "securestring":
+                    value = (self.kv_secure or {}).get(field_name, [''])[0]
+                    if value == "":
+                        continue
             else:  # multi
                 if field.value_type == "string":
                     value = self.kv_strings.get(field_name, [])
@@ -407,6 +418,8 @@ class Incident:
                     value = self.kv_integers.get(field_name, [])
                 elif field.value_type == "float":
                     value = self.kv_floats.get(field_name, [])
+                elif field.value_type == "securestring":
+                    value = (self.kv_secure or {}).get(field_name, [])
             
             if value == []:
                 continue
@@ -437,18 +450,19 @@ class Incident:
         template_id = self.kv_strings.get('template_id', [None])[0]
         all_special = project_config.get_special_fields_for_template(template_id, for_record=True)
         special_names = set(all_special.keys())
-        
+        secure_names = set(self.kv_secure.keys()) if self.kv_secure else set()
+
         other = {}
         for key in self.kv_strings.keys():
-            if key not in special_names:
+            if key not in special_names and key not in secure_names:
                 other[key] = self.kv_strings[key]
         for key in self.kv_integers.keys():
-            if key not in special_names:
+            if key not in special_names and key not in secure_names:
                 other[key] = self.kv_integers[key]
         for key in self.kv_floats.keys():
-            if key not in special_names:
+            if key not in special_names and key not in secure_names:
                 other[key] = self.kv_floats[key]
-        
+
         return other
     
     @classmethod
@@ -476,6 +490,7 @@ class Incident:
         kv_strings = {}
         kv_integers = {}
         kv_floats = {}
+        kv_secure = {}
         
         # Check if there's a template_id in the frontmatter to get template-specific fields.
         # Check the literal 'template_id' key (with or without type hint), then fall back
@@ -518,6 +533,8 @@ class Incident:
                         kv_integers[key_with_hint] = [int(value)]
                     elif field.value_type == "float":
                         kv_floats[key_with_hint] = [float(value)]
+                    elif field.value_type == "securestring":
+                        kv_secure[key_with_hint] = [str(value)]
                 else:  # multi
                     if not isinstance(value, list):
                         value = [value]
@@ -527,6 +544,8 @@ class Incident:
                         kv_integers[key_with_hint] = [int(v) for v in value]
                     elif field.value_type == "float":
                         kv_floats[key_with_hint] = [float(v) for v in value]
+                    elif field.value_type == "securestring":
+                        kv_secure[key_with_hint] = [str(v) for v in value]
             else:
                 # Custom field - check for type hint
                 clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
@@ -541,6 +560,8 @@ class Incident:
                             kv_integers[clean_key] = [int(value)]
                         elif field.value_type == "float":
                             kv_floats[clean_key] = [float(value)]
+                        elif field.value_type == "securestring":
+                            kv_secure[clean_key] = [str(value)]
                     else:  # multi
                         if not isinstance(value, list):
                             value = [value]
@@ -550,6 +571,8 @@ class Incident:
                             kv_integers[clean_key] = [int(v) for v in value]
                         elif field.value_type == "float":
                             kv_floats[clean_key] = [float(v) for v in value]
+                        elif field.value_type == "securestring":
+                            kv_secure[clean_key] = [str(v) for v in value]
                 else:
                     # True custom field - use type hint or default to string
                     if value_type == "integer":
@@ -565,6 +588,7 @@ class Incident:
             kv_strings=kv_strings or None,
             kv_integers=kv_integers or None,
             kv_floats=kv_floats or None,
+            kv_secure=kv_secure or None,
             content=body,
         )
 
@@ -582,6 +606,7 @@ class IncidentUpdate:
     kv_strings: Optional[Dict[str, List[str]]] = None
     kv_integers: Optional[Dict[str, List[int]]] = None
     kv_floats: Optional[Dict[str, List[float]]] = None
+    kv_secure: Optional[Dict[str, List[str]]] = None
     
     # Convenience properties for common fields (read from KV)
     @property
@@ -662,35 +687,43 @@ class IncidentUpdate:
                 value = self.kv_integers.get(field_name)
             elif field_def.value_type == "float" and self.kv_floats:
                 value = self.kv_floats.get(field_name)
+            elif field_def.value_type == "securestring" and self.kv_secure:
+                value = self.kv_secure.get(field_name)
             
             if not value:
                 continue
-            
-            # Single vs multi value
-            if field_def.field_type == "single":
-                frontmatter[field_name] = value[0]
+
+            # Securestring fields use a type hint so from_markdown can route to kv_secure
+            if field_def.value_type == "securestring":
+                hinted_key = YAMLSerializer.add_type_hint(field_name, "securestring")
+                frontmatter[hinted_key] = value[0] if field_def.field_type == "single" else value
             else:
-                frontmatter[field_name] = value
-        
+                # Single vs multi value (no type hint for other special fields)
+                if field_def.field_type == "single":
+                    frontmatter[field_name] = value[0]
+                else:
+                    frontmatter[field_name] = value
+
         # Build custom fields section (non-special fields with type hints)
         special_field_names = set(special_fields.keys())
+        secure_field_names = set(self.kv_secure.keys()) if self.kv_secure else set()
         custom_fields = {}
-        
+
         if self.kv_strings:
             for key, values in self.kv_strings.items():
-                if key not in special_field_names:
+                if key not in special_field_names and key not in secure_field_names:
                     hinted_key = YAMLSerializer.add_type_hint(key, "string")
                     custom_fields[hinted_key] = values[0] if len(values) == 1 else values
-        
+
         if self.kv_integers:
             for key, values in self.kv_integers.items():
-                if key not in special_field_names:
+                if key not in special_field_names and key not in secure_field_names:
                     hinted_key = YAMLSerializer.add_type_hint(key, "integer")
                     custom_fields[hinted_key] = values[0] if len(values) == 1 else values
-        
+
         if self.kv_floats:
             for key, values in self.kv_floats.items():
-                if key not in special_field_names:
+                if key not in special_field_names and key not in secure_field_names:
                     hinted_key = YAMLSerializer.add_type_hint(key, "float")
                     custom_fields[hinted_key] = values[0] if len(values) == 1 else values
         
@@ -716,24 +749,27 @@ class IncidentUpdate:
         kv_strings = {}
         kv_integers = {}
         kv_floats = {}
-        
+        kv_secure = {}
+
         for key_with_hint, value in frontmatter.items():
             # Check for type hint
             clean_key, value_type = YAMLSerializer.strip_type_hint(key_with_hint)
-            
+
             # Skip 'id' - it's the object identifier, not a KV field
             if clean_key == 'id':
                 continue
-            
+
             # Convert to list if single value
             if not isinstance(value, list):
                 value = [value]
-            
+
             # Store based on type
             if value_type == "integer":
                 kv_integers[clean_key] = [int(v) for v in value]
             elif value_type == "float":
                 kv_floats[clean_key] = [float(v) for v in value]
+            elif value_type == "securestring":
+                kv_secure[clean_key] = [str(v) for v in value]
             else:  # string or no type hint (default to string)
                 kv_strings[clean_key] = [str(v) for v in value]
 
@@ -743,6 +779,7 @@ class IncidentUpdate:
             kv_strings=kv_strings if kv_strings else None,
             kv_integers=kv_integers if kv_integers else None,
             kv_floats=kv_floats if kv_floats else None,
+            kv_secure=kv_secure if kv_secure else None,
         )
 
 
@@ -847,7 +884,7 @@ class SpecialField:
         self,
         name: str,
         field_type: str,  # "single" or "multi"
-        value_type: str = "string",  # "string", "integer", "float"
+        value_type: str = "string",  # "string", "integer", "float", "securestring"
         accepted_values: Optional[List[str]] = None,
         editable: bool = True,
         enabled: bool = True,
@@ -1454,17 +1491,19 @@ class SystemValueDeriver:
         incident_id: Optional[str] = None,
         update_id: Optional[str] = None,
         template_name: Optional[str] = None,
+        is_system_note: bool = False,
     ) -> str:
         """
         Derive a system value based on the specification.
-        
+
         Args:
             system_value_spec: The system value specification (e.g., "datetime", "${datetime}")
             user_identity: User identity for user_email and user_name
             incident_id: Incident ID for recordid
             update_id: Update ID for updateid
             template_name: Template name for template_id
-            
+            is_system_note: True when the note is system-generated (e.g., record update tracking)
+
         Returns:
             The derived value as a string
         """
@@ -1505,6 +1544,9 @@ class SystemValueDeriver:
             if template_name is None:
                 return ""
             return template_name
+
+        elif value_type == 'is_system_update':
+            return "1" if is_system_note else "0"
 
         else:
             # Unknown system value type - return empty string
@@ -2753,7 +2795,7 @@ class KVParser:
         # No operator found
         raise ValueError(
             f"Invalid key-value format: '{kv_str}'\n"
-            f"Expected: '{{key}}${{string}}', '{{key}}#{{int}}', or '{{key}}%{{float}}'\n"
+            f"Expected: '{{key}}={{string}}', '{{key}}#{{int}}', or '{{key}}%{{float}}'\n"
 	    f"For removal: '{{key}}-' (kv mode) or '{{key}}${{val}}-' (kmv mode)\n"
 	    f"Keys must contain only alphanumeric characters, underscores, and hyphens"
         )
@@ -3147,9 +3189,16 @@ class IncidentIndexDatabase:
                 value_string TEXT,
                 value_integer INTEGER,
                 value_float REAL,
+                value_secure TEXT,
                 created_at TEXT NOT NULL
             )
         """)
+
+        # Migrate: add value_secure column if it doesn't exist (for existing databases)
+        cursor.execute("PRAGMA table_info(kv_store)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        if "value_secure" not in existing_columns:
+            cursor.execute("ALTER TABLE kv_store ADD COLUMN value_secure TEXT")
 
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_kv_incident_key 
@@ -3183,6 +3232,12 @@ class IncidentIndexDatabase:
             CREATE INDEX IF NOT EXISTS idx_kv_float_value
             ON kv_store(incident_id, key, value_float)
             WHERE value_float IS NOT NULL
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_kv_secure_value
+            ON kv_store(incident_id, key, value_secure)
+            WHERE value_secure IS NOT NULL
         """)
 
         conn.commit()
@@ -3460,25 +3515,45 @@ class IncidentIndexDatabase:
                 field = project_config.get_special_field(key, for_record=True)
                 if field and not field.index_values:
                     continue  # Skip indexing this field
-            
+
             for value in values:
                 try:
                     cursor.execute(
-                        """INSERT INTO kv_store 
-                           (incident_id, update_id, key, value_float, created_at) 
+                        """INSERT INTO kv_store
+                           (incident_id, update_id, key, value_float, created_at)
                            VALUES (?, NULL, ?, ?, ?)""",
                         (incident.id, key, value, now)
                     )
                 except sqlite3.IntegrityError:
                     pass
-    
+
+        # Insert secure KV data (stored in value_secure column)
+        for key, values in (incident.kv_secure or {}).items():
+            # Check if field should be indexed
+            if project_config:
+                field = project_config.get_special_field(key, for_record=True)
+                if field and not field.index_values:
+                    continue  # Skip indexing this field
+
+            for value in values:
+                try:
+                    cursor.execute(
+                        """INSERT INTO kv_store
+                           (incident_id, update_id, key, value_secure, created_at)
+                           VALUES (?, NULL, ?, ?, ?)""",
+                        (incident.id, key, str(value), now)
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+
         conn.commit()
         conn.close()
 
-    def index_update_kv_data(self, incident_id: str, update_id: str, 
+    def index_update_kv_data(self, incident_id: str, update_id: str,
                             kv_strings: Optional[Dict] = None,
                             kv_integers: Optional[Dict] = None,
                             kv_floats: Optional[Dict] = None,
+                            kv_secure: Optional[Dict] = None,
                             project_config: Optional[ProjectConfig] = None):
         """Index key-value data for update (update_id is NOT NULL)."""
         conn = sqlite3.connect(self.database_path)
@@ -3530,21 +3605,40 @@ class IncidentIndexDatabase:
                 field = project_config.get_special_field(key, for_record=False)
                 if field and not field.index_values:
                     continue  # Skip indexing this field
-            
+
             for value in values:
                 try:
                     cursor.execute(
-                        """INSERT INTO kv_store 
-                           (incident_id, update_id, key, value_float, created_at) 
+                        """INSERT INTO kv_store
+                           (incident_id, update_id, key, value_float, created_at)
                            VALUES (?, ?, ?, ?, ?)""",
                         (incident_id, update_id, key, value, now)
                     )
                 except sqlite3.IntegrityError:
                     pass
-    
+
+        # Insert secure KV data for update (stored in value_secure column)
+        for key, values in (kv_secure or {}).items():
+            # Check if field should be indexed
+            if project_config:
+                field = project_config.get_special_field(key, for_record=False)
+                if field and not field.index_values:
+                    continue  # Skip indexing this field
+
+            for value in values:
+                try:
+                    cursor.execute(
+                        """INSERT INTO kv_store
+                           (incident_id, update_id, key, value_secure, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (incident_id, update_id, key, str(value), now)
+                    )
+                except sqlite3.IntegrityError:
+                    pass
+
         conn.commit()
         conn.close()
-    
+
     def remove_kv_key(self, incident_id: str, key: str, update_id: Optional[str] = None):
         """Remove all values for a key."""
         conn = sqlite3.connect(self.database_path)
@@ -3678,35 +3772,55 @@ class IncidentIndexDatabase:
             join_counter += 1
             
             # Build JOIN condition for this criterion
-            join = f"""INNER JOIN kv_store {alias} ON 
-                base.incident_id = {alias}.incident_id 
-                AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
-                AND (
-                    ({alias}.key = ? AND {alias}.value_float {operator} ?)
-                    OR ({alias}.key = ? AND {alias}.value_integer {operator} ?)
-                    OR ({alias}.key = ? AND {alias}.value_string {operator} ?)
-                )"""
+            # value_secure only supports = and != (no ordering), so only add for = operator
+            if operator == '=':
+                join = f"""INNER JOIN kv_store {alias} ON
+                    base.incident_id = {alias}.incident_id
+                    AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
+                    AND (
+                        ({alias}.key = ? AND {alias}.value_float {operator} ?)
+                        OR ({alias}.key = ? AND {alias}.value_integer {operator} ?)
+                        OR ({alias}.key = ? AND {alias}.value_string {operator} ?)
+                        OR ({alias}.key = ? AND {alias}.value_secure {operator} ?)
+                    )"""
+            else:
+                join = f"""INNER JOIN kv_store {alias} ON
+                    base.incident_id = {alias}.incident_id
+                    AND (base.update_id = {alias}.update_id OR (base.update_id IS NULL AND {alias}.update_id IS NULL))
+                    AND (
+                        ({alias}.key = ? AND {alias}.value_float {operator} ?)
+                        OR ({alias}.key = ? AND {alias}.value_integer {operator} ?)
+                        OR ({alias}.key = ? AND {alias}.value_string {operator} ?)
+                    )"""
             joins.append(join)
-            
+
             # Add parameters for type attempts
             try:
                 float_val = float(value)
             except (ValueError, TypeError):
                 float_val = None
-            
+
             try:
                 int_val = int(value)
             except (ValueError, TypeError):
                 int_val = None
-            
+
             str_val = str(value)
-            
+
             # Add parameters: key and values for each type
-            params.extend([
-                key, float_val,
-                key, int_val,
-                key, str_val
-            ])
+            if operator == '=':
+                params.extend([
+                    key, float_val,
+                    key, int_val,
+                    key, str_val,
+                    key, str_val,  # value_secure uses same string value
+                ])
+            else:
+                params.extend([
+                    key, float_val,
+                    key, int_val,
+                    key, str_val,
+                ])
         
         # Add each IN-condition as an INNER JOIN using IN (?, ?, ...)
         for key, operator, value in in_conditions:
@@ -3728,6 +3842,7 @@ class IncidentIndexDatabase:
                     ({alias}.key = ? AND {alias}.value_float IN ({float_placeholders}))
                     OR ({alias}.key = ? AND {alias}.value_integer IN ({int_placeholders}))
                     OR ({alias}.key = ? AND {alias}.value_string IN ({str_placeholders}))
+                    OR ({alias}.key = ? AND {alias}.value_secure IN ({str_placeholders}))
                 )"""
             joins.append(join)
 
@@ -3745,7 +3860,7 @@ class IncidentIndexDatabase:
                     int_vals.append(None)
                 str_vals.append(str(v))
 
-            params.extend([key] + float_vals + [key] + int_vals + [key] + str_vals)
+            params.extend([key] + float_vals + [key] + int_vals + [key] + str_vals + [key] + str_vals)
 
         # Build query for equality/in conditions
         query_with_joins = select_clause + " " + from_clause
@@ -3786,6 +3901,7 @@ class IncidentIndexDatabase:
                     (key = ? AND value_float = ?)
                     OR (key = ? AND value_integer = ?)
                     OR (key = ? AND value_string = ?)
+                    OR (key = ? AND value_secure = ?)
                 )
             """
             
@@ -3823,7 +3939,8 @@ class IncidentIndexDatabase:
             exclude_params.extend([
                 key, float_val,
                 key, int_val,
-                key, str_val
+                key, str_val,
+                key, str_val,  # value_secure
             ])
             
             # Add incident_ids to params if needed
@@ -4234,25 +4351,27 @@ class IncidentManager:
         update_id: Optional[str] = None,
         template_name: Optional[str] = None,
         for_notes: bool = False,
+        is_system_note: bool = False,
     ) -> None:
         """
         Apply special field values (system-derived and defaults) based on config.
-        
+
         Works for both Incident (records) and IncidentUpdate (notes).
-        
+
         This handles:
         - Fields with system_value set (auto-populated)
         - Fields with default values (applied if field is empty)
         - Auto-update fields (editable=True + system_value set, only on updates)
-        
+
         Important: Non-editable fields are ONLY set on creation, never on updates.
-        
+
         Args:
             record: Incident or IncidentUpdate to modify (modified in-place)
             is_create: True if creating new record/note, False if updating
             update_id: Update ID (for updateid system value)
             template_name: Template name for template-specific fields
             for_notes: True if this is an IncidentUpdate (note), False for Incident (record)
+            is_system_note: True when the note is system-generated (record create/update tracking)
         """
         user_identity = UserIdentity(
             handle=self.effective_user['handle'],
@@ -4299,6 +4418,7 @@ class IncidentManager:
                             incident_id=record.id,
                             update_id=update_id,
                             template_name=template_name,
+                            is_system_note=is_system_note,
                         )
                     # On update: do nothing - preserve existing value
                 # Editable system fields: set on creation, auto-update on edits
@@ -4310,6 +4430,7 @@ class IncidentManager:
                         incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
+                        is_system_note=is_system_note,
                     )
                 elif field.is_auto_update_field():
                     # Auto-update on edit (editable=True means "update on edit" for system fields)
@@ -4320,6 +4441,7 @@ class IncidentManager:
                         incident_id=record.id,
                         update_id=update_id,
                         template_name=template_name,
+                        is_system_note=is_system_note,
                     )
             
             # Case 2: Field has default value and is currently empty (only on creation)
@@ -4403,6 +4525,8 @@ class IncidentManager:
                 del incident.kv_integers[key]
             if key in incident.kv_floats:
                 del incident.kv_floats[key]
+            if key in incident.kv_secure:
+                del incident.kv_secure[key]
         else:
             # Remove specific value
             if key in incident.kv_strings:
@@ -4411,6 +4535,8 @@ class IncidentManager:
                 incident.kv_integers[key] = [v for v in incident.kv_integers[key] if v != int(value)]
             if key in incident.kv_floats:
                 incident.kv_floats[key] = [v for v in incident.kv_floats[key] if v != float(value)]
+            if key in incident.kv_secure:
+                incident.kv_secure[key] = [v for v in incident.kv_secure[key] if v != str(value)]
     
     def _get_kv_store_for_type(
         self,
@@ -4586,20 +4712,22 @@ class IncidentManager:
         kvtype: Optional[str],
         value: Any,
         incident: Incident,
+        is_create: bool = False,
     ) -> None:
         """
         Validate and store a single-value KV pair (replaces existing values).
-        
+
         Validates that we're not trying to replace a multi-value field.
         If key is special (config-defined), validates based on config.
         Otherwise stores with provided type hint (or as string if no hint).
-        
+
         Args:
             key: Field name
             kvtype: Type hint from KVParser ($ for string, # for int, % for float, None for untyped)
             value: Value to store
             incident: Incident to store in
-            
+            is_create: If True, allow non-editable fields (creation only)
+
         Raises:
             ValueError: If attempting to use single-value operator on existing multi-value field
         """
@@ -4633,7 +4761,7 @@ class IncidentManager:
                 )
         
         # Proceed with validation and storage (replaces all existing values)
-        self._validate_and_store_kv_impl(key, kvtype, value, incident, replace=True)
+        self._validate_and_store_kv_impl(key, kvtype, value, incident, replace=True, is_create=is_create)
 
     def _validate_and_store_kv_multi(
         self,
@@ -4641,21 +4769,23 @@ class IncidentManager:
         kvtype: Optional[str],
         value: Any,
         incident: Incident,
+        is_create: bool = False,
     ) -> None:
         """
         Validate and store a multi-value KV pair (appends to existing values).
-        
+
         If key is special (config-defined), validates based on config.
         Otherwise stores with provided type hint (or as string if no hint).
-        
+
         Args:
             key: Field name
             kvtype: Type hint from KVParser ($ for string, # for int, % for float, None for untyped)
             value: Value to store
             incident: Incident to store in
+            is_create: If True, allow non-editable fields (creation only)
         """
         # For multi-value, we append rather than replace
-        self._validate_and_store_kv_impl(key, kvtype, value, incident, replace=False)
+        self._validate_and_store_kv_impl(key, kvtype, value, incident, replace=False, is_create=is_create)
 
     def _validate_and_store_kv_impl(
         self,
@@ -4664,35 +4794,42 @@ class IncidentManager:
         value: Any,
         incident: Incident,
         replace: bool = True,
+        is_create: bool = False,
     ) -> None:
         """
         Internal implementation for validating and storing KV pairs.
-        
+
         Args:
             key: Field name
             kvtype: Type hint
             value: Value to store
             incident: Incident to store in
             replace: If True, replace existing values; if False, append
+            is_create: If True, allow non-editable fields (creation only)
         """
         field = self.project_config.get_special_field(key, for_record=True)
-        
+
+        # If not found globally, check template-scoped special fields
+        if not field:
+            template_id = (incident.kv_strings or {}).get('template_id', [None])[0]
+            if template_id:
+                template_fields = self.project_config.get_special_fields_for_template(template_id, for_record=True)
+                field = template_fields.get(key)
+
         if field:
             # Special field - validate against config, ignore type hint
-            if not field.editable:
+            if not field.editable and not is_create:
                 raise ValueError(f"'{key}' cannot be edited")
-            
-            if field.field_type == "single":
-                is_valid, error = self.project_config.validate_field(key, value, for_record=True)
-                if not is_valid:
-                    raise ValueError(error)
-            else:  # multi
-                # Validate each value
-                values_to_validate = [value] if not isinstance(value, list) else value
-                for v in values_to_validate:
-                    is_valid, error = self.project_config.validate_field(key, v, for_record=True)
-                    if not is_valid:
-                        raise ValueError(error)
+
+            # Validate directly against the field definition (template-aware)
+            values_to_validate = [value] if field.field_type == "single" else (
+                value if isinstance(value, list) else [value]
+            )
+            for v in values_to_validate:
+                if not field.validate(v):
+                    raise ValueError(
+                        f"Invalid {key}: {v}. Accepted: {', '.join(field.accepted_values)}"
+                    )
             
             # Store with config-defined type
             if field.value_type == "string":
@@ -4727,6 +4864,19 @@ class IncidentManager:
                         incident.kv_floats[key] = float_values
                     else:
                         incident.kv_floats[key].extend(float_values)
+            elif field.value_type == "securestring":
+                if not hasattr(incident, 'kv_secure') or incident.kv_secure is None:
+                    incident.kv_secure = {}
+                if field.field_type == "single":
+                    incident.kv_secure[key] = [str(value)]
+                else:  # multi
+                    if not isinstance(value, list):
+                        value = [value]
+                    str_values = [str(v) for v in value]
+                    if replace or key not in incident.kv_secure:
+                        incident.kv_secure[key] = str_values
+                    else:
+                        incident.kv_secure[key].extend(str_values)
         else:
             # Non-special field - use type hint
             kv_store, converter = self._get_kv_store_for_type(kvtype, incident)
@@ -4806,11 +4956,26 @@ class IncidentManager:
                         initial_incident.id,
                         self.project_config,
                     )
-                    
+
+                    # For editable securestring fields: if user left the mask unchanged,
+                    # restore the original value from initial_incident
+                    if initial_incident.kv_secure:
+                        special_fields = self.project_config.get_special_fields_for_template(
+                            initial_incident.template_id, for_record=True
+                        )
+                        for key, orig_values in initial_incident.kv_secure.items():
+                            field = special_fields.get(key)
+                            if field and field.editable:
+                                edited_vals = (edited_incident.kv_secure or {}).get(key, [])
+                                if not edited_vals or all(v == "{securestring}" for v in edited_vals):
+                                    if edited_incident.kv_secure is None:
+                                        edited_incident.kv_secure = {}
+                                    edited_incident.kv_secure[key] = orig_values.copy()
+
                     # Success!
                     os.unlink(tmp_path)
                     return edited_incident
-                    
+
                 except Exception as parse_error:
                     # Parsing failed - ask user what to do
                     print(f"\n{'='*70}", file=sys.stderr)
@@ -4913,9 +5078,10 @@ class IncidentManager:
         # Create a copy of the incident
         editable_incident = Incident(id=incident.id)
         editable_incident.content = incident.content
-        
+
         # Get special fields configuration
-        special_fields = self.project_config.get_special_fields()
+        template_id = incident.kv_strings.get('template_id', [None])[0] if incident.kv_strings else None
+        special_fields = self.project_config.get_special_fields_for_template(template_id, for_record=True)
         non_editable_fields = {
             name for name, field_def in special_fields.items()
             if not field_def.editable
@@ -4926,19 +5092,28 @@ class IncidentManager:
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key not in non_editable_fields:
                 editable_incident.kv_strings[key] = values.copy()
-        
+
         # Copy only editable integer fields
         for key, values in incident.kv_integers.items():
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key not in non_editable_fields:
                 editable_incident.kv_integers[key] = values.copy()
-        
+
         # Copy only editable float fields
         for key, values in incident.kv_floats.items():
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key not in non_editable_fields:
                 editable_incident.kv_floats[key] = values.copy()
-        
+
+        # For securestring fields: editable ones show the mask; non-editable are stripped
+        if incident.kv_secure:
+            for key, values in incident.kv_secure.items():
+                field = special_fields.get(key)
+                if field and field.editable:
+                    # Show mask so user can optionally replace
+                    editable_incident.kv_secure[key] = ["{securestring}"] * len(values)
+                # non-editable: don't copy (will be restored later)
+
         return editable_incident
         
     def _restore_non_editable_fields(
@@ -4956,29 +5131,51 @@ class IncidentManager:
             original_incident: Original incident with all fields
             edited_incident: Edited incident to restore fields to
         """
-        special_fields = self.project_config.get_special_fields()
+        template_id = original_incident.kv_strings.get('template_id', [None])[0] if original_incident.kv_strings else None
+        special_fields = self.project_config.get_special_fields_for_template(template_id, for_record=True)
         non_editable_fields = {
             name for name, field_def in special_fields.items()
             if not field_def.editable
         }
-        
+
         # Restore non-editable string fields
         for key in original_incident.kv_strings.keys():
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key in non_editable_fields:
                 edited_incident.kv_strings[key] = original_incident.kv_strings[key].copy()
-        
+
         # Restore non-editable integer fields
         for key in original_incident.kv_integers.keys():
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key in non_editable_fields:
                 edited_incident.kv_integers[key] = original_incident.kv_integers[key].copy()
-        
+
         # Restore non-editable float fields
         for key in original_incident.kv_floats.keys():
             base_key = self._strip_type_suffix(key)  # FIXED: Strip suffix before checking
             if base_key in non_editable_fields:
                 edited_incident.kv_floats[key] = original_incident.kv_floats[key].copy()
+
+        # Handle securestring fields:
+        # - Non-editable: always restore from original
+        # - Editable: if user left the mask unchanged (or removed the field), restore original
+        if original_incident.kv_secure:
+            for key, orig_values in original_incident.kv_secure.items():
+                field = special_fields.get(key)
+                if not field or not field.editable:
+                    # Non-editable: always restore from original
+                    if not hasattr(edited_incident, 'kv_secure') or edited_incident.kv_secure is None:
+                        edited_incident.kv_secure = {}
+                    edited_incident.kv_secure[key] = orig_values.copy()
+                else:
+                    # Editable: check if user left mask unchanged or removed the field
+                    edited_vals = (edited_incident.kv_secure or {}).get(key, [])
+                    if not edited_vals or all(v == "{securestring}" for v in edited_vals):
+                        # Unchanged (mask or absent) — restore original
+                        if not hasattr(edited_incident, 'kv_secure') or edited_incident.kv_secure is None:
+                            edited_incident.kv_secure = {}
+                        edited_incident.kv_secure[key] = orig_values.copy()
+                    # else: user typed a new value — leave edited_incident.kv_secure[key] as-is
        
     def update_incident_info(
             self,
@@ -5063,9 +5260,10 @@ class IncidentManager:
         
             updated_fields = []
             previous_content = None
-            orig_kv_strings=incident.kv_strings;
-            orig_kv_integers=incident.kv_integers;        
-            orig_kv_floats=incident.kv_floats;
+            orig_kv_strings = incident.kv_strings
+            orig_kv_integers = incident.kv_integers
+            orig_kv_floats = incident.kv_floats
+            orig_kv_secure = incident.kv_secure
             
             # Handle direct KV dicts (from --from-file)
             if kv_strings is not None or kv_integers is not None or kv_floats is not None:
@@ -5256,7 +5454,10 @@ class IncidentManager:
                     values_str = ', '.join(str(v) for v in values)
                     update_msg += f"{key}: {values_str}\n"
 
-            
+            # Format secure KV (masked — never log plaintext)
+            for key in (orig_kv_secure or {}):
+                update_msg += f"{key}: {{securestring}}\n"
+
             update_id = IDGenerator.generate_update_id()
             
             # Get template_id from incident for the update
@@ -5276,6 +5477,7 @@ class IncidentManager:
                 is_create=True,
                 template_name=incident_template_id,
                 for_notes=True,
+                is_system_note=True,
             )
             
             # Set incident_id explicitly
@@ -5288,6 +5490,15 @@ class IncidentManager:
                 incident_update,
                 file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
                 file_content=written_content,
+            )
+            self.index_db.index_update_kv_data(
+                incident_id,
+                update_id,
+                kv_strings=incident_update.kv_strings,
+                kv_integers=incident_update.kv_integers,
+                kv_floats=incident_update.kv_floats,
+                kv_secure=incident_update.kv_secure,
+                project_config=self.project_config,
             )
 
             return True
@@ -5632,13 +5843,13 @@ class IncidentManager:
             for key, kvtype, op, value in parsed_single:
                 if op == '-':
                     raise ValueError(f"Cannot use removal operator '-' when creating incident")
-                self._validate_and_store_kv_single(key, kvtype, value, inc)
-            
+                self._validate_and_store_kv_single(key, kvtype, value, inc, is_create=True)
+
             # Process multi-value KV (appends)
             for key, kvtype, op, value in parsed_multi:
                 if op == '-':
                     raise ValueError(f"Cannot use removal operator '-' when creating incident")
-                self._validate_and_store_kv_multi(key, kvtype, value, inc)
+                self._validate_and_store_kv_multi(key, kvtype, value, inc, is_create=True)
         
         # Apply system fields FIRST (before validation) so template_id and other
         # required system fields are populated before we validate
@@ -5789,6 +6000,7 @@ class IncidentManager:
             is_create=True,
             template_name=incident_template_id,
             for_notes=True,
+            is_system_note=True,
         )
         
         # Set incident_id explicitly
@@ -5801,6 +6013,15 @@ class IncidentManager:
             initial_update,
             file_path=self.storage._get_updates_dir(incident_id) / f"{initial_update.id}.md",
             file_content=written_content,
+        )
+        self.index_db.index_update_kv_data(
+            incident_id,
+            initial_update.id,
+            kv_strings=initial_update.kv_strings,
+            kv_integers=initial_update.kv_integers,
+            kv_floats=initial_update.kv_floats,
+            kv_secure=initial_update.kv_secure,
+            project_config=self.project_config,
         )
 
         return incident_id
@@ -6125,7 +6346,8 @@ class IncidentManager:
         update_kv_strings = {}
         update_kv_integers = {}
         update_kv_floats = {}
-        
+        update_kv_secure = {}
+
         # Handle direct KV dicts (from --from-file)
         if kv_strings is not None or kv_integers is not None or kv_floats is not None:
             # Direct KV mode - filter out system-auto-populated fields (user values discarded)
@@ -6186,6 +6408,15 @@ class IncidentManager:
                                 update_kv_floats[key] = []
                             update_kv_floats[key].append(float(value))
  
+        # Route securestring note special fields from kv_strings → kv_secure
+        note_special_for_routing = self.project_config.get_special_fields_for_template(
+            parent_template_id, for_record=False,
+        )
+        for _key in list(update_kv_strings.keys()):
+            _field = note_special_for_routing.get(_key)
+            if _field and _field.value_type == "securestring":
+                update_kv_secure[_key] = update_kv_strings.pop(_key)
+
         # Load template data if specified
         if template_incident:
             # Using a record as template - copy its editable KV and content
@@ -6303,6 +6534,7 @@ class IncidentManager:
             kv_strings=update_kv_strings or {},
             kv_integers=update_kv_integers,
             kv_floats=update_kv_floats,
+            kv_secure=update_kv_secure or None,
         )
         
         # Apply special fields (sets incident_id, timestamp, author, template_id, etc.)
@@ -6333,6 +6565,7 @@ class IncidentManager:
             kv_strings=update.kv_strings,
             kv_integers=update.kv_integers,
             kv_floats=update.kv_floats,
+            kv_secure=update.kv_secure,
             project_config=self.project_config,
         )
         
@@ -6445,6 +6678,11 @@ class IncidentCLI:
         self.parser = argparse.ArgumentParser(
             description="aver: record tracking and management",
             formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        self.parser.add_argument(
+            "-v", "--version",
+            action="version",
+            version=f"%(prog)s {__version__}",
         )
         self._add_common_args(self.parser)
         self.subparsers = self.parser.add_subparsers(dest="command", required=True)
@@ -6576,19 +6814,20 @@ class IncidentCLI:
             interactive=interactive,
         )
     
-    def _setup_write_command(self, args, user_override=None) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
+    def _setup_write_command(self, args, user_override=None, is_create: bool = False) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
         """
         Common setup for write commands (create, update, add_update).
-        
+
         Handles:
         - Manager initialization
         - Git identity checking and override
         - KV list building
-        
+
         Args:
             args: Command arguments
             user_override: Optional dict with 'handle' and 'email' for user identity override
                           (used by JSON IO interface)
+            is_create: If True, allow non-editable fields (creation only)
         
         Returns:
             (manager, (kv_single, kv_multi))
@@ -6641,11 +6880,19 @@ class IncidentCLI:
         field_kv_multi = []
         if hasattr(args, 'field_assignments') and args.field_assignments:
             is_note = is_note_command
+            # For notes, scope to the parent record's template; for records, use args.template
+            field_template_id = (
+                getattr(args, 'record_template_id', None)
+                if is_note
+                else getattr(args, 'template', None)
+            )
             try:
                 field_kv_single, field_kv_multi = self._process_field_assignments(
                     args.field_assignments,
                     manager,
-                    for_notes=is_note
+                    for_notes=is_note,
+                    is_create=is_create,
+                    template_id=field_template_id,
                 )
             except ValueError as e:
                 raise RuntimeError(f"Field assignment error: {e}")
@@ -7309,43 +7556,38 @@ class IncidentCLI:
         return field_assignments
     
     def _process_field_assignments(
-        self, 
-        assignments: List[str], 
+        self,
+        assignments: List[str],
         manager: IncidentManager,
-        for_notes: bool = False
+        for_notes: bool = False,
+        is_create: bool = False,
+        template_id: Optional[str] = None,
     ) -> tuple[List[str], List[str]]:
         """
         Convert field assignments into KV lists with type markers.
-        
+
         Validates against special_fields config and applies appropriate
         type markers based on field definitions.
-        
+
         Args:
             assignments: List of "key=value" strings
             manager: IncidentManager for config access
             for_notes: True if processing note fields
-            
+            is_create: If True, allow non-editable fields (creation only)
+            template_id: Template ID to include template-scoped fields (globals + this template only)
+
         Returns:
             (kv_single, kv_multi) - Lists with type markers
-            
+
         Raises:
             ValueError: If validation fails
         """
-        # Get applicable special fields
-        if for_notes:
-            # Start with global note fields
-            all_note_fields = manager.project_config.get_note_special_fields().copy()
-            # Add note fields from all templates
-            for template_name in manager.project_config._templates.keys():
-                template_fields = manager.project_config.get_special_fields_for_template(
-                    template_name,
-                    for_record=False,
-                )
-                all_note_fields.update(template_fields)
-            special_fields = all_note_fields
-        else:
-            special_fields = manager.project_config.get_special_fields()
-        
+        # Get applicable special fields: globals + the specific template (if known)
+        special_fields = manager.project_config.get_special_fields_for_template(
+            template_id,
+            for_record=not for_notes,
+        )
+
         kv_single = []
         kv_multi = []
         
@@ -7359,8 +7601,8 @@ class IncidentCLI:
                 # This is a special field - validate and type from config
                 field = special_fields[key]
                 
-                # Check if editable
-                if not field.editable:
+                # Check if editable (allow non-editable fields on creation)
+                if not field.editable and not is_create:
                     raise ValueError(
                         f"Field '{key}' is not editable (system field)"
                     )
@@ -7398,7 +7640,7 @@ class IncidentCLI:
             else:
                 # Not a special field - treat as custom string field
                 # (User can override with --text/--number if they want type hints)
-                kv_single.append(f"{key}${value}")
+                kv_single.append(f"{key}{KVParser.TYPE_STRING}{value}")
         
         return kv_single, kv_multi
 
@@ -7752,7 +7994,15 @@ class IncidentCLI:
         )
 
         note_list_parser.add_argument("record_id", help="Record ID")
-        
+
+        # note view
+        note_view_parser = note_subparsers.add_parser(
+            "view",
+            help="View a specific note by ID",
+        )
+        note_view_parser.add_argument("record_id", help="Record ID")
+        note_view_parser.add_argument("note_id", help="Note ID")
+
         # note search
         note_search_parser = note_subparsers.add_parser(
             "search",
@@ -8155,6 +8405,8 @@ class IncidentCLI:
                     self._cmd_add_update(parsed)
                 elif parsed.note_command == "list":
                     self._cmd_list_updates(parsed)
+                elif parsed.note_command == "view":
+                    self._cmd_view_note(parsed)
                 elif parsed.note_command == "search":
                     self._cmd_search_updates(parsed)
                     
@@ -8255,22 +8507,24 @@ $update_kv
         # Command Helpers
         # ====================================================================
 
-    def _flatten_kv_data(self, kv_strings: dict, kv_integers: dict, kv_floats: dict) -> dict:
+    def _flatten_kv_data(self, kv_strings: dict, kv_integers: dict, kv_floats: dict, kv_secure: dict = None) -> dict:
         """
-        Flatten kv_strings, kv_integers, and kv_floats into a single dictionary.
-        
+        Flatten kv_strings, kv_integers, kv_floats, and kv_secure into a single dictionary.
+
         Multi-value fields are joined with commas. Single-value fields are unwrapped.
-        
+        Securestring fields are always masked as {securestring}.
+
         Args:
             kv_strings: Dictionary of string key-value pairs
             kv_integers: Dictionary of integer key-value pairs
             kv_floats: Dictionary of float key-value pairs
-        
+            kv_secure: Dictionary of securestring key-value pairs (masked in output)
+
         Returns:
             Flattened dictionary safe for Template.safe_substitute()
         """
         kv_all = {}
-        
+
         # Process strings
         if kv_strings:
             for key, values in kv_strings.items():
@@ -8278,7 +8532,7 @@ $update_kv
                     kv_all[key] = ', '.join(str(v) for v in values)
                 else:
                     kv_all[key] = str(values)
-        
+
         # Process integers
         if kv_integers:
             for key, values in kv_integers.items():
@@ -8286,7 +8540,7 @@ $update_kv
                     kv_all[key] = ', '.join(str(v) for v in values)
                 else:
                     kv_all[key] = str(values)
-        
+
         # Process floats
         if kv_floats:
             for key, values in kv_floats.items():
@@ -8294,7 +8548,12 @@ $update_kv
                     kv_all[key] = ', '.join(str(v) for v in values)
                 else:
                     kv_all[key] = str(values)
-        
+
+        # Process secure fields — always mask
+        if kv_secure:
+            for key in kv_secure:
+                kv_all[key] = "{securestring}"
+
         return kv_all
 
     def _apply_max_filter(self, results: list, max_keys: list) -> list:
@@ -8564,7 +8823,7 @@ $update_kv
 
     def _cmd_create(self, args):
         """Create record."""
-        manager, (kv_single, kv_multi) = self._setup_write_command(args)
+        manager, (kv_single, kv_multi) = self._setup_write_command(args, is_create=True)
         
         from_file = getattr(args, 'from_file', None)
         
@@ -8671,15 +8930,6 @@ $update_kv
             template_id = getattr(args, 'template', None)
             allow_validation_editor = not getattr(args, 'no_validation_editor', False)
             
-            # Validate template usage
-            if template_id and not use_editor:
-                print(
-                    "Error: --template can only be used in editor mode\n"
-                    "Remove --description flag or stdin input to use editor",
-                    file=sys.stderr
-                )
-                sys.exit(1)
-
             try:
                 record_id = manager.create_incident(
                     kv_single=kv_single,
@@ -8704,6 +8954,8 @@ $update_kv
                     for key, values in record.kv_strings.items():
                         if key not in ('title', 'description', 'created_at', 'created_by', 'updated_at'):
                             print(f"  {key}: {', '.join(values)}")
+                    for key in (record.kv_secure or {}):
+                        print(f"  {key}: {{securestring}}")
 
             except ValueError as e:
                 # Only happens if allow_validation_editor=False or non-validation ValueError
@@ -8723,9 +8975,9 @@ $update_kv
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
             sys.exit(1)
 
-        kv_all = self._flatten_kv_data(record.kv_strings, record.kv_integers, record.kv_floats)
+        kv_all = self._flatten_kv_data(record.kv_strings, record.kv_integers, record.kv_floats, record.kv_secure)
         kv_section = self._format_kv_section(kv_all)
-        
+
         output = self.TEMPLATE_VIEW.safe_substitute(
             id=record.id,
             kv_all=kv_section,
@@ -8823,8 +9075,8 @@ $update_kv
         print("─" * 80)
 
         for rec in results:
-            kv_all = self._flatten_kv_data(rec.kv_strings, rec.kv_integers, rec.kv_floats)
-            
+            kv_all = self._flatten_kv_data(rec.kv_strings, rec.kv_integers, rec.kv_floats, rec.kv_secure)
+
             # First line: ID, Title, Updated
             titlestring = f"{kv_all.get('title', 'Unknown')[:39]:<39}"
             output = self.TEMPLATE_LIST_ITEM.safe_substitute(
@@ -9109,10 +9361,10 @@ $update_kv
             if _parent_record else None
         )
 
-        manager, (kv_single, kv_multi) = self._setup_write_command(args)
+        manager, (kv_single, kv_multi) = self._setup_write_command(args, is_create=True)
 
         from_file = getattr(args, 'from_file', None)
-        
+
         if from_file:
             # --from-file mode: import note from markdown file
             template_id = getattr(args, 'template', None)
@@ -9287,7 +9539,7 @@ $update_kv
             return
 
         for i, note in enumerate(notes, 1):
-            kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats)
+            kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats, note.kv_secure)
             kv_section = self._format_kv_section(kv_all)
             
             output = self.TEMPLATE_LIST_UPDATES_ITEM.safe_substitute(
@@ -9299,6 +9551,32 @@ $update_kv
             )
             print(output)
             
+    def _cmd_view_note(self, args):
+        """View a specific note by ID."""
+        manager = self._get_manager(args)
+        notes = manager.get_updates(args.record_id)
+        note = None
+        for n in notes:
+            if n.id == args.note_id:
+                note = n
+                break
+
+        if not note:
+            print(f"Error: Note {args.note_id} not found in record {args.record_id}", file=sys.stderr)
+            sys.exit(1)
+
+        kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats, note.kv_secure)
+        kv_section = self._format_kv_section(kv_all)
+
+        output = self.TEMPLATE_LIST_UPDATES_ITEM.safe_substitute(
+            note_number=args.note_id,
+            timestamp=note.timestamp,
+            author=note.author,
+            message=note.message,
+            kv_all=kv_section,
+        )
+        print(output)
+
     def _cmd_search_updates(self, args):
         """Search notes by KV data."""
         manager = self._get_manager(args)
@@ -9393,8 +9671,9 @@ $update_kv
             # Flatten update KV data for display
             update_kv_all = self._flatten_kv_data(
                 update_info.kv_strings,
-                update_info.kv_integers, 
-                update_info.kv_floats
+                update_info.kv_integers,
+                update_info.kv_floats,
+                update_info.kv_secure,
             )
             
             # Build update KV display string (only show requested fields)
@@ -9414,7 +9693,8 @@ $update_kv
             incident_kv_all = self._flatten_kv_data(
                 incident_info.kv_strings,
                 incident_info.kv_integers,
-                incident_info.kv_floats
+                incident_info.kv_floats,
+                incident_info.kv_secure,
             )
             incident_kv = "\n".join(f"{k}: {v}" for k, v in incident_kv_all.items())
             
@@ -9669,7 +9949,7 @@ $update_kv
 
             try:
                 # Use the existing from-file machinery
-                manager, (kv_single, kv_multi) = self._setup_write_command(args)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args, is_create=True)
 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -9738,8 +10018,8 @@ $update_kv
             
             try:
                 # Use existing from-file machinery
-                manager, (kv_single, kv_multi) = self._setup_write_command(args)
-                
+                manager, (kv_single, kv_multi) = self._setup_write_command(args, is_create=True)
+
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
                     manager,
@@ -9888,7 +10168,10 @@ $update_kv
             if incident.kv_floats:
                 for key, values in incident.kv_floats.items():
                     result["fields"][key] = values[0] if len(values) == 1 else values
-            
+            if incident.kv_secure:
+                for key in incident.kv_secure:
+                    result["fields"][key] = "{securestring}"
+
             # Include notes if requested
             if args.include_notes:
                 notes = manager.get_updates(args.record_id)
@@ -9908,6 +10191,9 @@ $update_kv
                     if note.kv_floats:
                         for key, values in note.kv_floats.items():
                             note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_secure:
+                        for key in note.kv_secure:
+                            note_data["fields"][key] = "{securestring}"
                     result["notes"].append(note_data)
             
             print(json.dumps(result, indent=2))
@@ -9952,16 +10238,19 @@ $update_kv
             if note.kv_floats:
                 for key, values in note.kv_floats.items():
                     result["fields"][key] = values[0] if len(values) == 1 else values
-            
+            if note.kv_secure:
+                for key in note.kv_secure:
+                    result["fields"][key] = "{securestring}"
+
             print(json.dumps(result, indent=2))
-            
+
         except RuntimeError as e:
             result = {
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
             sys.exit(1)
-    
+
     def _cmd_json_search_records(self, args):
         '''Search records and output as JSON.'''
         try:
@@ -9990,21 +10279,24 @@ $update_kv
                 if incident.kv_floats:
                     for key, values in incident.kv_floats.items():
                         record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_secure:
+                    for key in incident.kv_secure:
+                        record_data["fields"][key] = "{securestring}"
                 records.append(record_data)
-            
+
             result = {
                 "count": len(records),
                 "records": records,
             }
             print(json.dumps(result, indent=2))
-            
+
         except RuntimeError as e:
             result = {
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
             sys.exit(1)
-    
+
     def _cmd_json_search_notes(self, args):
         '''Search notes and output as JSON.'''
         try:
@@ -10036,22 +10328,25 @@ $update_kv
                         if note.kv_floats:
                             for key, values in note.kv_floats.items():
                                 note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_secure:
+                            for key in note.kv_secure:
+                                note_data["fields"][key] = "{securestring}"
                         notes.append(note_data)
                         break
-            
+
             result = {
                 "count": len(notes),
                 "notes": notes,
             }
             print(json.dumps(result, indent=2))
-            
+
         except RuntimeError as e:
             result = {
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
             sys.exit(1)
-    
+
     def _cmd_json_schema_record(self, args):
         '''Get field schema for records as JSON.'''
         try:
@@ -10351,7 +10646,10 @@ $update_kv
             if incident.kv_floats:
                 for key, values in incident.kv_floats.items():
                     result["fields"][key] = values[0] if len(values) == 1 else values
-            
+            if incident.kv_secure:
+                for key in incident.kv_secure:
+                    result["fields"][key] = "{securestring}"
+
             if args.include_notes:
                 notes = manager.get_updates(args.record_id)
                 result["notes"] = []
@@ -10370,10 +10668,13 @@ $update_kv
                     if note.kv_floats:
                         for key, values in note.kv_floats.items():
                             note_data["fields"][key] = values[0] if len(values) == 1 else values
+                    if note.kv_secure:
+                        for key in note.kv_secure:
+                            note_data["fields"][key] = "{securestring}"
                     result["notes"].append(note_data)
-            
+
             return result
-            
+
         elif command == 'export-note':
             # Required: record_id, note_id
             if 'record_id' not in params:
@@ -10411,9 +10712,12 @@ $update_kv
             if note.kv_floats:
                 for key, values in note.kv_floats.items():
                     result["fields"][key] = values[0] if len(values) == 1 else values
-            
+            if note.kv_secure:
+                for key in note.kv_secure:
+                    result["fields"][key] = "{securestring}"
+
             return result
-            
+
         elif command == 'search-records':
             # Optional: ksearch (list), ksort (list), limit, count_only, max (list)
             ksearch = params.get('ksearch')
@@ -10474,13 +10778,16 @@ $update_kv
                 if incident.kv_floats:
                     for key, values in incident.kv_floats.items():
                         record_data["fields"][key] = values[0] if len(values) == 1 else values
+                if incident.kv_secure:
+                    for key in incident.kv_secure:
+                        record_data["fields"][key] = "{securestring}"
                 records.append(record_data)
 
             return {
                 "count": len(records),
                 "records": records,
             }
-            
+
         elif command == 'search-notes':
             # Optional: ksearch, limit, count_only
             ksearch_raw = params.get('ksearch')
@@ -10527,6 +10834,9 @@ $update_kv
                         if note.kv_floats:
                             for key, values in note.kv_floats.items():
                                 note_data["fields"][key] = values[0] if len(values) == 1 else values
+                        if note.kv_secure:
+                            for key in note.kv_secure:
+                                note_data["fields"][key] = "{securestring}"
                         notes.append(note_data)
                         break
 
@@ -10534,7 +10844,7 @@ $update_kv
                 "count": len(notes),
                 "notes": notes,
             }
-            
+
         elif command == 'import-record':
             # Required: content
             # Optional: fields, template, record_id
@@ -10558,7 +10868,7 @@ $update_kv
                 temp_file = f.name
 
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
+                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id, is_create=True)
 
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
@@ -10610,8 +10920,8 @@ $update_kv
                 temp_file = f.name
             
             try:
-                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id)
-                
+                manager, (kv_single, kv_multi) = self._setup_write_command(args, user_override=user_id, is_create=True)
+
                 frontmatter, body, resolved_template_id = self._process_from_file(
                     temp_file,
                     manager,
