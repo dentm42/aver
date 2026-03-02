@@ -408,8 +408,13 @@ aver json search-records --limit 1000 | \
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Error (validation, not found, etc.) |
+| 1 | Runtime error |
+| 2 | Usage error (bad arguments) |
+| 3 | Not found |
+| 4 | Validation error |
 | 130 | Interrupted (Ctrl-C) |
+
+Note: The `json io` command itself never exits non-zero for individual command errors — those are returned as `{"success": false, ...}` JSON responses. Exit codes 1-4 apply to the `json` subcommands run directly (e.g. `json search-records`, `json export-record`).
 
 ## See Also
 

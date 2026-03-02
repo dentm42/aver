@@ -134,6 +134,34 @@ enabled = true
 required = false
 
 # ============================================================================
+# Secure String Fields (masked in all output)
+# ============================================================================
+
+# API token - stored encrypted, displayed as {securestring} in all list/view output
+# Use `record unmask RECORD_ID --fields api_token` to retrieve the actual value
+[special_fields.api_token]
+type = "single"
+value_type = "securestring"
+editable = true
+enabled = true
+required = false
+
+# ============================================================================
+# Note-only System Values
+# ============================================================================
+
+# is_system_update - set to "1" for auto-generated notes (record create/update
+# tracking), "0" for user-added notes. Useful for filtering automation noise.
+[note_special_fields.is_system_update]
+type = "single"
+value_type = "integer"
+editable = false
+enabled = true
+required = false
+system_value = "is_system_update"
+index_values = true
+
+# ============================================================================
 # Deprecated/Disabled Fields Example
 # ============================================================================
 
