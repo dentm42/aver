@@ -583,6 +583,7 @@ constants:
     - "recordid — record ID"
     - "updateid — note ID"
     - "template_id — template name"
+    - "is_system_update — '1' for system notes, '0' for user notes"
 
   database_tables:
     file_index: "id INTEGER PK AUTOINCREMENT, file_path TEXT UNIQUE, file_hash TEXT, file_mtime TEXT"
@@ -665,6 +666,33 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "admin validate-config command and startup config validation"
+    added: "2026-03-01"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      validate_project_config(project_config, storage) -> List[str]: checks prefixes,
+      per-field value_type/field_type/accepted_values/default/system_value, and template
+      record_template_recordid/note_template_recordid existence on disk.
+      validate_user_config(user_config) -> List[str]: checks library paths, location
+      aliases, behavior.database_selection, unknown top-level keys.
+      _run_config_validation(args, hard_fail=False): startup hook — prints [CONFIG WARNING]
+      lines when hard_fail=False, or exits EXIT_VALIDATION when hard_fail=True.
+      --no-validate-config global flag: suppresses startup warnings (not applicable to
+      admin validate-config, which always validates).
+      SUPPORTED_SYSTEM_VALUES: 'is_system_update' added (was missing).
+    invocation_points:
+      - "run() — startup warning (hard_fail=False), skipped for admin validate-config and admin init"
+      - "_cmd_reindex() — hard_fail=True before reindexing"
+      - "_cmd_json_io() — hard_fail=True before the while loop"
+      - "_cmd_admin_validate_config() — dedicated command, always validates"
+    exit_codes:
+      - "admin validate-config: EXIT_OK(0) = clean, EXIT_VALIDATION(4) = errors found"
+    key_functions:
+      - "validate_project_config(project_config, storage) -> List[str]  (~line 4145)"
+      - "validate_user_config(user_config) -> List[str]  (~line 4255)"
+      - "_run_config_validation(self, args, hard_fail=False)  (~line 7163)"
+      - "_cmd_admin_validate_config(self, args)  (~line 10655)"
+
   - feature: "--offset pagination for record list, note search, json search-records, json search-notes"
     added: "2026-03-01"
     status: "✅ IMPLEMENTED"

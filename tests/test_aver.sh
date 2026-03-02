@@ -160,6 +160,13 @@ run_aver() {
         echo "========================================" >&2
     fi
     # Preserve original Python user site-packages (HOME override would break them)
+    PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" --override-repo-boundary --location "$TEST_DIR" --no-validate-config "$@"
+}
+
+run_aver_validated() {
+    # Like run_aver but WITHOUT --no-validate-config, so startup warnings are emitted.
+    # Use this when a test needs to observe [CONFIG WARNING] behavior.
+    CURRENT_COMMAND="aver $*"
     PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" --override-repo-boundary --location "$TEST_DIR" "$@"
 }
 
@@ -5925,6 +5932,7 @@ main() {
     test_note_add_no_validation_editor
     test_help_fields
     test_offset_pagination
+    test_validate_config
     test_exit_codes
 
     # Summary
@@ -6457,7 +6465,7 @@ BUGBADEOF
     PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" \
         --override-repo-boundary --location "$empty_dir" admin init 2>/dev/null
     fl_out=$(PYTHONUSERBASE="${ORIGINAL_HOME}/.local" python3 "$AVER_PATH" \
-        --override-repo-boundary --location "$empty_dir" admin validate --failed-list 2>&1)
+        --override-repo-boundary --location "$empty_dir" --no-validate-config admin validate --failed-list 2>&1)
     fl_exit=$?
     set -e
     rm -rf "$empty_dir"
@@ -7255,6 +7263,245 @@ test_offset_pagination() {
     else
         fail "json search-notes CLI --offset did not paginate (all=$jncli_id_all, off=$jncli_id_off)"
     fi
+}
+
+test_validate_config() {
+    print_section "Test: admin validate-config"
+
+    # Save and replace user config so dead library aliases from test_library_management
+    # don't pollute validate-config results. Restore at end of function.
+    local user_cfg="$TEST_HOME/.config/aver/user.toml"
+    local user_cfg_bak="$TEST_HOME/.config/aver/user.toml.vc_bak"
+    cp "$user_cfg" "$user_cfg_bak"
+    cat > "$user_cfg" << 'EOF'
+[user]
+handle = "testuser"
+email = "test@example.com"
+EOF
+
+    # -------------------------------------------------------------------------
+    # 1. Valid config → exit 0, prints "Config validation: OK"
+    # -------------------------------------------------------------------------
+    print_test "admin validate-config with valid config → exit 0"
+    track_command "aver admin validate-config"
+    set +e
+    vc_output=$(run_aver_validated admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+    if [ $vc_exit -eq 0 ] && echo "$vc_output" | grep -q "Config validation: OK"; then
+        pass
+        echo "  Exit 0 and 'Config validation: OK' as expected"
+    else
+        fail "Expected exit 0 and 'Config validation: OK', got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. Bad value_type → exit 4
+    # -------------------------------------------------------------------------
+    print_test "admin validate-config with bad value_type → exit 4"
+    track_command "inject bad value_type=blob into config.toml"
+
+    # Save original config
+    cp "$TEST_DIR/config.toml" "$TEST_DIR/config.toml.bak"
+
+    # Inject a bad value_type (append a field with invalid type)
+    cat >> "$TEST_DIR/config.toml" << 'EOF'
+
+[record_special_fields.bad_type_field]
+type = "single"
+value_type = "blob"
+editable = true
+enabled = true
+required = false
+EOF
+
+    set +e
+    vc_output=$(run_aver_validated admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+
+    # Restore good config
+    mv "$TEST_DIR/config.toml.bak" "$TEST_DIR/config.toml"
+
+    if [ $vc_exit -eq 4 ] && echo "$vc_output" | grep -qi "blob"; then
+        pass
+        echo "  Exit 4 and error about 'blob' as expected"
+    else
+        fail "Expected exit 4 with 'blob' error, got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. Unknown system_value → exit 4
+    # -------------------------------------------------------------------------
+    print_test "admin validate-config with unknown system_value → exit 4"
+    track_command "inject unknown system_value into config.toml"
+
+    cp "$TEST_DIR/config.toml" "$TEST_DIR/config.toml.bak"
+
+    cat >> "$TEST_DIR/config.toml" << 'EOF'
+
+[record_special_fields.bad_sysval_field]
+type = "single"
+value_type = "string"
+editable = false
+enabled = true
+required = false
+system_value = "nonexistent_system_value"
+EOF
+
+    set +e
+    vc_output=$(run_aver_validated admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+
+    mv "$TEST_DIR/config.toml.bak" "$TEST_DIR/config.toml"
+
+    if [ $vc_exit -eq 4 ] && echo "$vc_output" | grep -qi "nonexistent_system_value"; then
+        pass
+        echo "  Exit 4 and error about unknown system_value as expected"
+    else
+        fail "Expected exit 4 with system_value error, got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. default not in accepted_values → exit 4
+    # -------------------------------------------------------------------------
+    print_test "admin validate-config with default not in accepted_values → exit 4"
+    track_command "inject bad default value into config.toml"
+
+    cp "$TEST_DIR/config.toml" "$TEST_DIR/config.toml.bak"
+
+    cat >> "$TEST_DIR/config.toml" << 'EOF'
+
+[record_special_fields.bad_default_field]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+accepted_values = ["alpha", "beta"]
+default = "gamma"
+EOF
+
+    set +e
+    vc_output=$(run_aver_validated admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+
+    mv "$TEST_DIR/config.toml.bak" "$TEST_DIR/config.toml"
+
+    if [ $vc_exit -eq 4 ] && echo "$vc_output" | grep -qi "gamma"; then
+        pass
+        echo "  Exit 4 and error about 'gamma' default as expected"
+    else
+        fail "Expected exit 4 with default error, got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. admin validate-config --no-validate-config → still validates (exit 0)
+    # -------------------------------------------------------------------------
+    print_test "admin validate-config --no-validate-config still validates (flag ignored)"
+    track_command "aver --no-validate-config admin validate-config"
+    set +e
+    vc_output=$(run_aver_validated --no-validate-config admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+    if [ $vc_exit -eq 0 ] && echo "$vc_output" | grep -q "Config validation: OK"; then
+        pass
+        echo "  Exit 0 even with --no-validate-config flag (flag correctly ignored)"
+    else
+        fail "Expected exit 0 with 'Config validation: OK', got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. record list without --no-validate-config emits warnings; with flag, suppresses them
+    # -------------------------------------------------------------------------
+    print_test "startup warnings emitted without --no-validate-config, suppressed with it"
+    track_command "inject bad config, compare record list with/without --no-validate-config"
+
+    cp "$TEST_DIR/config.toml" "$TEST_DIR/config.toml.bak"
+
+    cat >> "$TEST_DIR/config.toml" << 'EOF'
+
+[record_special_fields.suppress_test_field]
+type = "single"
+value_type = "blob"
+editable = true
+enabled = true
+required = false
+EOF
+
+    set +e
+    # Without flag: should emit [CONFIG WARNING]
+    vc_warn=$(run_aver_validated record list 2>&1)
+    vc_warn_exit=$?
+    # With flag: should suppress warnings
+    vc_quiet=$(run_aver_validated --no-validate-config record list 2>&1)
+    vc_quiet_exit=$?
+    set -e
+
+    mv "$TEST_DIR/config.toml.bak" "$TEST_DIR/config.toml"
+
+    if [ $vc_warn_exit -eq 0 ] && echo "$vc_warn" | grep -q "CONFIG WARNING" && \
+       [ $vc_quiet_exit -eq 0 ] && ! echo "$vc_quiet" | grep -q "CONFIG WARNING"; then
+        pass
+        echo "  Warnings present without flag, absent with --no-validate-config"
+    else
+        fail "warn_exit=$vc_warn_exit quiet_exit=$vc_quiet_exit; expected warnings without flag, none with flag"
+        echo "  Without flag output: $vc_warn"
+        echo "  With flag output: $vc_quiet"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. admin reindex with bad config → exit 4 (hard fail)
+    # -------------------------------------------------------------------------
+    print_test "admin reindex with bad config → exit 4"
+    track_command "inject bad config, run admin reindex --skip-validation"
+
+    cp "$TEST_DIR/config.toml" "$TEST_DIR/config.toml.bak"
+
+    cat >> "$TEST_DIR/config.toml" << 'EOF'
+
+[record_special_fields.reindex_test_bad_field]
+type = "single"
+value_type = "blob"
+editable = true
+enabled = true
+required = false
+EOF
+
+    set +e
+    vc_output=$(run_aver_validated admin reindex --skip-validation 2>&1)
+    vc_exit=$?
+    set -e
+
+    mv "$TEST_DIR/config.toml.bak" "$TEST_DIR/config.toml"
+
+    if [ $vc_exit -eq 4 ]; then
+        pass
+        echo "  Exit 4 (config validation hard fail) for admin reindex with bad config"
+    else
+        fail "Expected exit 4 for admin reindex with bad config, got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. Verify config is restored and validate-config passes again
+    # -------------------------------------------------------------------------
+    print_test "config restored → admin validate-config passes again"
+    track_command "aver admin validate-config after restore"
+    set +e
+    vc_output=$(run_aver_validated admin validate-config 2>&1)
+    vc_exit=$?
+    set -e
+    if [ $vc_exit -eq 0 ] && echo "$vc_output" | grep -q "Config validation: OK"; then
+        pass
+        echo "  Config validated clean after restore"
+    else
+        fail "Expected exit 0 after config restore, got exit=$vc_exit output='$vc_output'"
+    fi
+
+    # Restore the original user config
+    mv "$user_cfg_bak" "$user_cfg"
 }
 
 # Trap to ensure cleanup on exit

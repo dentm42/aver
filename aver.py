@@ -1484,13 +1484,14 @@ class SystemValueDeriver:
     """Derive system values for special fields."""
     
     SUPPORTED_SYSTEM_VALUES = {
-        'datetime',      # Full timestamp: YYYY-MM-DD HH:MM:SS
-        'datestamp',     # Date only: YYYY-MM-DD
-        'user_email',    # User email from identity
-        'user_name',     # User handle/name from identity
-        'recordid',      # The incident ID
-        'updateid',      # The update ID (for updates only)
-        'template_id',   # The template name used for creation
+        'datetime',          # Full timestamp: YYYY-MM-DD HH:MM:SS
+        'datestamp',         # Date only: YYYY-MM-DD
+        'user_email',        # User email from identity
+        'user_name',         # User handle/name from identity
+        'recordid',          # The incident ID
+        'updateid',          # The update ID (for updates only)
+        'template_id',       # The template name used for creation
+        'is_system_update',  # "1" for system notes, "0" for user notes
     }
     
     @staticmethod
@@ -4137,6 +4138,184 @@ def validate_incident_record(incident: 'Incident', project_config: 'ProjectConfi
                         f"field '{_strip(key)}': invalid value '{v}' "
                         f"(accepted: {', '.join(field.accepted_values)})"
                     )
+
+    return errors
+
+
+def validate_project_config(project_config: 'ProjectConfig', storage: 'IncidentFileStorage') -> List[str]:
+    """
+    Validate a ProjectConfig for semantic correctness.
+
+    Checks:
+      - default_record_prefix and default_note_prefix: non-empty, A-Z/0-9/hyphen only
+      - Per field (global record, global note, all template-scoped):
+          * value_type in {string, integer, float, securestring}
+          * field_type in {single, multi}
+          * default must be in accepted_values (if both set)
+          * system_value must be in SystemValueDeriver.SUPPORTED_SYSTEM_VALUES (if set)
+      - Per template:
+          * record_template_recordid: if set, the referenced record file must exist
+          * note_template_recordid: same check
+
+    Args:
+        project_config: Loaded ProjectConfig object.
+        storage:        IncidentFileStorage for path lookups.
+
+    Returns:
+        List of human-readable error strings.  Empty list = clean.
+    """
+    errors: List[str] = []
+
+    VALID_VALUE_TYPES = {'string', 'integer', 'float', 'securestring'}
+    VALID_FIELD_TYPES = {'single', 'multi'}
+
+    def _check_prefix(prefix: str, label: str):
+        if not prefix:
+            errors.append(f"{label} is empty")
+        elif not re.match(r'^[A-Z0-9-]+$', prefix):
+            errors.append(
+                f"{label} '{prefix}' contains invalid characters "
+                f"(only A-Z, 0-9, and hyphen allowed)"
+            )
+
+    _check_prefix(project_config.default_record_prefix, "default_record_prefix")
+    _check_prefix(project_config.default_note_prefix, "default_note_prefix")
+
+    def _check_field(field_name: str, field_def: dict, context: str):
+        value_type = field_def.get("value_type", "string")
+        field_type = field_def.get("type", "single")
+        accepted_values = field_def.get("accepted_values", [])
+        default = field_def.get("default", None)
+        system_value = field_def.get("system_value", None)
+
+        if value_type not in VALID_VALUE_TYPES:
+            errors.append(
+                f"[{context}.{field_name}] value_type '{value_type}' is not valid "
+                f"(must be one of: {', '.join(sorted(VALID_VALUE_TYPES))})"
+            )
+
+        if field_type not in VALID_FIELD_TYPES:
+            errors.append(
+                f"[{context}.{field_name}] field_type '{field_type}' is not valid "
+                f"(must be one of: {', '.join(sorted(VALID_FIELD_TYPES))})"
+            )
+
+        if default is not None and accepted_values and str(default) not in accepted_values:
+            errors.append(
+                f"[{context}.{field_name}] default value '{default}' is not in "
+                f"accepted_values: {accepted_values}"
+            )
+
+        if system_value is not None and system_value not in SystemValueDeriver.SUPPORTED_SYSTEM_VALUES:
+            errors.append(
+                f"[{context}.{field_name}] system_value '{system_value}' is unknown "
+                f"(supported: {', '.join(sorted(SystemValueDeriver.SUPPORTED_SYSTEM_VALUES))})"
+            )
+
+    # Check global record special fields
+    raw_record_fields = project_config._raw_config.get("record_special_fields", {})
+    for field_name, field_def in raw_record_fields.items():
+        _check_field(field_name, field_def, "record_special_fields")
+
+    # Check global note special fields
+    raw_note_fields = project_config._raw_config.get("note_special_fields", {})
+    for field_name, field_def in raw_note_fields.items():
+        _check_field(field_name, field_def, "note_special_fields")
+
+    # Check template-scoped fields and template record references
+    for template_name, template in project_config._templates.items():
+        ctx_rec = f"templates.{template_name}.record_special_fields"
+        for field_name, field_def in template.record_special_fields.items():
+            _check_field(field_name, field_def, ctx_rec)
+
+        ctx_note = f"templates.{template_name}.note_special_fields"
+        for field_name, field_def in template.note_special_fields.items():
+            _check_field(field_name, field_def, ctx_note)
+
+        if template.record_template_recordid:
+            rec_path = storage._get_incident_path(template.record_template_recordid)
+            if not rec_path.exists():
+                errors.append(
+                    f"[templates.{template_name}] record_template_recordid "
+                    f"'{template.record_template_recordid}' does not exist on disk"
+                )
+
+        if template.note_template_recordid:
+            note_rec_path = storage._get_incident_path(template.note_template_recordid)
+            if not note_rec_path.exists():
+                errors.append(
+                    f"[templates.{template_name}] note_template_recordid "
+                    f"'{template.note_template_recordid}' does not exist on disk"
+                )
+
+    return errors
+
+
+def validate_user_config(user_config: dict) -> List[str]:
+    """
+    Validate the user configuration dictionary for semantic correctness.
+
+    Only checks things _do_get_user_config() does NOT already check (structural
+    and required-field errors are caught at load time).
+
+    Checks:
+      - [libraries.<alias>].path exists on disk
+      - [locations] values that are aliases: alias must exist in [libraries]
+      - [locations] values that are absolute paths: path must exist on disk
+      - [behavior].database_selection must be 'contextual' or 'interactive' (if present)
+      - No unknown top-level keys (allowed: user, libraries, locations, behavior, editor)
+
+    Args:
+        user_config: Already-loaded config dict from _do_get_user_config().
+
+    Returns:
+        List of human-readable error strings.  Empty list = clean.
+    """
+    errors: List[str] = []
+
+    ALLOWED_TOP_LEVEL = {'user', 'libraries', 'locations', 'behavior', 'editor'}
+    for key in user_config:
+        if key not in ALLOWED_TOP_LEVEL:
+            errors.append(
+                f"Unknown top-level key '{key}' in user config "
+                f"(allowed: {', '.join(sorted(ALLOWED_TOP_LEVEL))})"
+            )
+
+    libraries = user_config.get("libraries", {})
+    for alias, lib_info in libraries.items():
+        if isinstance(lib_info, dict):
+            path = lib_info.get("path")
+            if path and not Path(path).exists():
+                errors.append(
+                    f"[libraries.{alias}] path '{path}' does not exist on disk"
+                )
+
+    locations = user_config.get("locations", {})
+    for loc_name, loc_value in locations.items():
+        if not isinstance(loc_value, str):
+            continue
+        # Check if it looks like an absolute path or an alias
+        if loc_value.startswith('/') or loc_value.startswith('~'):
+            expanded = str(Path(loc_value).expanduser())
+            if not Path(expanded).exists():
+                errors.append(
+                    f"[locations.{loc_name}] path '{loc_value}' does not exist on disk"
+                )
+        else:
+            # Treat as an alias reference
+            if loc_value not in libraries:
+                errors.append(
+                    f"[locations.{loc_name}] alias '{loc_value}' is not defined in [libraries]"
+                )
+
+    behavior = user_config.get("behavior", {})
+    if isinstance(behavior, dict):
+        db_sel = behavior.get("database_selection")
+        if db_sel is not None and db_sel not in ('contextual', 'interactive'):
+            errors.append(
+                f"[behavior.database_selection] '{db_sel}' is not valid "
+                f"(must be 'contextual' or 'interactive')"
+            )
 
     return errors
 
@@ -6883,6 +7062,14 @@ class IncidentCLI:
             help="Use aver config identity even if it differs from git",
         )
 
+        parser.add_argument(
+            "--no-validate-config",
+            dest="no_validate_config",
+            action="store_true",
+            default=False,
+            help="Skip startup config validation warnings (not applicable to admin validate-config)",
+        )
+
     def _add_kv_options(self, parser, include_old_style=True):
         """
         Add key-value options to a parser.
@@ -6962,7 +7149,54 @@ class IncidentCLI:
             explicit_location=explicit_location,
             interactive=interactive,
         )
-    
+
+    def _run_config_validation(self, args, hard_fail: bool = False) -> None:
+        """
+        Run project and user config validation.
+
+        In startup-warning mode (hard_fail=False): prints warnings to stderr with
+        [CONFIG WARNING] prefix and continues.
+        In hard-fail mode (hard_fail=True): prints errors to stderr and exits
+        EXIT_VALIDATION if any errors are found.
+
+        Always skipped when args.no_validate_config is True.
+        """
+        if getattr(args, 'no_validate_config', False):
+            return
+
+        all_errors: List[str] = []
+
+        # Project config validation (requires a working manager)
+        try:
+            manager = self._get_manager(args)
+            project_errors = validate_project_config(manager.project_config, manager.storage)
+            all_errors.extend(project_errors)
+        except (RuntimeError, SystemExit):
+            # No database found or other init failure — skip project config check silently
+            pass
+
+        # User config validation
+        try:
+            raw_user_config = DatabaseDiscovery._do_get_user_config()
+            user_errors = validate_user_config(raw_user_config)
+            all_errors.extend(user_errors)
+        except (ValueError, PermissionError):
+            # Already caught/reported by _do_get_user_config
+            pass
+
+        if not all_errors:
+            return
+
+        if hard_fail:
+            print(f"\nConfig validation: {len(all_errors)} error(s) found\n", file=sys.stderr)
+            for err in all_errors:
+                print(f"  ERROR  {err}", file=sys.stderr)
+            print(file=sys.stderr)
+            sys.exit(EXIT_VALIDATION)
+        else:
+            for err in all_errors:
+                print(f"[CONFIG WARNING] {err}", file=sys.stderr)
+
     def _setup_write_command(self, args, user_override=None, is_create: bool = False) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
         """
         Common setup for write commands (create, update, add_update).
@@ -7577,6 +7811,7 @@ class IncidentCLI:
             '--override-repo-boundary',
             '--use-git-id',
             '--no-use-git-id',
+            '--no-validate-config',
         }
         
         # Record/Note write operation flags
@@ -8612,6 +8847,12 @@ class IncidentCLI:
             help="Output only the IDs of non-conforming records, one per line",
         )
 
+        # admin validate-config
+        admin_validate_config_parser = admin_subparsers.add_parser(
+            "validate-config",
+            help="Validate project and user configuration files",
+        )
+
     def run(self, args: Optional[List[str]] = None):
         """Run CLI."""
         self.setup_commands()
@@ -8638,6 +8879,11 @@ class IncidentCLI:
         
         # Store field assignments for later processing
         parsed.field_assignments = field_assignments
+
+        # Startup config validation (warnings only, unless command handles its own hard-fail)
+        if not (parsed.command == "admin" and
+                getattr(parsed, "admin_command", None) in ("validate-config", "init")):
+            self._run_config_validation(parsed, hard_fail=False)
 
         try:
             if parsed.command == "record":
@@ -8710,7 +8956,9 @@ class IncidentCLI:
                     self._cmd_admin_template_data(parsed)
                 elif parsed.admin_command == "validate":
                     self._cmd_admin_validate(parsed)
-                    
+                elif parsed.admin_command == "validate-config":
+                    self._cmd_admin_validate_config(parsed)
+
         except ValueError as e:
             # Field validation / assignment errors that propagate from _setup_write_command
             print(f"Error: {e}", file=sys.stderr)
@@ -10162,6 +10410,7 @@ $update_kv
 
     def _cmd_reindex(self, args):
         """Rebuild search index for all records or specific RECORD_IDs."""
+        self._run_config_validation(args, hard_fail=True)
         try:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
@@ -10398,6 +10647,44 @@ $update_kv
         else:
             print()
             print("All records conform to template rules.")
+
+    def _cmd_admin_validate_config(self, args):
+        """
+        Validate project and user configuration files.
+
+        Runs validate_project_config() and validate_user_config() and prints
+        a human-readable summary.  Exits EXIT_VALIDATION if any errors found.
+
+        Note: --no-validate-config is silently ignored here — this command
+        always validates regardless of that flag.
+        """
+        all_errors: List[str] = []
+
+        try:
+            manager = self._get_manager(args)
+            project_errors = validate_project_config(manager.project_config, manager.storage)
+            all_errors.extend(project_errors)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+        try:
+            raw_user_config = DatabaseDiscovery._do_get_user_config()
+            user_errors = validate_user_config(raw_user_config)
+            all_errors.extend(user_errors)
+        except (ValueError, PermissionError) as e:
+            print(f"Error reading user config: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+        if all_errors:
+            print(f"\nConfig validation: {len(all_errors)} error(s) found\n")
+            for err in all_errors:
+                print(f"  ERROR  {err}")
+            print()
+            sys.exit(EXIT_VALIDATION)
+        else:
+            print("Config validation: OK")
+            sys.exit(EXIT_OK)
 
     # ====================================================================
     # JSON INTERFACE COMMANDS
@@ -11032,6 +11319,7 @@ $update_kv
 
     def _cmd_json_io(self, args):
         '''Interactive JSON interface via STDIN/STDOUT.'''
+        self._run_config_validation(args, hard_fail=True)
         while True:
             try:
                 # Read one line from stdin

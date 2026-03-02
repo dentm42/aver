@@ -58,6 +58,7 @@
 - [Template Special Fields](#template-special-fields)
 
 ### 8. Advanced Features
+- [Global Flags](#global-flags)
 - [Search Queries](#search-queries)
 - [Database Management](#database-management)
 - [Library Aliases](#library-aliases)
@@ -70,6 +71,7 @@
 - [admin reindex](#admin-reindex)
 - [admin template-data](#admin-template-data)
 - [admin validate](#admin-validate)
+- [admin validate-config](#admin-validate-config)
 - [record new](#record-new)
 - [record unmask](#record-unmask)
 - [record update](#record-update)
@@ -791,6 +793,26 @@ For **notes**: **Additive + Override**
 
 ## 8. Advanced Features
 
+### Global Flags
+
+These flags apply to every `aver` command and must appear **before** the subcommand:
+
+| Flag | Description |
+|------|-------------|
+| `--location PATH` | Use the database at the given `.aver` directory path |
+| `--use ALIAS` | Use a named library alias (see [Library Aliases](#library-aliases)) |
+| `--choose` | Interactively select a database when multiple are available |
+| `--use-git-id` | Use git identity instead of aver config identity for this invocation |
+| `--no-use-git-id` | Use aver config identity even if it differs from git |
+| `--no-validate-config` | Suppress startup config validation warnings (see below) |
+
+**Startup config validation**: Every `aver` command automatically checks the project and user configuration for problems and prints `[CONFIG WARNING]` lines to stderr for anything it finds. This is informational only — the command still runs. Use `--no-validate-config` to suppress these warnings (useful in scripts or CI where warnings would pollute output). This flag has no effect on `admin validate-config`, which always validates regardless.
+
+```bash
+aver --no-validate-config record list       # suppress config warnings
+aver --no-validate-config json io           # suppress warnings in JSON IO mode
+```
+
 ### Search Queries
 
 Search by special fields:
@@ -968,6 +990,54 @@ aver admin config add-alias --alias project1 --path /path/to/database
 **List library aliases**:
 ```bash
 aver admin config list-aliases
+```
+
+### admin validate-config
+
+Check that the project configuration (`config.toml`) and user configuration are semantically correct. This is a proactive check that catches problems before they cause silent failures or cryptic runtime errors.
+
+**Checks performed:**
+
+- `default_record_prefix` and `default_note_prefix` — must be non-empty, A-Z/0-9/hyphen only
+- Per field (global record fields, global note fields, all template-scoped fields):
+  - `value_type` must be one of: `string`, `integer`, `float`, `securestring`
+  - `field_type` must be one of: `single`, `multi`
+  - `accepted_values` supported for all value types (`string`, `integer`, `float`, `securestring`)
+  - `default` must be in `accepted_values` if both are set
+  - `system_value` must be a recognized system value name
+- Per template: `record_template_recordid` and `note_template_recordid` must reference existing record files (if set)
+- User config `[libraries.<alias>].path` must exist on disk
+- User config `[locations]` aliases must be defined in `[libraries]`; path values must exist on disk
+- User config `[behavior].database_selection` must be `contextual` or `interactive` (if set)
+- No unknown top-level keys in user config
+
+```bash
+aver admin validate-config
+```
+
+**Example output (clean config)**:
+```
+Config validation: OK
+```
+
+**Example output (errors found)**:
+```
+Config validation: 2 error(s) found
+
+  ERROR  [record_special_fields.severity] value_type 'blob' is not valid (must be one of: float, integer, securestring, string)
+  ERROR  [record_special_fields.status] default value 'unknown' is not in accepted_values: ['open', 'closed']
+```
+
+**Exit codes**:
+- `0` — configuration is valid
+- `4` — one or more configuration errors found
+- `1` — database or config file could not be loaded
+
+**Startup warnings**: Aver automatically runs a lightweight config check at startup and prints `[CONFIG WARNING]` lines to stderr for any issues found. Use `--no-validate-config` to suppress these warnings (has no effect on `admin validate-config` itself).
+
+```bash
+aver --no-validate-config record list   # suppress config warnings
+aver admin validate-config              # always validates, ignores --no-validate-config
 ```
 
 ### record new
