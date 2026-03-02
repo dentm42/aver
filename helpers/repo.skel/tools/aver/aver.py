@@ -44,7 +44,16 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Version
 # ---------------------------------------------------------------------------
-__version__ = "0.9.0"
+__version__ = "0.10.0"
+
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+EXIT_OK         = 0   # Success
+EXIT_ERROR      = 1   # General / unexpected error
+EXIT_USAGE      = 2   # Bad arguments, constraint violations, usage errors
+EXIT_NOT_FOUND  = 3   # Record, note, or template not found
+EXIT_VALIDATION = 4   # Field validation failure (required, accepted_values, type)
 
 import argparse
 import datetime
@@ -1475,13 +1484,14 @@ class SystemValueDeriver:
     """Derive system values for special fields."""
     
     SUPPORTED_SYSTEM_VALUES = {
-        'datetime',      # Full timestamp: YYYY-MM-DD HH:MM:SS
-        'datestamp',     # Date only: YYYY-MM-DD
-        'user_email',    # User email from identity
-        'user_name',     # User handle/name from identity
-        'recordid',      # The incident ID
-        'updateid',      # The update ID (for updates only)
-        'template_id',   # The template name used for creation
+        'datetime',          # Full timestamp: YYYY-MM-DD HH:MM:SS
+        'datestamp',         # Date only: YYYY-MM-DD
+        'user_email',        # User email from identity
+        'user_name',         # User handle/name from identity
+        'recordid',          # The incident ID
+        'updateid',          # The update ID (for updates only)
+        'template_id',       # The template name used for creation
+        'is_system_update',  # "1" for system notes, "0" for user notes
     }
     
     @staticmethod
@@ -1628,10 +1638,10 @@ class DatabaseDiscovery:
             return DatabaseDiscovery._do_get_user_config()
         except ValueError as e:
             print(f"Configuration error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         except PermissionError as e:
             print(f"Permission error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     @staticmethod
     def dict_to_namespace(d):
@@ -4042,6 +4052,274 @@ class IncidentIndexDatabase:
 # ============================================================================
 
 
+def validate_incident_record(incident: 'Incident', project_config: 'ProjectConfig') -> List[str]:
+    """
+    Validate an incident's fields against template field rules.
+
+    Checks:
+      - Required fields are present and non-empty (all value types including securestring)
+      - accepted_values constraints for string, integer, and float fields
+
+    Template-aware: uses get_special_fields_for_template() based on the
+    incident's own template_id field.
+
+    Args:
+        incident:       Incident to validate.
+        project_config: ProjectConfig providing field definitions.
+
+    Returns:
+        List of human-readable error strings.  Empty list means the record
+        conforms to all rules.
+    """
+    # Determine template_id from the record itself
+    template_id = None
+    if incident.kv_strings and 'template_id' in incident.kv_strings:
+        vals = incident.kv_strings['template_id']
+        if vals:
+            template_id = vals[0]
+
+    all_fields = project_config.get_special_fields_for_template(template_id, for_record=True)
+    special_fields = {name: f for name, f in all_fields.items() if f.enabled}
+
+    def _strip(key: str) -> str:
+        for suffix in ('__string', '__integer', '__float'):
+            if key.endswith(suffix):
+                return key[: -len(suffix)]
+        return key
+
+    errors: List[str] = []
+
+    # Required-field check (all value types)
+    for field_name, field in special_fields.items():
+        if not field.required:
+            continue
+        has_value = False
+        vt = field.value_type
+        if vt == 'string':
+            vals = incident.kv_strings.get(field_name, [])
+            has_value = bool(vals) and any(v.strip() for v in vals)
+        elif vt == 'securestring':
+            vals = (incident.kv_secure or {}).get(field_name, [])
+            has_value = bool(vals) and any(v.strip() for v in vals)
+        elif vt == 'integer':
+            has_value = bool(incident.kv_integers.get(field_name))
+        elif vt == 'float':
+            has_value = bool(incident.kv_floats.get(field_name))
+        if not has_value:
+            errors.append(f"required field '{field_name}' is missing or empty")
+
+    # accepted_values check
+    for key, values in incident.kv_strings.items():
+        field = special_fields.get(_strip(key))
+        if field and field.accepted_values:
+            for v in values:
+                if v not in field.accepted_values:
+                    errors.append(
+                        f"field '{_strip(key)}': invalid value '{v}' "
+                        f"(accepted: {', '.join(field.accepted_values)})"
+                    )
+
+    for key, values in incident.kv_integers.items():
+        field = special_fields.get(_strip(key))
+        if field and field.accepted_values:
+            for v in values:
+                if str(v) not in field.accepted_values:
+                    errors.append(
+                        f"field '{_strip(key)}': invalid value '{v}' "
+                        f"(accepted: {', '.join(field.accepted_values)})"
+                    )
+
+    for key, values in incident.kv_floats.items():
+        field = special_fields.get(_strip(key))
+        if field and field.accepted_values:
+            for v in values:
+                if str(v) not in field.accepted_values:
+                    errors.append(
+                        f"field '{_strip(key)}': invalid value '{v}' "
+                        f"(accepted: {', '.join(field.accepted_values)})"
+                    )
+
+    return errors
+
+
+def validate_project_config(project_config: 'ProjectConfig', storage: 'IncidentFileStorage') -> List[str]:
+    """
+    Validate a ProjectConfig for semantic correctness.
+
+    Checks:
+      - default_record_prefix and default_note_prefix: non-empty, A-Z/0-9/hyphen only
+      - Per field (global record, global note, all template-scoped):
+          * value_type in {string, integer, float, securestring}
+          * field_type in {single, multi}
+          * default must be in accepted_values (if both set)
+          * system_value must be in SystemValueDeriver.SUPPORTED_SYSTEM_VALUES (if set)
+      - Per template:
+          * record_template_recordid: if set, the referenced record file must exist
+          * note_template_recordid: same check
+
+    Args:
+        project_config: Loaded ProjectConfig object.
+        storage:        IncidentFileStorage for path lookups.
+
+    Returns:
+        List of human-readable error strings.  Empty list = clean.
+    """
+    errors: List[str] = []
+
+    VALID_VALUE_TYPES = {'string', 'integer', 'float', 'securestring'}
+    VALID_FIELD_TYPES = {'single', 'multi'}
+
+    def _check_prefix(prefix: str, label: str):
+        if not prefix:
+            errors.append(f"{label} is empty")
+        elif not re.match(r'^[A-Z0-9-]+$', prefix):
+            errors.append(
+                f"{label} '{prefix}' contains invalid characters "
+                f"(only A-Z, 0-9, and hyphen allowed)"
+            )
+
+    _check_prefix(project_config.default_record_prefix, "default_record_prefix")
+    _check_prefix(project_config.default_note_prefix, "default_note_prefix")
+
+    def _check_field(field_name: str, field_def: dict, context: str):
+        value_type = field_def.get("value_type", "string")
+        field_type = field_def.get("type", "single")
+        accepted_values = field_def.get("accepted_values", [])
+        default = field_def.get("default", None)
+        system_value = field_def.get("system_value", None)
+
+        if value_type not in VALID_VALUE_TYPES:
+            errors.append(
+                f"[{context}.{field_name}] value_type '{value_type}' is not valid "
+                f"(must be one of: {', '.join(sorted(VALID_VALUE_TYPES))})"
+            )
+
+        if field_type not in VALID_FIELD_TYPES:
+            errors.append(
+                f"[{context}.{field_name}] field_type '{field_type}' is not valid "
+                f"(must be one of: {', '.join(sorted(VALID_FIELD_TYPES))})"
+            )
+
+        if default is not None and accepted_values and str(default) not in accepted_values:
+            errors.append(
+                f"[{context}.{field_name}] default value '{default}' is not in "
+                f"accepted_values: {accepted_values}"
+            )
+
+        if system_value is not None and system_value not in SystemValueDeriver.SUPPORTED_SYSTEM_VALUES:
+            errors.append(
+                f"[{context}.{field_name}] system_value '{system_value}' is unknown "
+                f"(supported: {', '.join(sorted(SystemValueDeriver.SUPPORTED_SYSTEM_VALUES))})"
+            )
+
+    # Check global record special fields
+    raw_record_fields = project_config._raw_config.get("record_special_fields", {})
+    for field_name, field_def in raw_record_fields.items():
+        _check_field(field_name, field_def, "record_special_fields")
+
+    # Check global note special fields
+    raw_note_fields = project_config._raw_config.get("note_special_fields", {})
+    for field_name, field_def in raw_note_fields.items():
+        _check_field(field_name, field_def, "note_special_fields")
+
+    # Check template-scoped fields and template record references
+    for template_name, template in project_config._templates.items():
+        ctx_rec = f"templates.{template_name}.record_special_fields"
+        for field_name, field_def in template.record_special_fields.items():
+            _check_field(field_name, field_def, ctx_rec)
+
+        ctx_note = f"templates.{template_name}.note_special_fields"
+        for field_name, field_def in template.note_special_fields.items():
+            _check_field(field_name, field_def, ctx_note)
+
+        if template.record_template_recordid:
+            rec_path = storage._get_incident_path(template.record_template_recordid)
+            if not rec_path.exists():
+                errors.append(
+                    f"[templates.{template_name}] record_template_recordid "
+                    f"'{template.record_template_recordid}' does not exist on disk"
+                )
+
+        if template.note_template_recordid:
+            note_rec_path = storage._get_incident_path(template.note_template_recordid)
+            if not note_rec_path.exists():
+                errors.append(
+                    f"[templates.{template_name}] note_template_recordid "
+                    f"'{template.note_template_recordid}' does not exist on disk"
+                )
+
+    return errors
+
+
+def validate_user_config(user_config: dict) -> List[str]:
+    """
+    Validate the user configuration dictionary for semantic correctness.
+
+    Only checks things _do_get_user_config() does NOT already check (structural
+    and required-field errors are caught at load time).
+
+    Checks:
+      - [libraries.<alias>].path exists on disk
+      - [locations] values that are aliases: alias must exist in [libraries]
+      - [locations] values that are absolute paths: path must exist on disk
+      - [behavior].database_selection must be 'contextual' or 'interactive' (if present)
+      - No unknown top-level keys (allowed: user, libraries, locations, behavior, editor)
+
+    Args:
+        user_config: Already-loaded config dict from _do_get_user_config().
+
+    Returns:
+        List of human-readable error strings.  Empty list = clean.
+    """
+    errors: List[str] = []
+
+    ALLOWED_TOP_LEVEL = {'user', 'libraries', 'locations', 'behavior', 'editor'}
+    for key in user_config:
+        if key not in ALLOWED_TOP_LEVEL:
+            errors.append(
+                f"Unknown top-level key '{key}' in user config "
+                f"(allowed: {', '.join(sorted(ALLOWED_TOP_LEVEL))})"
+            )
+
+    libraries = user_config.get("libraries", {})
+    for alias, lib_info in libraries.items():
+        if isinstance(lib_info, dict):
+            path = lib_info.get("path")
+            if path and not Path(path).exists():
+                errors.append(
+                    f"[libraries.{alias}] path '{path}' does not exist on disk"
+                )
+
+    locations = user_config.get("locations", {})
+    for loc_name, loc_value in locations.items():
+        if not isinstance(loc_value, str):
+            continue
+        # Check if it looks like an absolute path or an alias
+        if loc_value.startswith('/') or loc_value.startswith('~'):
+            expanded = str(Path(loc_value).expanduser())
+            if not Path(expanded).exists():
+                errors.append(
+                    f"[locations.{loc_name}] path '{loc_value}' does not exist on disk"
+                )
+        else:
+            # Treat as an alias reference
+            if loc_value not in libraries:
+                errors.append(
+                    f"[locations.{loc_name}] alias '{loc_value}' is not defined in [libraries]"
+                )
+
+    behavior = user_config.get("behavior", {})
+    if isinstance(behavior, dict):
+        db_sel = behavior.get("database_selection")
+        if db_sel is not None and db_sel not in ('contextual', 'interactive'):
+            errors.append(
+                f"[behavior.database_selection] '{db_sel}' is not valid "
+                f"(must be 'contextual' or 'interactive')"
+            )
+
+    return errors
+
+
 class IncidentReindexer:
     """Rebuild index from files."""
 
@@ -4050,13 +4328,19 @@ class IncidentReindexer:
         self.index_db = index_db
         self.project_config = project_config
 
-    def reindex_all(self, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> int:
+    def reindex_all(self, verbose: bool = False, force: bool = False, skip_mtime: bool = False,
+                    skip_validation: bool = False) -> int:
         """
         Reindex all incidents from files.
 
         Unless *force* is True, files are skipped when unchanged.  The skip
         check uses mtime first (fast) then MD5 hash.  Pass *skip_mtime* to
         bypass the mtime shortcut and always compare hashes.
+
+        Unless *skip_validation* is True, each record is validated against its
+        template field rules before indexing.  Validation failures are printed
+        to stderr and cause a RuntimeError to be raised after all records have
+        been checked, so the full list of invalid records is always shown.
 
         Returns:
             Number of incidents actually (re)indexed (skipped files not counted)
@@ -4072,6 +4356,7 @@ class IncidentReindexer:
         skipped_count = 0
         indexed_updates = 0
         skipped_updates = 0
+        validation_failures: List[tuple] = []  # (incident_id, [errors])
 
         for incident_id in incident_ids:
             incident_path = self.storage._get_incident_path(incident_id)
@@ -4094,6 +4379,15 @@ class IncidentReindexer:
 
             incident = self.storage.load_incident(incident_id, self.project_config)
             if incident:
+                # Validate before indexing
+                if not skip_validation:
+                    errors = validate_incident_record(incident, self.project_config)
+                    if errors:
+                        validation_failures.append((incident_id, errors))
+                        if verbose:
+                            print(f"  ✗ {incident_id} (validation failed)", file=sys.stderr)
+                        continue  # do not index this record
+
                 self.index_db.remove_incident_from_index(incident_id)
                 self.index_db.index_incident(
                     incident, self.project_config, file_path=incident_path
@@ -4129,20 +4423,34 @@ class IncidentReindexer:
                 f"{indexed_updates} notes ({skipped_updates} unchanged)"
             )
 
+        if validation_failures:
+            lines = ["Validation errors prevented indexing the following records:"]
+            for rid, errs in validation_failures:
+                for err in errs:
+                    lines.append(f"  {rid}: {err}")
+            lines.append("Use --skip-validation to index anyway.")
+            raise RuntimeError("\n".join(lines))
+
         return indexed_count
 
-    def reindex_one(self, incident_id: str, verbose: bool = False, force: bool = False, skip_mtime: bool = False) -> bool:
+    def reindex_one(self, incident_id: str, verbose: bool = False, force: bool = False,
+                    skip_mtime: bool = False, skip_validation: bool = False) -> bool:
         """
         Reindex a single incident and all its notes from files.
 
         Unless *force* is True, files are skipped when unchanged.  Pass
         *skip_mtime* to bypass the mtime shortcut and always compare hashes.
 
+        Unless *skip_validation* is True, the record is validated against its
+        template field rules before indexing.  Validation failures raise
+        RuntimeError.
+
         Args:
             incident_id: The record ID to reindex
             verbose: Print progress messages
             force: Skip all change detection and always reindex
             skip_mtime: Bypass mtime check; use MD5 hash comparison only
+            skip_validation: Skip field validation before indexing
 
         Returns:
             True if successful, False if record not found
@@ -4164,6 +4472,16 @@ class IncidentReindexer:
                 if verbose:
                     print(f"Record {incident_id} not found")
                 return False
+
+            # Validate before indexing
+            if not skip_validation:
+                errors = validate_incident_record(incident, self.project_config)
+                if errors:
+                    lines = [f"Validation errors in {incident_id}:"]
+                    for err in errors:
+                        lines.append(f"  {err}")
+                    lines.append("Use --skip-validation to index anyway.")
+                    raise RuntimeError("\n".join(lines))
 
             # Remove existing index entries and reindex
             self.index_db.remove_incident_from_index(incident_id)
@@ -5872,7 +6190,10 @@ class IncidentManager:
                     allow_validation_editor,
                     process_create_kv,
                 )
-            except (ValueError, RuntimeError) as e:
+            except ValueError as e:
+                # Validation failure - re-raise as ValueError so caller exits EXIT_VALIDATION
+                raise ValueError(f"Record creation failed: {str(e)}")
+            except RuntimeError as e:
                 # User abandoned - re-raise with actual error message
                 raise RuntimeError(f"Record creation abandoned: {str(e)}")
         else:
@@ -5965,7 +6286,7 @@ class IncidentManager:
                 print("The record cannot be saved because required fields are missing.", file=sys.stderr)
                 print("Please provide all required fields or use the editor to complete the record.", file=sys.stderr)
                 print("", file=sys.stderr)
-                raise RuntimeError(f"Record creation failed: {str(e)}")
+                raise ValueError(f"Record creation failed: {str(e)}")
 
         # Save to file
         written_content = self.storage.save_incident(incident, self.project_config)
@@ -6031,6 +6352,7 @@ class IncidentManager:
         ksearch_list: Optional[List[str]] = None,
         ksort_list: Optional[List[str]] = None,
         limit: int = 100,
+        offset: int = 0,
         ids_only: bool = False,
     ) -> Union[List[Incident], List[str]]:
         """
@@ -6040,6 +6362,7 @@ class IncidentManager:
             ksearch_list: List of search expressions like ["status=open", "severity>low"]
             ksort_list: List of sort expressions like ["severity", "created_at-"]
             limit: Max results
+            offset: Number of results to skip (for pagination)
             ids_only: If True, return only incident IDs as strings
      
         Returns:
@@ -6072,9 +6395,9 @@ class IncidentManager:
             except ValueError as e:
                 raise RuntimeError(f"Invalid ksort expression: {e}")
     
-        # Apply limit
-        incident_ids = incident_ids[:limit]
-    
+        # Apply offset + limit
+        incident_ids = incident_ids[offset:offset + limit]
+
         # Return IDs only if requested
         if ids_only:
             return incident_ids
@@ -6580,6 +6903,7 @@ class IncidentManager:
         self,
         ksearch: Optional[List[str]] = None,
         limit: int = 50,
+        offset: int = 0,
         ids_only: bool = False,
     ) -> Union[List[tuple], List[str]]:
         """
@@ -6588,6 +6912,7 @@ class IncidentManager:
         Args:
             ksearch: List of key-value search expressions for update KV
             limit: Maximum results
+            offset: Number of results to skip (for pagination)
             ids_only: If True, return only "incident_id:update_id" strings
     
         Returns:
@@ -6615,8 +6940,11 @@ class IncidentManager:
         if not matching_ids:
             return []
     
-        matching_ids = matching_ids[:limit]
-    
+        if limit is None:
+            matching_ids = matching_ids[offset:]
+        else:
+            matching_ids = matching_ids[offset:offset + limit]
+
         # Return IDs only if requested
         if ids_only:
             return [f"{incident_id}:{update_id}" for incident_id, update_id in matching_ids]
@@ -6734,6 +7062,14 @@ class IncidentCLI:
             help="Use aver config identity even if it differs from git",
         )
 
+        parser.add_argument(
+            "--no-validate-config",
+            dest="no_validate_config",
+            action="store_true",
+            default=False,
+            help="Skip startup config validation warnings (not applicable to admin validate-config)",
+        )
+
     def _add_kv_options(self, parser, include_old_style=True):
         """
         Add key-value options to a parser.
@@ -6813,7 +7149,54 @@ class IncidentCLI:
             explicit_location=explicit_location,
             interactive=interactive,
         )
-    
+
+    def _run_config_validation(self, args, hard_fail: bool = False) -> None:
+        """
+        Run project and user config validation.
+
+        In startup-warning mode (hard_fail=False): prints warnings to stderr with
+        [CONFIG WARNING] prefix and continues.
+        In hard-fail mode (hard_fail=True): prints errors to stderr and exits
+        EXIT_VALIDATION if any errors are found.
+
+        Always skipped when args.no_validate_config is True.
+        """
+        if getattr(args, 'no_validate_config', False):
+            return
+
+        all_errors: List[str] = []
+
+        # Project config validation (requires a working manager)
+        try:
+            manager = self._get_manager(args)
+            project_errors = validate_project_config(manager.project_config, manager.storage)
+            all_errors.extend(project_errors)
+        except (RuntimeError, SystemExit):
+            # No database found or other init failure — skip project config check silently
+            pass
+
+        # User config validation
+        try:
+            raw_user_config = DatabaseDiscovery._do_get_user_config()
+            user_errors = validate_user_config(raw_user_config)
+            all_errors.extend(user_errors)
+        except (ValueError, PermissionError):
+            # Already caught/reported by _do_get_user_config
+            pass
+
+        if not all_errors:
+            return
+
+        if hard_fail:
+            print(f"\nConfig validation: {len(all_errors)} error(s) found\n", file=sys.stderr)
+            for err in all_errors:
+                print(f"  ERROR  {err}", file=sys.stderr)
+            print(file=sys.stderr)
+            sys.exit(EXIT_VALIDATION)
+        else:
+            for err in all_errors:
+                print(f"[CONFIG WARNING] {err}", file=sys.stderr)
+
     def _setup_write_command(self, args, user_override=None, is_create: bool = False) -> tuple[IncidentManager, tuple[List[str], List[str]]]:
         """
         Common setup for write commands (create, update, add_update).
@@ -6886,16 +7269,13 @@ class IncidentCLI:
                 if is_note
                 else getattr(args, 'template', None)
             )
-            try:
-                field_kv_single, field_kv_multi = self._process_field_assignments(
-                    args.field_assignments,
-                    manager,
-                    for_notes=is_note,
-                    is_create=is_create,
-                    template_id=field_template_id,
-                )
-            except ValueError as e:
-                raise RuntimeError(f"Field assignment error: {e}")
+            field_kv_single, field_kv_multi = self._process_field_assignments(
+                args.field_assignments,
+                manager,
+                for_notes=is_note,
+                is_create=is_create,
+                template_id=field_template_id,
+            )
 
         # Build KV from typed options and legacy options
         typed_kv_single, typed_kv_multi = self._build_kv_list(manager, args)
@@ -6992,6 +7372,13 @@ class IncidentCLI:
         # Resolve: CLI flag > user input > keep existing
         template_id_cli = getattr(args, 'template', None)
         if template_id_cli:
+            # Validate template change is allowed when CLI flag changes the template
+            if existing_record and old_template_id and old_template_id != template_id_cli:
+                for fname in global_template_id_field_names:
+                    if not global_record_fields[fname].editable:
+                        raise RuntimeError(
+                            f"Cannot change template. Template_ID special field {fname} marked not editable"
+                        )
             resolved_template_id = template_id_cli
         elif template_id_from_input:
             # Validate template change is allowed
@@ -7424,6 +7811,7 @@ class IncidentCLI:
             '--override-repo-boundary',
             '--use-git-id',
             '--no-use-git-id',
+            '--no-validate-config',
         }
         
         # Record/Note write operation flags
@@ -7451,12 +7839,14 @@ class IncidentCLI:
                         '--template',
                         '--description',
                         '--metadata-only',
+                        '--help-fields',
                     })
                 elif subcommand == 'list':
                     reserved.update({
                         '--ksearch',
                         '--ksort',
                         '--limit',
+                        '--offset',
                         '--ids-only',
                         '--fields',
                     })
@@ -7473,6 +7863,7 @@ class IncidentCLI:
                     reserved.update({
                         '--ksearch',
                         '--limit',
+                        '--offset',
                         '--ids-only',
                         '--fields',
                     })
@@ -7833,6 +8224,12 @@ class IncidentCLI:
             help="Import record from markdown file (blocks editor, rewrites non-editable fields)",
         )
 
+        record_new_parser.add_argument(
+            "--help-fields",
+            action="store_true",
+            help="Show available fields for record creation and exit",
+        )
+
         self.record_new_parser = record_new_parser
         
         # record view
@@ -7866,6 +8263,12 @@ class IncidentCLI:
             type=int,
             default=50,
             help="Maximum records to show",
+        )
+        record_list_parser.add_argument(
+            "--offset",
+            type=int,
+            default=0,
+            help="Number of records to skip (for pagination)",
         )
         record_list_parser.add_argument(
             "--ids-only",
@@ -7927,7 +8330,36 @@ class IncidentCLI:
             help="Import record update from markdown file (blocks editor, rewrites non-editable fields)",
         )
 
+        record_update_parser.add_argument(
+            "--template",
+            metavar="TEMPLATE_ID",
+            help=(
+                "Declare the template for field-scope enforcement during this update. "
+                "Does not copy content from any record. "
+                "Template change must be permitted by the template_id field's editable setting."
+            ),
+        )
+
+        record_update_parser.add_argument(
+            "--help-fields",
+            action="store_true",
+            help="Show available fields for this record (template-aware) and exit",
+        )
+
         self.record_update_parser = record_update_parser
+
+        # record unmask
+        record_unmask_parser = record_subparsers.add_parser(
+            "unmask",
+            help="Show unmasked values for secure fields on a record",
+        )
+        record_unmask_parser.add_argument("record_id", help="Record ID")
+        record_unmask_parser.add_argument(
+            "--fields",
+            required=True,
+            metavar="FIELDS",
+            help="Comma-delimited list of field names to unmask",
+        )
 
         # ====================================================================
         # NOTE COMMANDS
@@ -7980,6 +8412,11 @@ class IncidentCLI:
             help="Import note from markdown file (blocks editor, rewrites non-editable fields)",
         )
         note_add_parser.add_argument(
+            "--no-validation-editor",
+            action="store_true",
+            help="Don't launch editor (for automation); error if no --message or stdin",
+        )
+        note_add_parser.add_argument(
             "--help-fields",
             action="store_true",
             help="Show available fields for the target record",
@@ -8025,7 +8462,13 @@ class IncidentCLI:
             "--limit",
             type=int,
             default=50,
-            help="Maximum records to show",
+            help="Maximum notes to show",
+        )
+        note_search_parser.add_argument(
+            "--offset",
+            type=int,
+            default=0,
+            help="Number of notes to skip (for pagination)",
         )
         note_search_parser.add_argument(
             "--fields",
@@ -8039,6 +8482,20 @@ class IncidentCLI:
             help="Return only the count of matching notes",
         )
 
+
+        # note unmask
+        note_unmask_parser = note_subparsers.add_parser(
+            "unmask",
+            help="Show unmasked values for secure fields on a note",
+        )
+        note_unmask_parser.add_argument("record_id", help="Record ID")
+        note_unmask_parser.add_argument("note_id", help="Note ID")
+        note_unmask_parser.add_argument(
+            "--fields",
+            required=True,
+            metavar="FIELDS",
+            help="Comma-delimited list of field names to unmask",
+        )
 
         # ====================================================================
         # JSON INTERFACE
@@ -8147,7 +8604,13 @@ class IncidentCLI:
             default=100,
             help="Limit number of results (default: 100)",
         )
-        
+        json_search_records_parser.add_argument(
+            "--offset",
+            type=int,
+            default=0,
+            help="Number of results to skip (for pagination)",
+        )
+
         # json search-notes
         json_search_notes_parser = json_subparsers.add_parser(
             "search-notes",
@@ -8160,9 +8623,16 @@ class IncidentCLI:
         json_search_notes_parser.add_argument(
             "--limit",
             type=int,
-            help="Limit number of results",
+            default=50,
+            help="Limit number of results (default: 50)",
         )
-        
+        json_search_notes_parser.add_argument(
+            "--offset",
+            type=int,
+            default=0,
+            help="Number of results to skip (for pagination)",
+        )
+
         # json schema-record
         json_schema_record_parser = json_subparsers.add_parser(
             "schema-record",
@@ -8335,7 +8805,13 @@ class IncidentCLI:
             action="store_true",
             help="Verbose output",
         )
-        
+
+        admin_reindex_parser.add_argument(
+            "--skip-validation",
+            action="store_true",
+            help="Skip field validation; index records even if they violate template rules",
+        )
+
         # admin list-databases
         admin_list_databases_parser = admin_subparsers.add_parser(
             "list-databases",
@@ -8353,11 +8829,6 @@ class IncidentCLI:
             default=None,
             help="Template ID to inspect (omit to list all templates)",
         )
-        admin_template_data_parser.add_argument(
-            "--json",
-            action="store_true",
-            help="Output as JSON (suitable for UI pre-validation)",
-        )
 
         # admin validate
         admin_validate_parser = admin_subparsers.add_parser(
@@ -8374,6 +8845,12 @@ class IncidentCLI:
             "--failed-list",
             action="store_true",
             help="Output only the IDs of non-conforming records, one per line",
+        )
+
+        # admin validate-config
+        admin_validate_config_parser = admin_subparsers.add_parser(
+            "validate-config",
+            help="Validate project and user configuration files",
         )
 
     def run(self, args: Optional[List[str]] = None):
@@ -8398,21 +8875,34 @@ class IncidentCLI:
                 field_assignments = self._filter_remaining_args(remaining, command, subcommand)
             except ValueError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
         
         # Store field assignments for later processing
         parsed.field_assignments = field_assignments
 
+        # Startup config validation (warnings only, unless command handles its own hard-fail)
+        if not (parsed.command == "admin" and
+                getattr(parsed, "admin_command", None) in ("validate-config", "init")):
+            self._run_config_validation(parsed, hard_fail=False)
+
         try:
             if parsed.command == "record":
                 if parsed.record_command == "new":
+                    if getattr(parsed, 'help_fields', False):
+                        self._show_record_fields_help_new(parsed)
+                        return
                     self._cmd_create(parsed)
                 elif parsed.record_command == "view":
                     self._cmd_view(parsed)
                 elif parsed.record_command == "list":
                     self._cmd_list(parsed)
                 elif parsed.record_command == "update":
+                    if getattr(parsed, 'help_fields', False):
+                        self._show_record_fields_help_update(parsed)
+                        return
                     self._cmd_update(parsed)
+                elif parsed.record_command == "unmask":
+                    self._cmd_record_unmask(parsed)
             elif parsed.command == "note":
                 if parsed.note_command == "add":
                     # Check for --help-fields
@@ -8426,6 +8916,8 @@ class IncidentCLI:
                     self._cmd_view_note(parsed)
                 elif parsed.note_command == "search":
                     self._cmd_search_updates(parsed)
+                elif parsed.note_command == "unmask":
+                    self._cmd_note_unmask(parsed)
                     
             elif parsed.command == "json":
                 if parsed.json_command == "import-record":
@@ -8464,10 +8956,16 @@ class IncidentCLI:
                     self._cmd_admin_template_data(parsed)
                 elif parsed.admin_command == "validate":
                     self._cmd_admin_validate(parsed)
-                    
+                elif parsed.admin_command == "validate-config":
+                    self._cmd_admin_validate_config(parsed)
+
+        except ValueError as e:
+            # Field validation / assignment errors that propagate from _setup_write_command
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_VALIDATION)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
         except KeyboardInterrupt:
             print("\nCancelled", file=sys.stderr)
             sys.exit(130)
@@ -8680,7 +9178,7 @@ $update_kv
                 "Use --override-repo-boundary to bypass.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         db_root.mkdir(parents=True, exist_ok=True)
         
@@ -8704,7 +9202,7 @@ $update_kv
         elif args.config_command == "set-editor":
             if not EditorConfig._editor_exists(args.editor):
                 print(f"Error: Editor '{args.editor}' not found in PATH", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
 
             config = DatabaseDiscovery.get_user_config()
             config["editor"] = args.editor
@@ -8717,7 +9215,7 @@ $update_kv
                 print(f"Current editor: {editor}")
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_config_set_user(self, args):
         """
@@ -8741,7 +9239,7 @@ $update_kv
                     f"Add it first with: aver admin config add-alias --alias {target_library} --path /path/to/.aver",
                     file=sys.stderr,
                 )
-                sys.exit(1)
+                sys.exit(EXIT_NOT_FOUND)
             
             # Update the library entry (preserve existing path and other fields)
             config["libraries"][target_library]["handle"] = args.handle
@@ -8782,7 +9280,7 @@ $update_kv
             )
         elif not resolved_path.is_dir():
             print(f"Error: Path is not a directory: {resolved_path}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
         
         config = DatabaseDiscovery.get_user_config()
         
@@ -8938,8 +9436,8 @@ $update_kv
                 
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
-                
+                sys.exit(EXIT_ERROR)
+
         else:
             # Normal mode (existing code)
             has_description = args.description is not None
@@ -8979,11 +9477,11 @@ $update_kv
             except ValueError as e:
                 # Only happens if allow_validation_editor=False or non-validation ValueError
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_VALIDATION)
             except RuntimeError as e:
                 # User cancelled
                 print(f"{e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_view(self, args):
         """View record details."""
@@ -8992,7 +9490,7 @@ $update_kv
 
         if not record:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         kv_all = self._flatten_kv_data(record.kv_strings, record.kv_integers, record.kv_floats, record.kv_secure)
         kv_section = self._format_kv_section(kv_all)
@@ -9012,12 +9510,12 @@ $update_kv
         # --count requires --ksearch
         if getattr(args, 'count', False) and not getattr(args, 'ksearch', None):
             print("Error: --count requires --ksearch", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         # --max requires --ksort
         if getattr(args, 'max_keys', None) and not getattr(args, 'ksort', None):
             print("Error: --max requires --ksort", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_USAGE)
 
         # --count: return only the match count
         if getattr(args, 'count', False):
@@ -9026,11 +9524,12 @@ $update_kv
                     ksearch_list=args.ksearch,
                     ksort_list=getattr(args, 'ksort', None),
                     limit=args.limit,
+                    offset=getattr(args, 'offset', 0),
                     ids_only=True,
                 )
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
             print(len(results))
             return
 
@@ -9039,11 +9538,12 @@ $update_kv
                 ksearch_list=getattr(args, 'ksearch', None),
                 ksort_list=getattr(args, 'ksort', None),
                 limit=args.limit,
+                offset=getattr(args, 'offset', 0),
                 ids_only=args.ids_only,
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         # Apply --max post-filter (operates on full Incident objects, not ids)
         if getattr(args, 'max_keys', None) and results and not args.ids_only:
@@ -9137,7 +9637,7 @@ $update_kv
                 existing_record = manager.get_incident(args.record_id)
                 if not existing_record:
                     print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
                 
                 # Process the file
                 frontmatter, body, template_id = self._process_from_file(
@@ -9222,11 +9722,11 @@ $update_kv
                     print(f"✓ Updated record from file: {args.record_id}")
                 else:
                     print(f"Update cancelled", file=sys.stderr)
-                    sys.exit(1)
-                    
+                    sys.exit(EXIT_ERROR)
+
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
                 
         else:
             # Normal mode (existing code)
@@ -9242,14 +9742,14 @@ $update_kv
             if metadata_only:
                 if not kv_single and not kv_multi:
                     print("Error: --metadata-only requires at least one metadata field to update", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_USAGE)
                 if has_description:
                     print("Error: --metadata-only cannot be used with --description", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_USAGE)
 
             if not kv_single and not kv_multi and not (has_description or has_stdin or use_editor):
                 print("Error: No fields to update", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
                 
             # NEW: Only catch errors if validation editor is NOT allowed
             try:
@@ -9270,18 +9770,104 @@ $update_kv
                     print(f"✓ Updated record: {args.record_id}")
                 else:
                     print(f"Update cancelled", file=sys.stderr)
-                    sys.exit(1)
-                    
+                    sys.exit(EXIT_ERROR)
+
             except ValueError as e:
                 # Only happens if allow_validation_editor=False (--no-validation-editor flag)
                 # or if it's a non-validation ValueError (like custom_id format)
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_VALIDATION)
             except RuntimeError as e:
                 # User cancelled after being offered editor
                 print(f"{e}", file=sys.stderr)
-                sys.exit(1)            
+                sys.exit(EXIT_ERROR)            
  
+    def _show_record_fields_help(self, manager, template_id: Optional[str], context: str):
+        """
+        Display editable record fields for a given template (or global if None).
+
+        Args:
+            manager: IncidentManager for config access.
+            template_id: Template to scope fields to; None = global only.
+            context: Human-readable context string for the header line.
+        """
+        special_fields = manager.project_config.get_special_fields_for_template(
+            template_id, for_record=True
+        )
+        editable_fields = {k: v for k, v in special_fields.items() if v.editable}
+
+        print()
+        print(f"Available fields for {context}:")
+        print()
+
+        if not editable_fields:
+            print("  No editable fields defined.")
+            print()
+        else:
+            for field_name, field_def in sorted(editable_fields.items()):
+                type_info = f"({field_def.field_type}, {field_def.value_type})"
+                req = " [required]" if field_def.required else ""
+                print(f"  {field_name} {type_info}{req}")
+                if field_def.accepted_values:
+                    print(f"    Accepted: {', '.join(field_def.accepted_values)}")
+                if field_def.default:
+                    print(f"    Default: {field_def.default}")
+                print()
+
+        print("Usage (record new):")
+        new_prefix = "record new"
+        if template_id:
+            new_prefix += f" --template {template_id}"
+        print(f"  aver {new_prefix} --title 'My record' --status open")
+        print(f"  aver {new_prefix} --text customfield=value --number priority=2")
+        print()
+
+    def _show_record_fields_help_new(self, args):
+        """Handle --help-fields for record new."""
+        try:
+            manager = self._get_manager(args)
+            template_id = getattr(args, 'template', None)
+            context = f"record creation"
+            if template_id:
+                context += f" (template: {template_id})"
+            self._show_record_fields_help(manager, template_id, context)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+    def _show_record_fields_help_update(self, args):
+        """
+        Handle --help-fields for record update.
+
+        Delegates template resolution (including change-allowed validation) to
+        _resolve_template_id — the same path used by _setup_write_command — so
+        there is a single source of truth for template-change policy.
+        """
+        try:
+            manager = self._get_manager(args)
+            record_id = args.record_id
+
+            existing = manager.get_incident(record_id)
+            if not existing:
+                print(f"Error: Record {record_id} not found", file=sys.stderr)
+                sys.exit(EXIT_NOT_FOUND)
+
+            # Reuse _resolve_template_id: validates change-allowed, sets args.template
+            resolved_template = self._resolve_template_id(
+                manager, args, existing_record=existing
+            )
+
+            context = f"record {record_id}"
+            if resolved_template:
+                context += f" (template: {resolved_template})"
+            self._show_record_fields_help(manager, resolved_template, context)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
     def _show_note_fields_help(self, record_id: str):
         """
         Show available fields for a specific record's notes.
@@ -9304,8 +9890,8 @@ $update_kv
             incident = manager.get_incident(record_id)
             if not incident:
                 print(f"Error: Record {record_id} not found", file=sys.stderr)
-                sys.exit(1)
-            
+                sys.exit(EXIT_NOT_FOUND)
+
             # Get template
             template_id = None
             if incident.kv_strings and 'template_id' in incident.kv_strings:
@@ -9366,7 +9952,7 @@ $update_kv
             if os.environ.get("AVER_DEBUG"):
                 import traceback
                 traceback.print_exc()
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_add_update(self, args):
         """Add note to record."""
@@ -9396,15 +9982,15 @@ $update_kv
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             if reply_to_id:
                 print(
                     "Error: Cannot use both --from-file and --reply-to\n"
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
             
             try:
                 # Process the file
@@ -9481,17 +10067,28 @@ $update_kv
                 
             except (ValueError, RuntimeError) as e:
                 print(f"Error importing from file: {e}", file=sys.stderr)
-                sys.exit(1)
-                
+                sys.exit(EXIT_ERROR)
+
         else:
             # Normal mode (existing code)
             has_message = args.message is not None
             has_stdin = StdinHandler.has_stdin_data()
             use_editor = not (has_message or has_stdin)
+            no_validation_editor = getattr(args, 'no_validation_editor', False)
+
+            # --no-validation-editor suppresses the editor for automation
+            if no_validation_editor and use_editor:
+                print(
+                    "Error: No message provided. Use --message or pipe stdin when using "
+                    "--no-validation-editor",
+                    file=sys.stderr,
+                )
+                sys.exit(EXIT_USAGE)
+
             use_yaml_editor = not getattr(args, 'no_yaml', False)
             template_id = getattr(args, 'template', None)
             reply_to_id = getattr(args, 'reply_to', None)
-            
+
             # Validate template usage
             if template_id and not use_editor:
                 print(
@@ -9499,8 +10096,8 @@ $update_kv
                     "Remove --message flag or stdin input to use editor",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             # Validate reply-to usage
             if reply_to_id and not use_editor:
                 print(
@@ -9508,8 +10105,8 @@ $update_kv
                     "Remove --message flag or stdin input to use editor",
                     file=sys.stderr
                 )
-                sys.exit(1)
-            
+                sys.exit(EXIT_USAGE)
+
             # Cannot use both --template and --reply-to
             if template_id and reply_to_id:
                 print(
@@ -9517,7 +10114,7 @@ $update_kv
                     "Choose one or the other",
                     file=sys.stderr
                 )
-                sys.exit(1)
+                sys.exit(EXIT_USAGE)
 
             try:
                 # For notes, combine both into kv_single parameter (legacy behavior preserved)
@@ -9538,7 +10135,7 @@ $update_kv
                 print(f"✓ Added note: {note_id}")
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
 
     def _cmd_list_updates(self, args):
         """View all notes for record."""
@@ -9547,7 +10144,7 @@ $update_kv
 
         if not record:
             print(f"Error: Record {args.record_id} not found", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         notes = manager.get_updates(args.record_id)
 
@@ -9582,7 +10179,7 @@ $update_kv
 
         if not note:
             print(f"Error: Note {args.note_id} not found in record {args.record_id}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_NOT_FOUND)
 
         kv_all = self._flatten_kv_data(note.kv_strings, note.kv_integers, note.kv_floats, note.kv_secure)
         kv_section = self._format_kv_section(kv_all)
@@ -9606,11 +10203,12 @@ $update_kv
                 results = manager.search_updates(
                     ksearch=args.ksearch,
                     limit=args.limit,
+                    offset=getattr(args, 'offset', 0),
                     ids_only=True,
                 )
             except RuntimeError as e:
                 print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+                sys.exit(EXIT_ERROR)
             print(len(results))
             return
 
@@ -9618,11 +10216,12 @@ $update_kv
             results = manager.search_updates(
                 ksearch=args.ksearch,
                 limit=args.limit,
+                offset=getattr(args, 'offset', 0),
                 ids_only=args.ids_only,
             )
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         if not results:
             print("No matching notes found")
@@ -9727,33 +10326,119 @@ $update_kv
             )
             print(output)
             
+    def _unmask_fields(self, fields_arg: str, kv_strings: dict, kv_integers: dict,
+                       kv_floats: dict, kv_secure: dict) -> dict:
+        """
+        Build an unmasked {field: value} dict for the requested field names.
+
+        Non-securestring fields are included with their normal value.
+        Securestring fields are included with their plaintext value (unmasked).
+        Fields that do not exist on the record/note are silently omitted.
+
+        Args:
+            fields_arg: Comma-delimited field name string from --fields.
+            kv_strings / kv_integers / kv_floats / kv_secure: field dicts from the object.
+
+        Returns:
+            Ordered dict of {field_name: value_string}.
+        """
+        requested = [f.strip() for f in fields_arg.split(",") if f.strip()]
+        result = {}
+        for name in requested:
+            if kv_secure and name in kv_secure:
+                vals = kv_secure[name]
+                result[name] = vals[0] if len(vals) == 1 else ", ".join(str(v) for v in vals)
+            elif kv_strings and name in kv_strings:
+                vals = kv_strings[name]
+                result[name] = vals[0] if len(vals) == 1 else ", ".join(str(v) for v in vals)
+            elif kv_integers and name in kv_integers:
+                vals = kv_integers[name]
+                result[name] = vals[0] if len(vals) == 1 else ", ".join(str(v) for v in vals)
+            elif kv_floats and name in kv_floats:
+                vals = kv_floats[name]
+                result[name] = vals[0] if len(vals) == 1 else ", ".join(str(v) for v in vals)
+            # silently omit if not found
+        return result
+
+    def _cmd_record_unmask(self, args):
+        """Show unmasked field values for a record."""
+        try:
+            manager = self._get_manager(args)
+            incident = manager.get_incident(args.record_id)
+            if not incident:
+                print(f"Error: Record {args.record_id} not found", file=sys.stderr)
+                sys.exit(EXIT_NOT_FOUND)
+
+            result = self._unmask_fields(
+                args.fields,
+                incident.kv_strings,
+                incident.kv_integers,
+                incident.kv_floats,
+                incident.kv_secure,
+            )
+
+            for key, value in result.items():
+                print(f"{key}: {value}")
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+    def _cmd_note_unmask(self, args):
+        """Show unmasked field values for a note."""
+        try:
+            manager = self._get_manager(args)
+            notes = manager.get_updates(args.record_id)
+            note = next((n for n in notes if n.id == args.note_id), None)
+            if not note:
+                print(f"Error: Note {args.note_id} not found on record {args.record_id}",
+                      file=sys.stderr)
+                sys.exit(EXIT_NOT_FOUND)
+
+            result = self._unmask_fields(
+                args.fields,
+                note.kv_strings,
+                note.kv_integers,
+                note.kv_floats,
+                note.kv_secure,
+            )
+
+            for key, value in result.items():
+                print(f"{key}: {value}")
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
     def _cmd_reindex(self, args):
         """Rebuild search index for all records or specific RECORD_IDs."""
+        self._run_config_validation(args, hard_fail=True)
         try:
             manager = self._get_manager(args)
             reindexer = IncidentReindexer(manager.storage, manager.index_db, manager.project_config)
             force = getattr(args, "force", False)
             skip_mtime = getattr(args, "skip_mtime", False)
+            skip_validation = getattr(args, "skip_validation", False)
             record_ids = getattr(args, "record_ids", [])
 
             if record_ids:
                 failed = []
                 for record_id in record_ids:
                     success = reindexer.reindex_one(
-                        record_id, verbose=True, force=force, skip_mtime=skip_mtime
+                        record_id, verbose=True, force=force, skip_mtime=skip_mtime,
+                        skip_validation=skip_validation,
                     )
                     if not success:
                         failed.append(record_id)
                 if failed:
                     for rid in failed:
                         print(f"Error: Record {rid} not found", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
             else:
-                count = reindexer.reindex_all(verbose=args.verbose, force=force, skip_mtime=skip_mtime)
+                count = reindexer.reindex_all(verbose=args.verbose, force=force, skip_mtime=skip_mtime,
+                                              skip_validation=skip_validation)
                 print(f"✓ Reindexed {count} records")
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_list_databases(self, args):
         """Show available databases."""
@@ -9838,8 +10523,6 @@ $update_kv
             manager = self._get_manager(args)
             config = manager.project_config
 
-            use_json = getattr(args, 'json', False)
-
             if args.template_id:
                 # Single template
                 if not config.has_template(args.template_id):
@@ -9849,32 +10532,21 @@ $update_kv
                         print(f"Available templates: {', '.join(available)}", file=sys.stderr)
                     else:
                         print("No templates configured.", file=sys.stderr)
-                    sys.exit(1)
+                    sys.exit(EXIT_NOT_FOUND)
 
                 data = self._build_template_data(config, args.template_id)
-
-                if use_json:
-                    print(json.dumps(data, indent=2))
-                else:
-                    self._print_template_data_human(data)
+                self._print_template_data_human(data)
 
             else:
                 # No template_id: show all templates including global defaults
                 template_ids = [None] + list(config._templates.keys())
-
-                if use_json:
-                    all_data = []
-                    for tid in template_ids:
-                        all_data.append(self._build_template_data(config, tid))
-                    print(json.dumps(all_data, indent=2))
-                else:
-                    for tid in template_ids:
-                        data = self._build_template_data(config, tid)
-                        self._print_template_data_human(data)
+                for tid in template_ids:
+                    data = self._build_template_data(config, tid)
+                    self._print_template_data_human(data)
 
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _print_template_data_human(self, data: dict):
         """Print template field data in human-readable format."""
@@ -9926,16 +10598,12 @@ $update_kv
             manager = self._get_manager(args)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
         record_ids = getattr(args, "record_ids", [])
         failed_list_mode = getattr(args, "failed_list", False)
 
-        # Determine which record IDs to check
-        if record_ids:
-            ids_to_check = record_ids
-        else:
-            ids_to_check = manager.storage.list_incident_files()
+        ids_to_check = record_ids if record_ids else manager.storage.list_incident_files()
 
         if not ids_to_check:
             if not failed_list_mode:
@@ -9943,86 +10611,14 @@ $update_kv
             sys.exit(0)
 
         passed = []
-        failed = []  # list of (record_id, error_message)
+        failed = []  # list of (record_id, [error_strings])
 
         for record_id in ids_to_check:
             incident = manager.storage.load_incident(record_id, manager.project_config)
             if incident is None:
-                failed.append((record_id, "record file not found"))
+                failed.append((record_id, ["record file not found"]))
                 continue
-
-            # Determine template_id from the record itself
-            template_id = None
-            if incident.kv_strings and "template_id" in incident.kv_strings:
-                tid_vals = incident.kv_strings["template_id"]
-                if tid_vals:
-                    template_id = tid_vals[0]
-
-            # Get the effective field set for this record's template
-            all_fields = manager.project_config.get_special_fields_for_template(
-                template_id, for_record=True
-            )
-            special_fields = {
-                name: field for name, field in all_fields.items() if field.enabled
-            }
-
-            errors = []
-
-            # --- required fields ---
-            for field_name, field in special_fields.items():
-                if not field.required:
-                    continue
-                has_value = False
-                vt = field.value_type
-                if vt == "string":
-                    vals = incident.kv_strings.get(field_name, [])
-                    has_value = bool(vals) and any(v.strip() for v in vals)
-                elif vt == "securestring":
-                    vals = (incident.kv_secure or {}).get(field_name, [])
-                    has_value = bool(vals) and any(v.strip() for v in vals)
-                elif vt == "integer":
-                    vals = incident.kv_integers.get(field_name, [])
-                    has_value = bool(vals)
-                elif vt == "float":
-                    vals = incident.kv_floats.get(field_name, [])
-                    has_value = bool(vals)
-                if not has_value:
-                    errors.append(f"required field '{field_name}' is missing or empty")
-
-            # --- accepted_values constraints ---
-            for key, values in incident.kv_strings.items():
-                base_key = manager._strip_type_suffix(key)
-                field = special_fields.get(base_key)
-                if field and field.accepted_values:
-                    for v in values:
-                        if v not in field.accepted_values:
-                            errors.append(
-                                f"field '{base_key}': invalid value '{v}' "
-                                f"(accepted: {', '.join(field.accepted_values)})"
-                            )
-
-            for key, values in incident.kv_integers.items():
-                base_key = manager._strip_type_suffix(key)
-                field = special_fields.get(base_key)
-                if field and field.accepted_values:
-                    for v in values:
-                        if str(v) not in field.accepted_values:
-                            errors.append(
-                                f"field '{base_key}': invalid value '{v}' "
-                                f"(accepted: {', '.join(field.accepted_values)})"
-                            )
-
-            for key, values in incident.kv_floats.items():
-                base_key = manager._strip_type_suffix(key)
-                field = special_fields.get(base_key)
-                if field and field.accepted_values:
-                    for v in values:
-                        if str(v) not in field.accepted_values:
-                            errors.append(
-                                f"field '{base_key}': invalid value '{v}' "
-                                f"(accepted: {', '.join(field.accepted_values)})"
-                            )
-
+            errors = validate_incident_record(incident, manager.project_config)
             if errors:
                 failed.append((record_id, errors))
             else:
@@ -10032,7 +10628,7 @@ $update_kv
         if failed_list_mode:
             for record_id, _ in failed:
                 print(record_id)
-            sys.exit(1 if failed else 0)
+            sys.exit(EXIT_VALIDATION if failed else EXIT_OK)
 
         # Summary mode
         total = len(passed) + len(failed)
@@ -10043,17 +10639,52 @@ $update_kv
         if failed:
             print()
             for record_id, errors in failed:
-                if isinstance(errors, list):
-                    for err in errors:
-                        print(f"  FAIL  {record_id}: {err}")
-                else:
-                    print(f"  FAIL  {record_id}: {errors}")
+                for err in errors:
+                    print(f"  FAIL  {record_id}: {err}")
             print()
             print("Use --failed-list to get a plain list of failing record IDs.")
-            sys.exit(1)
+            sys.exit(EXIT_VALIDATION)
         else:
             print()
             print("All records conform to template rules.")
+
+    def _cmd_admin_validate_config(self, args):
+        """
+        Validate project and user configuration files.
+
+        Runs validate_project_config() and validate_user_config() and prints
+        a human-readable summary.  Exits EXIT_VALIDATION if any errors found.
+
+        Note: --no-validate-config is silently ignored here — this command
+        always validates regardless of that flag.
+        """
+        all_errors: List[str] = []
+
+        try:
+            manager = self._get_manager(args)
+            project_errors = validate_project_config(manager.project_config, manager.storage)
+            all_errors.extend(project_errors)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+        try:
+            raw_user_config = DatabaseDiscovery._do_get_user_config()
+            user_errors = validate_user_config(raw_user_config)
+            all_errors.extend(user_errors)
+        except (ValueError, PermissionError) as e:
+            print(f"Error reading user config: {e}", file=sys.stderr)
+            sys.exit(EXIT_ERROR)
+
+        if all_errors:
+            print(f"\nConfig validation: {len(all_errors)} error(s) found\n")
+            for err in all_errors:
+                print(f"  ERROR  {err}")
+            print()
+            sys.exit(EXIT_VALIDATION)
+        else:
+            print("Config validation: OK")
+            sys.exit(EXIT_OK)
 
     # ====================================================================
     # JSON INTERFACE COMMANDS
@@ -10155,7 +10786,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_import_note(self, args):
         '''Import a note from JSON.'''
@@ -10229,7 +10860,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_update_record(self, args):
         '''Update a record from JSON.'''
@@ -10305,7 +10936,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_export_record(self, args):
         '''Export a record as JSON.'''
@@ -10368,7 +10999,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_export_note(self, args):
         '''Export a note as JSON.'''
@@ -10414,17 +11045,18 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_search_records(self, args):
         '''Search records and output as JSON.'''
         try:
             manager = self._get_manager(args)
-            
+
             results = manager.list_incidents(
                 ksearch_list=getattr(args, 'ksearch', None),
                 ksort_list=getattr(args, 'ksort', None),
                 limit=args.limit,
+                offset=getattr(args, 'offset', 0),
                 ids_only=False,
             )
             
@@ -10460,16 +11092,21 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_search_notes(self, args):
         '''Search notes and output as JSON.'''
         try:
             manager = self._get_manager(args)
-            
+
+            ksearch = args.ksearch
+            if ksearch is not None and not isinstance(ksearch, list):
+                ksearch = [ksearch]
+
             results = manager.search_updates(
-                ksearch=args.ksearch,
+                ksearch=ksearch,
                 limit=args.limit,
+                offset=getattr(args, 'offset', 0),
                 ids_only=False,
             )
             
@@ -10510,7 +11147,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_schema_record(self, args):
         '''Get field schema for records as JSON.'''
@@ -10561,7 +11198,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_schema_note(self, args):
         '''Get field schema for notes as JSON.'''
@@ -10614,7 +11251,7 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
     
     def _cmd_json_reply_template(self, args):
         '''Get a reply template with quoted note text.'''
@@ -10678,10 +11315,11 @@ $update_kv
                 "error": str(e),
             }
             print(json.dumps(result, indent=2))
-            sys.exit(1)
+            sys.exit(EXIT_ERROR)
 
     def _cmd_json_io(self, args):
         '''Interactive JSON interface via STDIN/STDOUT.'''
+        self._run_config_validation(args, hard_fail=True)
         while True:
             try:
                 # Read one line from stdin
@@ -10904,6 +11542,7 @@ $update_kv
             args.ksearch = ksearch
             args.ksort = ksort
             args.limit = params.get('limit', 100)
+            args.offset = params.get('offset', 0)
 
             manager = get_manager_with_override()
 
@@ -10912,6 +11551,7 @@ $update_kv
                     ksearch_list=ksearch,
                     ksort_list=ksort,
                     limit=args.limit,
+                    offset=args.offset,
                     ids_only=True,
                 )
                 return {"count": len(results)}
@@ -10920,6 +11560,7 @@ $update_kv
                 ksearch_list=ksearch,
                 ksort_list=ksort,
                 limit=args.limit,
+                offset=args.offset,
                 ids_only=False,
             )
 
@@ -10961,6 +11602,7 @@ $update_kv
                 ksearch_raw = [ksearch_raw] if ksearch_raw else None
             args.ksearch = ksearch_raw
             args.limit = params.get('limit')
+            args.offset = params.get('offset', 0)
             count_only = params.get('count_only', False)
 
             manager = get_manager_with_override()
@@ -10969,6 +11611,7 @@ $update_kv
                 results = manager.search_updates(
                     ksearch=args.ksearch,
                     limit=args.limit,
+                    offset=args.offset,
                     ids_only=True,
                 )
                 return {"count": len(results)}
@@ -10976,6 +11619,7 @@ $update_kv
             results = manager.search_updates(
                 ksearch=args.ksearch,
                 limit=args.limit,
+                offset=args.offset,
                 ids_only=False,
             )
 
@@ -11401,6 +12045,46 @@ $update_kv
             else:
                 count = reindexer.reindex_all(verbose=False, force=force, skip_mtime=skip_mtime)
                 return {"reindexed": count}
+
+        elif command == 'unmask':
+            # Required: record_id, fields (list or comma-string)
+            # Optional: note_id (if present, targets a note; absent = record)
+            if 'record_id' not in params:
+                raise ValueError("Missing required parameter: record_id")
+            if 'fields' not in params:
+                raise ValueError("Missing required parameter: fields")
+
+            record_id = params['record_id']
+            note_id = params.get('note_id')
+            fields_param = params['fields']
+            # Accept either a list or a comma-delimited string
+            if isinstance(fields_param, list):
+                fields_arg = ",".join(fields_param)
+            else:
+                fields_arg = str(fields_param)
+
+            manager = get_manager_with_override()
+
+            if note_id:
+                notes = manager.get_updates(record_id)
+                obj = next((n for n in notes if n.id == note_id), None)
+                if not obj:
+                    raise RuntimeError(f"Note {note_id} not found on record {record_id}")
+                result = self._unmask_fields(
+                    fields_arg,
+                    obj.kv_strings, obj.kv_integers, obj.kv_floats, obj.kv_secure,
+                )
+                return {"record_id": record_id, "note_id": note_id, "fields": result}
+            else:
+                incident = manager.get_incident(record_id)
+                if not incident:
+                    raise RuntimeError(f"Record {record_id} not found")
+                result = self._unmask_fields(
+                    fields_arg,
+                    incident.kv_strings, incident.kv_integers,
+                    incident.kv_floats, incident.kv_secure,
+                )
+                return {"record_id": record_id, "fields": result}
 
         else:
             raise ValueError(f"Unknown command: {command}")
