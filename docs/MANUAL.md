@@ -474,6 +474,13 @@ Each special field has these properties:
 - `false`: Field values stored only in Markdown files, not searchable via database
 - Note: `securestring` fields are always indexed for search (regardless of `index_values`), but the plaintext is stored in a separate secure column never exposed in output
 
+**ignore_updates**: `true` or `false` (default: `false`)
+- Only meaningful on record fields
+- When a `--metadata-only` update is performed and **all** fields being updated have `ignore_updates = true`, no update note is created
+- The record file is still saved and re-indexed; only the tracking note is suppressed
+- If **any** field in the update lacks `ignore_updates = true`, the normal note-creation behaviour applies
+- Useful for high-frequency housekeeping fields (e.g. `last_viewed`, `view_count`) that would otherwise generate noisy update histories
+
 **system_value**: System value source (optional)
 - If set, field is auto-populated
 - Non-editable system fields only set on creation

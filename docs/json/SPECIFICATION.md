@@ -213,7 +213,7 @@ All standard JSON commands are supported in IO mode:
 - `search-notes` - params: `{ksearch?, limit?, offset?, count_only?}`
 - `import-record` - params: `{content, fields?, template?, record_id?}`
 - `import-note` - params: `{record_id, content, fields?}`
-- `update-record` - params: `{record_id, content?, fields?}`
+- `update-record` - params: `{record_id, content?, fields?, metadata_only?}`
 - `schema-record` - params: `{template?}`
 - `schema-note` - params: `{record_id}`
 - `reply-template` - params: `{record_id, note_id}`

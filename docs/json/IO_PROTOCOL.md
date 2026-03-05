@@ -305,6 +305,7 @@ Update an existing record.
 - `record_id` (required): Record identifier
 - `content` (optional): New content (omit to keep existing)
 - `fields` (optional): Fields to update
+- `metadata_only` (optional, boolean): If `true`, suppresses content changes even if `content` is provided. Defaults to `true` when `content` is absent, `false` when `content` is present. When `true` and all fields have `ignore_updates = true` in the config, no update note is created.
 
 **Example:**
 ```json
@@ -313,6 +314,18 @@ Update an existing record.
   "params": {
     "record_id": "REC123",
     "fields": {"status": "resolved", "resolution_time": 3.5}
+  }
+}
+```
+
+**Metadata-only update (no update note for ignore_updates fields):**
+```json
+{
+  "command": "update-record",
+  "params": {
+    "record_id": "REC123",
+    "fields": {"last_viewed": "2026-03-05"},
+    "metadata_only": true
   }
 }
 ```

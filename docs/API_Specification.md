@@ -236,6 +236,7 @@ index_values = true
 | `default` | any value | Default if not provided (optional) |
 | `system_value` | see below | Auto-populated (optional) |
 | `index_values` | `true`, `false` | Whether values are indexed in database (default: `true`) |
+| `ignore_updates` | `true`, `false` | When `true`, metadata-only updates to this field suppress update note creation if all updated fields share this flag (default: `false`; record fields only) |
 
 **System Values:**
 
@@ -260,6 +261,13 @@ index_values = true
 - Default: `true` (values are indexed and searchable in SQLite)
 - Set to `false` for sensitive data or fields that don't need searching
 - Fields with `index_values = false` are still stored in Markdown files but not in `kv_store`
+
+**ignore_updates:**
+- Default: `false`; applies to record fields only
+- When `true` on a field, and a `--metadata-only` update is performed where **all** updated fields have `ignore_updates = true`, no update note is written
+- The record file is still saved and re-indexed; only the tracking note is suppressed
+- If any field in the update lacks `ignore_updates = true`, normal note-creation behaviour applies
+- Useful for high-frequency housekeeping fields (e.g. `last_viewed`, `view_count`) that should not pollute update history
 
 ---
 

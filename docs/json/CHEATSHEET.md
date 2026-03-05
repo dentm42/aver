@@ -69,6 +69,9 @@ aver json update-record REC123 --data '{"fields": {"status": "resolved"}}'
 
 # Update content and fields
 aver json update-record REC123 --data '{"content": "New description", "fields": {"status": "closed"}}'
+
+# Metadata-only update (explicit); suppresses update note if all fields have ignore_updates=true
+aver json update-record REC123 --data '{"fields": {"last_viewed": "2026-03-05"}, "metadata_only": true}'
 ```
 
 ### Get Schema
