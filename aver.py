@@ -779,7 +779,17 @@ class IncidentUpdate:
                 kv_floats[clean_key] = [float(v) for v in value]
             elif value_type == "securestring":
                 kv_secure[clean_key] = [str(v) for v in value]
-            else:  # string or no type hint (default to string)
+            elif value_type is None:
+                # No explicit type hint — infer from Python type of the first value
+                # (all values in a list should be the same type)
+                sample = value[0] if value else None
+                if isinstance(sample, int) and not isinstance(sample, bool):
+                    kv_integers[clean_key] = [int(v) for v in value]
+                elif isinstance(sample, float):
+                    kv_floats[clean_key] = [float(v) for v in value]
+                else:
+                    kv_strings[clean_key] = [str(v) for v in value]
+            else:  # explicit "string" type hint or any unrecognised hint
                 kv_strings[clean_key] = [str(v) for v in value]
 
         return cls(
