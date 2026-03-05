@@ -911,6 +911,7 @@ class SpecialField:
         system_value: Optional[str] = None,
         default: Optional[str] = None,
         index_values: bool = True,
+        ignore_updates: bool = False,
     ):
         self.name = name
         self.field_type = field_type  # single vs multi-value
@@ -922,6 +923,7 @@ class SpecialField:
         self.system_value = system_value  # e.g., "datetime", "user_email", "${datetime}"
         self.default = default
         self.index_values = index_values
+        self.ignore_updates = ignore_updates
     
     def validate(self, value: Any) -> bool:
         """Check if value is acceptable."""
@@ -1090,7 +1092,8 @@ class ProjectConfig:
             system_value = field_def.get("system_value", None)
             default = field_def.get("default", None)
             index_values = field_def.get("index_values", True)
-            
+            ignore_updates = field_def.get("ignore_updates", False)
+
             self._record_special_fields[field_name] = SpecialField(
                 name=field_name,
                 field_type=field_type,
@@ -1102,8 +1105,9 @@ class ProjectConfig:
                 system_value=system_value,
                 default=default,
                 index_values=index_values,
+                ignore_updates=ignore_updates,
             )
-        
+
         # Parse note special fields
         for field_name, field_def in note_fields_config.items():
             field_type = field_def.get("type", "single")
@@ -1115,7 +1119,8 @@ class ProjectConfig:
             system_value = field_def.get("system_value", None)
             default = field_def.get("default", None)
             index_values = field_def.get("index_values", True)
-            
+            ignore_updates = field_def.get("ignore_updates", False)
+
             self._note_special_fields[field_name] = SpecialField(
                 name=field_name,
                 field_type=field_type,
@@ -1127,6 +1132,7 @@ class ProjectConfig:
                 system_value=system_value,
                 default=default,
                 index_values=index_values,
+                ignore_updates=ignore_updates,
             )
     
     def _parse_templates(self):
@@ -1215,7 +1221,8 @@ class ProjectConfig:
                     required = field_def.get("required", False)
                     system_value = field_def.get("system_value", None)
                     default = field_def.get("default", None)
-                    
+                    ignore_updates = field_def.get("ignore_updates", False)
+
                     fields[field_name] = SpecialField(
                         name=field_name,
                         field_type=field_type,
@@ -1226,13 +1233,14 @@ class ProjectConfig:
                         required=required,
                         system_value=system_value,
                         default=default,
+                        ignore_updates=ignore_updates,
                     )
-            
+
             return fields
         else:
             # For notes: Start with global note fields, add/override with template
             fields = self._note_special_fields.copy()
-            
+
             if template.has_note_special_fields():
                 # Parse and add/override template note fields
                 for field_name, field_def in template.note_special_fields.items():
@@ -1244,7 +1252,8 @@ class ProjectConfig:
                     required = field_def.get("required", False)
                     system_value = field_def.get("system_value", None)
                     default = field_def.get("default", None)
-                    
+                    ignore_updates = field_def.get("ignore_updates", False)
+
                     fields[field_name] = SpecialField(
                         name=field_name,
                         field_type=field_type,
@@ -1255,8 +1264,9 @@ class ProjectConfig:
                         required=required,
                         system_value=system_value,
                         default=default,
+                        ignore_updates=ignore_updates,
                     )
-            
+
             return fields
     
     def get_record_prefix(self, template_name: Optional[str] = None) -> str:
@@ -1331,7 +1341,8 @@ class ProjectConfig:
                     required = field_def.get("required", False)
                     system_value = field_def.get("system_value", None)
                     default = field_def.get("default", None)
-                    
+                    ignore_updates = field_def.get("ignore_updates", False)
+
                     fields[field_name] = SpecialField(
                         name=field_name,
                         field_type=field_type,
@@ -1342,8 +1353,9 @@ class ProjectConfig:
                         required=required,
                         system_value=system_value,
                         default=default,
+                        ignore_updates=ignore_updates,
                     )
-        
+
         # Override with parent template's note fields (takes precedence)
         if parent_template_name:
             parent_template = self.get_template(parent_template_name)
@@ -1357,7 +1369,8 @@ class ProjectConfig:
                     required = field_def.get("required", False)
                     system_value = field_def.get("system_value", None)
                     default = field_def.get("default", None)
-                    
+                    ignore_updates = field_def.get("ignore_updates", False)
+
                     fields[field_name] = SpecialField(
                         name=field_name,
                         field_type=field_type,
@@ -1368,8 +1381,9 @@ class ProjectConfig:
                         required=required,
                         system_value=system_value,
                         default=default,
+                        ignore_updates=ignore_updates,
                     )
-        
+
         return fields
     
     def get_special_fields(self) -> Dict[str, SpecialField]:
@@ -5520,6 +5534,7 @@ class IncidentManager:
             metadata_only: bool = False,
             allow_validation_editor: bool = True,
             merge_kv: bool = True,
+            explicit_field_names: Optional[set] = None,
         ) -> bool:
             """
             Update incident fields from KV list/dicts and/or description.
@@ -5614,17 +5629,26 @@ class IncidentManager:
                         incident.kv_floats = {**incident.kv_floats, **kv_floats}
                     else:
                         incident.kv_floats = kv_floats.copy()
-                
+
+                # Collect names of all fields explicitly passed in (for ignore_updates check)
+                passed_field_names = (
+                    set(kv_strings.keys() if kv_strings else []) |
+                    set(kv_integers.keys() if kv_integers else []) |
+                    set(kv_floats.keys() if kv_floats else [])
+                )
+
                 # Skip the normal KV list processing
                 has_kv_to_process = False
             else:
                 # Normal KV list mode
+                passed_field_names = set()
                 has_kv_to_process = bool(kv_single or kv_multi)
             
             # Define processor for update operations
             def process_update_kv(inc, parsed_single, parsed_multi):
                 # Process single-value KV (replaces)
                 for key, kvtype, op, value in parsed_single:
+                    passed_field_names.add(key)
                     if op == '-':
                         # Removal
                         self._remove_kv(inc, key)
@@ -5633,9 +5657,10 @@ class IncidentManager:
                         # Update
                         updated_fields.append(f"Set {key}: {value}")
                         self._validate_and_store_kv_single(key, kvtype, value, inc)
-                
+
                 # Process multi-value KV (appends)
                 for key, kvtype, op, value in parsed_multi:
+                    passed_field_names.add(key)
                     if op == '-':
                         # Removal for multi-value
                         self._remove_kv(inc, key, value)
@@ -5747,87 +5772,105 @@ class IncidentManager:
             )
             self.index_db.index_kv_data(incident, self.project_config)
         
-            update_msg = ""
-                
-            # Append previous content to update message if it was changed
-            if previous_content and incident.content != previous_content:
-                update_msg += f"\n\n## Previous Content\n\n{previous_content}"
-            # Log update
-
-            if updated_fields:
-                updated_fields_str = '\n * '.join(updated_fields)
-                update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
-                update_msg += f"\n\n"
-
-            update_msg += f"\n\n## Previous Key/Vals\n"
-            
-            # System fields to skip
-            skip_fields = {}
-            
-            # Format all string KV that isn't in skip list
-            for key, values in orig_kv_strings.items():
-                if key not in skip_fields and values:
-                    values_str = ', '.join(str(v) for v in values)
-                    update_msg += f"{key}: {values_str}\n"
-            
-            # Format all integer KV
-            for key, values in orig_kv_integers.items():
-                if values:
-                    values_str = ', '.join(str(v) for v in values)
-                    update_msg += f"{key}: {values_str}\n"
-            
-            # Format all float KV
-            for key, values in orig_kv_floats.items():
-                if values:
-                    values_str = ', '.join(str(v) for v in values)
-                    update_msg += f"{key}: {values_str}\n"
-
-            # Format secure KV (masked — never log plaintext)
-            for key in (orig_kv_secure or {}):
-                update_msg += f"{key}: {{securestring}}\n"
-
-            update_id = IDGenerator.generate_update_id()
-            
-            # Get template_id from incident for the update
-            incident_template_id = None
-            if incident.kv_strings and 'template_id' in incident.kv_strings:
-                incident_template_id = incident.kv_strings['template_id'][0]
-            
-            # Create update with minimal info
-            incident_update = IncidentUpdate(
-                id=update_id,
-                message=update_msg,
+            # Check if we should skip creating an update note.
+            # Condition: metadata_only update AND every passed-in field has ignore_updates=True.
+            # explicit_field_names overrides the internally-collected set (used by JSON paths
+            # where kv_strings contains the full merged record, not just the caller's fields).
+            check_field_names = explicit_field_names if explicit_field_names is not None else passed_field_names
+            record_special_fields = self.project_config.get_special_fields_for_template(
+                incident_template_id, for_record=True
             )
-            
-            # Apply special fields
-            self._apply_special_fields(
-                incident_update,
-                is_create=True,
-                template_name=incident_template_id,
-                for_notes=True,
-                is_system_note=True,
+            skip_update_note = (
+                metadata_only
+                and bool(check_field_names)
+                and all(
+                    record_special_fields.get(f, SpecialField(name=f, field_type="single")).ignore_updates
+                    for f in check_field_names
+                )
             )
-            
-            # Set incident_id explicitly
-            if not incident_update.kv_strings:
-                incident_update.kv_strings = {}
-            incident_update.kv_strings['incident_id'] = [incident_id]
 
-            written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
-            self.index_db.index_update(
-                incident_update,
-                file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
-                file_content=written_content,
-            )
-            self.index_db.index_update_kv_data(
-                incident_id,
-                update_id,
-                kv_strings=incident_update.kv_strings,
-                kv_integers=incident_update.kv_integers,
-                kv_floats=incident_update.kv_floats,
-                kv_secure=incident_update.kv_secure,
-                project_config=self.project_config,
-            )
+            if not skip_update_note:
+                update_msg = ""
+
+                # Append previous content to update message if it was changed
+                if previous_content and incident.content != previous_content:
+                    update_msg += f"\n\n## Previous Content\n\n{previous_content}"
+                # Log update
+
+                if updated_fields:
+                    updated_fields_str = '\n * '.join(updated_fields)
+                    update_msg += f"\n\n## Updated Fields: \n{updated_fields_str}"
+                    update_msg += f"\n\n"
+
+                update_msg += f"\n\n## Previous Key/Vals\n"
+
+                # System fields to skip
+                skip_fields = {}
+
+                # Format all string KV that isn't in skip list
+                for key, values in orig_kv_strings.items():
+                    if key not in skip_fields and values:
+                        values_str = ', '.join(str(v) for v in values)
+                        update_msg += f"{key}: {values_str}\n"
+
+                # Format all integer KV
+                for key, values in orig_kv_integers.items():
+                    if values:
+                        values_str = ', '.join(str(v) for v in values)
+                        update_msg += f"{key}: {values_str}\n"
+
+                # Format all float KV
+                for key, values in orig_kv_floats.items():
+                    if values:
+                        values_str = ', '.join(str(v) for v in values)
+                        update_msg += f"{key}: {values_str}\n"
+
+                # Format secure KV (masked — never log plaintext)
+                for key in (orig_kv_secure or {}):
+                    update_msg += f"{key}: {{securestring}}\n"
+
+                update_id = IDGenerator.generate_update_id()
+
+                # Get template_id from incident for the update
+                incident_template_id = None
+                if incident.kv_strings and 'template_id' in incident.kv_strings:
+                    incident_template_id = incident.kv_strings['template_id'][0]
+
+                # Create update with minimal info
+                incident_update = IncidentUpdate(
+                    id=update_id,
+                    message=update_msg,
+                )
+
+                # Apply special fields
+                self._apply_special_fields(
+                    incident_update,
+                    is_create=True,
+                    template_name=incident_template_id,
+                    for_notes=True,
+                    is_system_note=True,
+                )
+
+                # Set incident_id explicitly
+                if not incident_update.kv_strings:
+                    incident_update.kv_strings = {}
+                incident_update.kv_strings['incident_id'] = [incident_id]
+
+                written_content = self.storage.save_update(incident_id, incident_update, self.project_config)
+                self.index_db.index_update(
+                    incident_update,
+                    file_path=self.storage._get_updates_dir(incident_id) / f"{incident_update.id}.md",
+                    file_content=written_content,
+                )
+                self.index_db.index_update_kv_data(
+                    incident_id,
+                    update_id,
+                    kv_strings=incident_update.kv_strings,
+                    kv_integers=incident_update.kv_integers,
+                    kv_floats=incident_update.kv_floats,
+                    kv_secure=incident_update.kv_secure,
+                    project_config=self.project_config,
+                )
 
             return True
     
@@ -10883,6 +10926,7 @@ $update_kv
 
             fields = data.get('fields', {})
             content = data.get('content')
+            metadata_only = data.get('metadata_only', content is None)
 
             # Set onto args so _process_from_file can resolve template-specific special fields
             args.template = None  # update-record doesn't change templates via JSON IO
@@ -10922,14 +10966,15 @@ $update_kv
                     kv_strings=temp_incident.kv_strings,
                     kv_integers=temp_incident.kv_integers,
                     kv_floats=temp_incident.kv_floats,
-                    description=body if content else None,
+                    description=body if not metadata_only else None,
                     use_editor=False,
                     use_yaml_editor=False,
-                    metadata_only=content is None,
+                    metadata_only=metadata_only,
                     allow_validation_editor=False,
                     merge_kv=True,
+                    explicit_field_names=set(fields.keys()) if metadata_only else None,
                 )
-                
+
                 # Output JSON response
                 result = {
                     "success": True,
@@ -11783,6 +11828,7 @@ $update_kv
             args.record_id = params['record_id']
             fields = params.get('fields', {})
             content = params.get('content')
+            metadata_only = params.get('metadata_only', content is None)
 
             # Set onto args so _process_from_file loads correct template-specific special fields
             args.template = None  # update-record doesn't change templates via JSON IO
@@ -11816,14 +11862,15 @@ $update_kv
                     kv_strings=temp_incident.kv_strings,
                     kv_integers=temp_incident.kv_integers,
                     kv_floats=temp_incident.kv_floats,
-                    description=body if content else None,
+                    description=body if not metadata_only else None,
                     use_editor=False,
                     use_yaml_editor=False,
-                    metadata_only=content is None,
+                    metadata_only=metadata_only,
                     allow_validation_editor=False,
                     merge_kv=True,
+                    explicit_field_names=set(fields.keys()) if metadata_only else None,
                 )
-                
+
                 return {
                     "record_id": args.record_id,
                 }

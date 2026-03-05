@@ -492,6 +492,26 @@ enabled = true
 required = false
 index_values = true
 
+# ignore_updates = true: metadata-only updates to this field do NOT create a note
+[record_special_fields.last_viewed]
+type = "single"
+value_type = "string"
+editable = true
+enabled = true
+required = false
+index_values = false
+ignore_updates = true
+
+# ignore_updates = true, second field (for multi-field ignore test)
+[record_special_fields.view_count]
+type = "single"
+value_type = "integer"
+editable = true
+enabled = true
+required = false
+index_values = false
+ignore_updates = true
+
 # is_system_update: marks system-generated notes (initial creation, record updates)
 [note_special_fields.is_system_update]
 type = "single"
@@ -5934,6 +5954,7 @@ main() {
     test_offset_pagination
     test_validate_config
     test_exit_codes
+    test_ignore_updates
 
     # Summary
     print_section "Test Summary"
@@ -7502,6 +7523,198 @@ EOF
 
     # Restore the original user config
     mv "$user_cfg_bak" "$user_cfg"
+}
+
+#==============================================================================
+# Test: ignore_updates field parameter
+#==============================================================================
+
+test_ignore_updates() {
+    print_section "Test: ignore_updates Field Parameter"
+
+    # Create a record to work with
+    local rec_id
+    rec_id=$(run_aver record new --description "" --no-validation-editor \
+        --title "IgnoreUpdates Test" --status "open" 2>&1 \
+        | grep -oE "REC-[A-Z0-9]+" || echo "")
+    if [ -z "$rec_id" ]; then
+        fail "Could not create record for ignore_updates tests"
+        return
+    fi
+    echo "  Record: $rec_id"
+
+    # Count notes right after creation (should be 1: the initial system note)
+    local initial_count
+    initial_count=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+
+    # -------------------------------------------------------------------------
+    # 1. metadata_only update on ignore_updates=true field → no new note
+    # -------------------------------------------------------------------------
+    print_test "metadata_only update on ignore_updates=true field creates no note"
+    track_command "aver record update $rec_id --metadata-only --last_viewed 2026-03-05"
+    if run_aver record update "$rec_id" --metadata-only \
+            --last_viewed "2026-03-05" --no-validation-editor > /dev/null 2>&1; then
+        local count_after
+        count_after=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after" -eq "$initial_count" ]; then
+            pass
+            echo "  Note count unchanged: $count_after"
+        else
+            fail "Expected $initial_count notes, got $count_after"
+        fi
+    else
+        fail "record update command failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 2. Both passed-in fields have ignore_updates=true → still no new note
+    # -------------------------------------------------------------------------
+    print_test "metadata_only update with two ignore_updates=true fields creates no note"
+    track_command "aver record update $rec_id --metadata-only --last_viewed X --view_count 5"
+    local count_before
+    count_before=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    if run_aver record update "$rec_id" --metadata-only \
+            --last_viewed "2026-03-05" --view_count 5 --no-validation-editor > /dev/null 2>&1; then
+        local count_after2
+        count_after2=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after2" -eq "$count_before" ]; then
+            pass
+            echo "  Note count unchanged: $count_after2"
+        else
+            fail "Expected $count_before notes, got $count_after2"
+        fi
+    else
+        fail "record update command failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 3. metadata_only update on normal field (no ignore_updates) → note created
+    # -------------------------------------------------------------------------
+    print_test "metadata_only update on normal field still creates a note"
+    track_command "aver record update $rec_id --metadata-only --priority high"
+    local count_before3
+    count_before3=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    if run_aver record update "$rec_id" --metadata-only \
+            --priority "high" --no-validation-editor > /dev/null 2>&1; then
+        local count_after3
+        count_after3=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after3" -gt "$count_before3" ]; then
+            pass
+            echo "  Note created: $count_before3 → $count_after3"
+        else
+            fail "Expected note to be created; count was $count_before3 before and $count_after3 after"
+        fi
+    else
+        fail "record update command failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 4. metadata_only update mixing ignore_updates=true + normal field → note created
+    # -------------------------------------------------------------------------
+    print_test "metadata_only update mixing ignore_updates and normal field creates a note"
+    track_command "aver record update $rec_id --metadata-only --last_viewed X --priority low"
+    local count_before4
+    count_before4=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    if run_aver record update "$rec_id" --metadata-only \
+            --last_viewed "2026-03-06" --priority "low" --no-validation-editor > /dev/null 2>&1; then
+        local count_after4
+        count_after4=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after4" -gt "$count_before4" ]; then
+            pass
+            echo "  Note created as expected: $count_before4 → $count_after4"
+        else
+            fail "Expected note to be created; count was $count_before4 before and $count_after4 after"
+        fi
+    else
+        fail "record update command failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 5. Non-metadata_only update (with content) on ignore_updates=true field → note created
+    # -------------------------------------------------------------------------
+    print_test "content update on ignore_updates=true field still creates a note"
+    track_command "echo 'new content' | aver record update $rec_id --last_viewed X --no-validation-editor"
+    local count_before5
+    count_before5=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    if echo "new content for ignore_updates test" \
+            | run_aver record update "$rec_id" \
+            --last_viewed "2026-03-07" --no-validation-editor > /dev/null 2>&1; then
+        local count_after5
+        count_after5=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after5" -gt "$count_before5" ]; then
+            pass
+            echo "  Note created as expected: $count_before5 → $count_after5"
+        else
+            fail "Expected note to be created; count was $count_before5 before and $count_after5 after"
+        fi
+    else
+        fail "record update command failed"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 6. JSON IO update-record with metadata_only=true + ignore_updates=true → no note
+    # -------------------------------------------------------------------------
+    print_test "json io update-record metadata_only=true + ignore_updates field creates no note"
+    track_command "aver json io (update-record metadata_only=true last_viewed)"
+    local count_before6
+    count_before6=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    local json6_result
+    json6_result=$(echo '{"command":"update-record","params":{"record_id":"'"$rec_id"'","fields":{"last_viewed":"2026-03-08"},"metadata_only":true}}' \
+        | run_aver json io 2>&1)
+    if echo "$json6_result" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+        local count_after6
+        count_after6=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after6" -eq "$count_before6" ]; then
+            pass
+            echo "  Note count unchanged: $count_after6"
+        else
+            fail "Expected $count_before6 notes, got $count_after6"
+        fi
+    else
+        fail "json io update-record failed: $json6_result"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 7. JSON IO update-record with metadata_only=true + normal field → note created
+    # -------------------------------------------------------------------------
+    print_test "json io update-record metadata_only=true + normal field creates a note"
+    track_command "aver json io (update-record metadata_only=true priority)"
+    local count_before7
+    count_before7=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+    local json7_result
+    json7_result=$(echo '{"command":"update-record","params":{"record_id":"'"$rec_id"'","fields":{"priority":"medium"},"metadata_only":true}}' \
+        | run_aver json io 2>&1)
+    if echo "$json7_result" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+        local count_after7
+        count_after7=$(ls "$TEST_DIR/updates/$rec_id/"*.md 2>/dev/null | wc -l)
+        if [ "$count_after7" -gt "$count_before7" ]; then
+            pass
+            echo "  Note created as expected: $count_before7 → $count_after7"
+        else
+            fail "Expected note to be created; count was $count_before7 before and $count_after7 after"
+        fi
+    else
+        fail "json io update-record failed: $json7_result"
+    fi
+
+    # -------------------------------------------------------------------------
+    # 8. Record field value IS actually updated even when note is skipped
+    # -------------------------------------------------------------------------
+    print_test "record field value is updated even when note is skipped"
+    track_command "aver record update $rec_id --metadata-only --last_viewed sentinel"
+    if run_aver record update "$rec_id" --metadata-only \
+            --last_viewed "sentinel-value" --no-validation-editor > /dev/null 2>&1; then
+        local rec_output
+        rec_output=$(run_aver record view "$rec_id" 2>&1)
+        if echo "$rec_output" | grep -q "sentinel-value"; then
+            pass
+            echo "  Field value confirmed updated in record"
+        else
+            fail "Field value not found in record after update"
+        fi
+    else
+        fail "record update command failed"
+    fi
 }
 
 # Trap to ensure cleanup on exit

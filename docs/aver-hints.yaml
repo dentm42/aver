@@ -666,6 +666,27 @@ testing:
 # ============================================================================
 
 recent_additions:
+  - feature: "ignore_updates on SpecialField (record fields only)"
+    added: "2026-03-05"
+    status: "✅ IMPLEMENTED"
+    semantics: |
+      New boolean attribute on SpecialField: ignore_updates (default False).
+      Config key: ignore_updates = true under a [record_special_fields.FIELD] block.
+      Effect: if a metadata_only update is performed and ALL passed-in field names have
+      ignore_updates=True, the update note is NOT created (record file is still saved/indexed).
+      If any passed-in field lacks ignore_updates=True (or is unknown), note IS created as normal.
+      Only applies when metadata_only=True; content updates always create a note regardless.
+    key_locations:
+      - "SpecialField.__init__: ignore_updates param (~line 902)"
+      - "_parse_special_fields: reads ignore_updates from config dict (~line 1083)"
+      - "get_special_fields_for_template: passes ignore_updates through at all 4 template parse sites"
+      - "get_note_special_fields: passes ignore_updates through at both template parse sites"
+      - "update_incident_info: skip_update_note check just before note creation (~line 5774)"
+    config_example: |
+      [record_special_fields.last_viewed]
+      type = "single"
+      value_type = "string"
+      ignore_updates = true
   - feature: "admin validate-config command and startup config validation"
     added: "2026-03-01"
     status: "✅ IMPLEMENTED"
